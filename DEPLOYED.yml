@@ -39,6 +39,16 @@ fly_apps:
     region: dfw
     purpose: N8N workflow server (self-hosted)
     status: active
+  stagehand-mcp:
+    url: https://stagehand-mcp.fly.dev
+    sse: https://stagehand-mcp.fly.dev/sse
+    region: dfw
+    purpose: Microsoft Playwright MCP - browser automation
+    tools: browser_navigate, browser_click, browser_type, browser_snapshot, browser_screenshot
+    base_image: mcr.microsoft.com/playwright/mcp
+    repo_path: /mcp-servers/playwright-mcp
+    last_deploy: 2025-12-27
+    
     
   garza-ssh-relay-2:
     url: https://garza-ssh-relay-2.fly.dev

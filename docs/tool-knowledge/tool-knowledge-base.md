@@ -445,3 +445,214 @@ ssh-bastion = relay jump host
 
 ## Last Updated
 December 27, 2025 - Added DigitalOcean deployment, Beeper media, entity extraction patterns
+
+
+---
+
+## lrlab-mcp v3 (December 2025)
+
+### Tool Inventory (32 tools)
+- **Core**: `ping`, `ssh_exec`, `ssh_hosts`
+- **GitHub**: `list_repos`, `get_repo`, `list_issues`, `create_issue`, `create_repo`, `list_prs`, `create_pr`, `get_workflow_runs`, `trigger_workflow`, `get_file`, `update_file`
+- **Fly.io**: `fly_list_apps`, `fly_get_app`, `fly_logs`, `fly_restart`, `fly_set_secret`
+- **Cloudflare DNS**: `cf_list_dns`, `cf_create_dns`, `cf_delete_dns`
+- **n8n Cloud**: `n8n_list_workflows`, `n8n_get_workflow`, `n8n_execute_workflow`, `n8n_activate_workflow`, `n8n_list_executions`
+- **Health**: `health_check_all` (pings all MCP endpoints)
+- **Scout APM**: `scout_list_apps`, `scout_get_app_endpoints`, `scout_get_insights`, `scout_get_error_groups`
+
+### Endpoint
+- SSE: `https://lastrock-mcp.garzahive.com/sse?key=lrlab-dev-v2-a7c9e3f18b2d4e6f`
+- Health: `https://lastrock-mcp.garzahive.com/health`
+
+---
+
+## Octelium Zero Trust
+
+### Deployment on DigitalOcean
+- Droplet: `octelium-secure` (68.183.108.79)
+- Region: nyc1
+- Size: s-2vcpu-4gb
+- Image: ubuntu-24-04-x64
+
+### Installation
+```bash
+# Demo cluster installs k3s + Octelium
+curl -fsSL https://octelium.com/install-demo-cluster.sh | bash -s -- --domain secure.garzahive.com
+```
+
+### TLS Certificates
+- Use certbot with Cloudflare DNS plugin:
+```bash
+pip install certbot-dns-cloudflare
+certbot certonly --dns-cloudflare --dns-cloudflare-credentials /root/.secrets/cloudflare.ini \
+  -d secure.garzahive.com -d *.secure.garzahive.com
+```
+- Cloudflare credentials format:
+```ini
+dns_cloudflare_email = jadengarza@pm.me
+dns_cloudflare_api_key = [global-api-key]
+```
+
+### Kubectl Secret for TLS
+```bash
+kubectl create secret tls octelium-tls \
+  --cert=/etc/letsencrypt/live/secure.garzahive.com/fullchain.pem \
+  --key=/etc/letsencrypt/live/secure.garzahive.com/privkey.pem \
+  -n octelium
+```
+
+---
+
+## VoiceNotes.com Integration
+
+### API Endpoint
+```
+POST https://api.voicenotes.com/api/integrations/obsidian-sync/recordings
+```
+
+### Headers
+```
+Authorization: Bearer [obsidian-key]
+X-API-KEY: [obsidian-key]  # Same key in both headers
+Content-Type: application/json
+```
+
+### Request Body
+- Empty JSON object `{}`
+- Response contains array of recordings with transcripts
+
+### Transcript Cleaning
+```javascript
+transcript.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, '')
+```
+
+---
+
+## n8n Cloud API
+
+### Endpoint Format
+```
+https://[subdomain].app.n8n.cloud/api/v1/
+```
+
+### Jaden's Instance
+- URL: `https://jadengarza.app.n8n.cloud`
+- API key stored in Craft doc 7061
+
+### Endpoints
+- `GET /workflows` - List all workflows
+- `GET /workflows/{id}` - Get single workflow
+- `POST /workflows/{id}/activate` - Activate workflow
+- `POST /workflows/{id}/deactivate` - Deactivate workflow
+- `POST /workflows/{id}/run` - Execute workflow
+- `GET /executions` - List executions
+
+### Headers
+```
+X-N8N-API-KEY: [jwt-token]
+```
+
+---
+
+## HOOBS / Homebridge Compatibility
+
+### Node.js Version Issues
+- HOOBS Docker images use Node 14
+- `homebridge-unifi-protect` plugin requires Node 20+
+- Custom HOOBS images with Node 20 still have Homebridge version conflicts
+
+### Solution
+Use official Homebridge Docker instead:
+```bash
+docker run -d \
+  --name homebridge \
+  --net=host \
+  -v /path/to/config:/homebridge \
+  -e TZ=America/Denver \
+  homebridge/homebridge:latest
+```
+
+### UniFi Protect Requirements
+- **Local admin account required** - SSO credentials don't work for API
+- Create account in UniFi Protect UI > Users > Invite User > Local Access
+- RTSP must be enabled per-camera in UniFi Protect settings
+- Rate limiting (HTTP 429) can persist 15-30 minutes at IP level
+
+---
+
+## Element Web for Beeper
+
+### Limitation
+- Beeper uses proprietary auth that blocks standard Matrix clients
+- Element Web can connect but auth flows may not work
+
+### Alternative: Beeper Desktop + VNC
+- Run actual Beeper Electron app in container
+- Access via noVNC for remote control
+- Better compatibility than third-party Matrix clients
+
+### Element Config for Beeper (if attempting)
+```json
+{
+  "default_server_config": {
+    "m.homeserver": {
+      "base_url": "https://matrix.beeper.com",
+      "server_name": "beeper.com"
+    }
+  }
+}
+```
+
+---
+
+## Cloudflare Workers Service Bindings
+
+### Worker-to-Worker Calls
+- Direct HTTP fetch between workers in same zone returns error 1042
+- Solution: Use service bindings in wrangler.toml
+
+```toml
+[[services]]
+binding = "OTHER_WORKER"
+service = "other-worker-name"
+```
+
+### Usage in Code
+```javascript
+// Wrong - causes error 1042
+await fetch('https://other-worker.garzahive.workers.dev/endpoint')
+
+// Right - uses service binding
+await env.OTHER_WORKER.fetch(new Request('http://internal/endpoint'))
+```
+
+---
+
+## Entity Extraction with Claude API
+
+### Cloudflare Worker Pattern
+```javascript
+const response = await fetch('https://api.anthropic.com/v1/messages', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'x-api-key': env.ANTHROPIC_API_KEY,
+    'anthropic-version': '2023-06-01'
+  },
+  body: JSON.stringify({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 4096,
+    messages: [{ role: 'user', content: prompt }]
+  })
+});
+```
+
+### JSON Response Forcing
+- Include "Return ONLY valid JSON, no markdown" in prompt
+- Parse response with try/catch for robustness
+- Claude may still add markdown backticks - strip them:
+```javascript
+let text = response.content[0].text;
+text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+const data = JSON.parse(text);
+```

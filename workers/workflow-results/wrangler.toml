@@ -1,0 +1,10 @@
+name = "workflow-results"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "WORKFLOW_RESULTS"
+id = "cfb27b9cfcbe453080c1f18132da54d4"
+
+[vars]
+API_KEY = "garza-workflow-2024"

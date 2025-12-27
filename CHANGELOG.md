@@ -96,3 +96,45 @@ Prevents wasted tool calls by providing:
 
 ### Philosophy
 > If the stack can do it, use the stack.
+
+## [v0.6.0] - 2025-12-27
+
+### Added - Major Improvements
+
+#### Scripts
+- `scripts/health-check.sh` - Pre-session health check for all systems
+- `scripts/sync-deployed.sh` - Sync DEPLOYED.yml with live infrastructure  
+- `scripts/discover-drift.sh` - Find undocumented services and drift
+
+#### Runbooks
+- `docs/runbooks/add-mcp-tool.md` - Step-by-step: add tool to MCP server
+- `docs/runbooks/create-n8n-workflow.md` - Step-by-step: create n8n workflow
+- `docs/runbooks/deploy-fly-app.md` - Step-by-step: deploy to Fly.io
+- `docs/runbooks/add-supabase-table.md` - Step-by-step: create Supabase table
+- `docs/runbooks/debug-mcp-connection.md` - Troubleshooting MCP failures
+
+#### Documentation
+- `docs/session-protocol.md` - Formalized session start/end procedures
+- `docs/graphiti-guide.md` - How to use Graphiti knowledge graph
+- `docs/secrets-consolidation.md` - Plan to consolidate secrets in Supabase
+
+#### Templates
+- `templates/n8n/webhook-to-response.json` - Webhook workflow starter
+- `templates/n8n/scheduled-api-call.json` - Cron job workflow starter
+- `templates/n8n/health-monitor.json` - System monitoring workflow
+- `templates/cf-worker/basic-api.js` - Cloudflare Worker API starter
+- `templates/cf-worker/wrangler.toml` - Worker config template
+- `templates/supabase/basic-table.sql` - Standard table with RLS
+- `templates/supabase/audit-table.sql` - Audit logging table
+
+### Changed
+- `README.md` - Complete rewrite with clear structure and quick reference
+- Added runbooks directory for procedural documentation
+
+### Philosophy
+This release completes the transformation from reactive to proactive documentation:
+- **Health checks** catch issues before they derail sessions
+- **Runbooks** provide step-by-step guides for common tasks
+- **Session protocol** formalizes best practices
+- **Templates** eliminate starting from scratch
+- **Drift detection** keeps docs in sync with reality

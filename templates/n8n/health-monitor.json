@@ -1,0 +1,79 @@
+{
+  "_meta": {
+    "name": "System Health Monitor",
+    "description": "Hourly check of all GARZA OS services, alerts on failure",
+    "usage": "Import into n8n Cloud, activate"
+  },
+  "nodes": [
+    {
+      "name": "Hourly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [250, 300],
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 1 }] }
+      }
+    },
+    {
+      "name": "Check Fly Apps",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [450, 200],
+      "parameters": {
+        "method": "GET",
+        "url": "https://garza-home-mcp.fly.dev/health",
+        "options": { "timeout": 10000 }
+      }
+    },
+    {
+      "name": "Check CF MCP",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [450, 400],
+      "parameters": {
+        "method": "GET",
+        "url": "https://mcp-cf.garzahive.com/health",
+        "options": { "timeout": 10000 }
+      }
+    },
+    {
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.code",
+      "position": [650, 300],
+      "parameters": {
+        "jsCode": "const results = $input.all();\nconst failures = results.filter(r => r.json.statusCode >= 400 || r.json.error);\n\nreturn [{\n  json: {\n    total: results.length,\n    healthy: results.length - failures.length,\n    failed: failures.length,\n    failures: failures.map(f => f.json),\n    timestamp: new Date().toISOString()\n  }\n}];"
+      }
+    },
+    {
+      "name": "Has Failures?",
+      "type": "n8n-nodes-base.if",
+      "position": [850, 300],
+      "parameters": {
+        "conditions": {
+          "number": [{ "value1": "={{ $json.failed }}", "operation": "larger", "value2": 0 }]
+        }
+      }
+    },
+    {
+      "name": "Send Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1050, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BEEPER_WEBHOOK }}",
+        "body": "🚨 GARZA OS Alert: {{ $json.failed }} service(s) down\n\n{{ $json.failures }}"
+      }
+    }
+  ],
+  "connections": {
+    "Hourly Schedule": {
+      "main": [
+        [
+          { "node": "Check Fly Apps", "type": "main", "index": 0 },
+          { "node": "Check CF MCP", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Check Fly Apps": { "main": [[{ "node": "Aggregate Results", "type": "main", "index": 0 }]] },
+    "Check CF MCP": { "main": [[{ "node": "Aggregate Results", "type": "main", "index": 0 }]] },
+    "Aggregate Results": { "main": [[{ "node": "Has Failures?", "type": "main", "index": 0 }]] },
+    "Has Failures?": { "main": [[{ "node": "Send Alert", "type": "main", "index": 0 }], []] }
+  }
+}

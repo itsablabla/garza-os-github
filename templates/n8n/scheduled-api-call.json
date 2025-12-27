@@ -1,0 +1,68 @@
+{
+  "_meta": {
+    "name": "Scheduled API Call Template",
+    "description": "Cron-triggered workflow that calls an API and handles response",
+    "usage": "Import into n8n, set schedule and API endpoint"
+  },
+  "nodes": [
+    {
+      "name": "Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [250, 300],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "hours", "hoursInterval": 1 }]
+        }
+      }
+    },
+    {
+      "name": "HTTP Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [450, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.example.com/endpoint",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      }
+    },
+    {
+      "name": "Check Success",
+      "type": "n8n-nodes-base.if",
+      "position": [650, 300],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.success }}",
+              "value2": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "On Success",
+      "type": "n8n-nodes-base.noOp",
+      "position": [850, 200],
+      "parameters": {}
+    },
+    {
+      "name": "On Failure",
+      "type": "n8n-nodes-base.noOp",
+      "position": [850, 400],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Schedule": { "main": [[{ "node": "HTTP Request", "type": "main", "index": 0 }]] },
+    "HTTP Request": { "main": [[{ "node": "Check Success", "type": "main", "index": 0 }]] },
+    "Check Success": {
+      "main": [
+        [{ "node": "On Success", "type": "main", "index": 0 }],
+        [{ "node": "On Failure", "type": "main", "index": 0 }]
+      ]
+    }
+  }
+}

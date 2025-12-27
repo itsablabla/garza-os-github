@@ -1,0 +1,40 @@
+{
+  "_meta": {
+    "name": "Webhook to Response Template",
+    "description": "Basic webhook that processes input and returns response",
+    "usage": "Import into n8n, customize the Code node"
+  },
+  "nodes": [
+    {
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [250, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "your-webhook-path",
+        "responseMode": "responseNode"
+      }
+    },
+    {
+      "name": "Process",
+      "type": "n8n-nodes-base.code",
+      "position": [450, 300],
+      "parameters": {
+        "jsCode": "// Access webhook data\nconst input = $input.all()[0].json;\n\n// Your processing logic here\nconst result = {\n  received: input,\n  processed: true,\n  timestamp: new Date().toISOString()\n};\n\nreturn [{ json: result }];"
+      }
+    },
+    {
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [650, 300],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Process", "type": "main", "index": 0 }]] },
+    "Process": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  }
+}

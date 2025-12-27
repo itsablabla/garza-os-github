@@ -1,0 +1,13 @@
+name = "worker-name"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# Uncomment for cron triggers
+# [triggers]
+# crons = ["0 * * * *"]  # Every hour
+
+# Environment variables (non-secret)
+# [vars]
+# ENVIRONMENT = "production"
+
+# For secrets, use: wrangler secret put SECRET_NAME

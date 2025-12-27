@@ -1,74 +1,100 @@
 # GARZA OS
 
-Jaden's unified AI infrastructure. MCP servers, configs, automation.
+Personal AI operating system configuration, infrastructure, and tooling.
 
 ---
 
-## 🚨 CLAUDE: READ THIS FIRST
+## 🤖 CLAUDE: READ THIS FIRST
 
-| Doc | Purpose |
-|-----|---------|
-| **[docs/claude-preflight.md](docs/claude-preflight.md)** | Pre-flight checklist - READ BEFORE STARTING |
-| [docs/credentials-index.md](docs/credentials-index.md) | Where to find API keys |
-| [docs/curl-examples.md](docs/curl-examples.md) | Tested copy-paste commands |
-| [docs/error-playbook.md](docs/error-playbook.md) | Error → Fix mappings |
-| [docs/fallback-diagram.md](docs/fallback-diagram.md) | Tool cascade decision trees |
-| [DEPLOYED.yml](DEPLOYED.yml) | What's running where |
-| [templates/snippets/INDEX.md](templates/snippets/INDEX.md) | Reusable API patterns |
+| Priority | Document | Purpose |
+|----------|----------|---------|
+| 1️⃣ | [`docs/claude-preflight.md`](docs/claude-preflight.md) | **START HERE** - Decision trees, credentials, common mistakes |
+| 2️⃣ | [`docs/stack-first.md`](docs/stack-first.md) | Use existing tools before building new |
+| 3️⃣ | [`docs/session-protocol.md`](docs/session-protocol.md) | What to do at start/end of every session |
+| 4️⃣ | [`DEPLOYED.yml`](DEPLOYED.yml) | What's running where |
 
 ---
 
-## Structure
+## 📁 Structure
 
 ```
-garza-os/
-├── docs/                    # Documentation
-│   ├── claude-preflight.md  # ⭐ START HERE
-│   ├── credentials-index.md # API key lookup
-│   ├── curl-examples.md     # Tested commands
-│   ├── error-playbook.md    # Error solutions
-│   └── fallback-diagram.md  # Decision trees
-├── mcp-servers/             # MCP server source code
-├── services/                # Fly.io services
-├── workers/                 # Cloudflare Workers
-├── templates/               # Starters & snippets
-│   ├── fly-mcp/             # Fly.io MCP template
-│   ├── cf-worker/           # CF Worker template
-│   └── snippets/            # API code patterns
-├── scripts/                 # Deployment helpers
-├── configs/                 # System configs
-├── DEPLOYED.yml             # Deployment manifest
-└── CHANGELOG.md             # Version history
+garza-os-github/
+├── docs/
+│   ├── claude-preflight.md      # 🎯 Pre-flight checklist
+│   ├── stack-first.md           # Use existing tools first
+│   ├── session-protocol.md      # Session start/end procedures
+│   ├── credentials-index.md     # Where to find secrets
+│   ├── curl-examples.md         # Tested API commands
+│   ├── error-playbook.md        # Known errors + solutions
+│   ├── fallback-diagram.md      # What to try when things fail
+│   ├── graphiti-guide.md        # Knowledge graph usage
+│   ├── secrets-consolidation.md # Secrets migration plan
+│   └── runbooks/
+│       ├── add-mcp-tool.md      # Add tool to MCP server
+│       ├── create-n8n-workflow.md
+│       ├── deploy-fly-app.md
+│       ├── add-supabase-table.md
+│       └── debug-mcp-connection.md
+├── scripts/
+│   ├── health-check.sh          # Verify all systems up
+│   ├── sync-deployed.sh         # Update DEPLOYED.yml from live
+│   └── discover-drift.sh        # Find undocumented services
+├── templates/
+│   ├── fly-mcp/                 # MCP server starter
+│   ├── n8n/                     # Workflow templates
+│   ├── cf-worker/               # Cloudflare Worker templates
+│   └── supabase/                # Database schema templates
+├── configs/                     # Configuration files
+├── stacks/                      # Docker compose stacks
+└── DEPLOYED.yml                 # Single source of truth for infra
 ```
 
 ---
 
-## Quick Commands
+## 🏗️ The Stack
+
+| Layer | Tool | Use For |
+|-------|------|---------|
+| Hosting | **Fly.io** | Containers, MCP servers, APIs |
+| Automation | **n8n Cloud** | Workflows, webhooks, cron |
+| Database | **Supabase** | Postgres, auth, secrets vault |
+| Serverless | **Cloudflare Workers** | Edge functions, cron |
+| CI/CD | **GitHub Actions** | Auto-deploy on push |
+| Knowledge | **Craft** | Docs, memory, source of truth |
+
+**Rule**: If the stack can do it, use the stack. Don't spin up new services.
+
+---
+
+## 🚀 Quick Commands
 
 ```bash
+# Health check all systems
+./scripts/health-check.sh
+
+# Find drift between docs and reality
+./scripts/discover-drift.sh
+
 # After making changes
-cd /Users/customer/garza-os-github
 git add -A && git commit -m "description" && git push
-
-# Search for existing code
-grep -r "keyword" .
-
-# Check what's deployed
-cat DEPLOYED.yml
 ```
 
 ---
 
-## Key Endpoints
+## 📍 Key Endpoints
 
 | Service | URL |
 |---------|-----|
-| Garza Home MCP | https://garza-home-mcp.fly.dev/sse |
-| n8n Cloud | https://garzasync.app.n8n.cloud |
-| CF Zone (garzahive.com) | 9c70206ce57d506d1d4e9397f6bb8ebc |
+| Garza Home MCP | https://garza-home-mcp.fly.dev |
+| CF MCP | https://mcp-cf.garzahive.com |
+| n8n Cloud | https://jadengarza.app.n8n.cloud |
+| LRLab MCP | https://lrlab-mcp.fly.dev |
 
 ---
 
-## Version
+## 📋 After Building
 
-Current: v0.4.0 - See [CHANGELOG.md](CHANGELOG.md)
+1. Update `DEPLOYED.yml` if you deployed anything
+2. Commit + push to GitHub
+3. Add to `error-playbook.md` if you solved new errors
+4. Add to `templates/` if you wrote reusable code

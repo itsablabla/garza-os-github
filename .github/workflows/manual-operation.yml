@@ -1,0 +1,157 @@
+name: Manual Operation
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation_type:
+        description: 'Operation type'
+        required: true
+        type: choice
+        options:
+          - deploy-mcp-server
+          - deploy-worker
+          - restart-service
+          - health-check
+      
+      # Deploy MCP Server
+      app_name:
+        description: 'App name (for deploy-mcp-server)'
+        required: false
+      source_dir:
+        description: 'Source directory (for deploy-mcp-server)'
+        required: false
+      region:
+        description: 'Fly region (for deploy-mcp-server)'
+        required: false
+        default: 'dfw'
+      
+      # Deploy Worker
+      worker_name:
+        description: 'Worker name (for deploy-worker)'
+        required: false
+      
+      # Restart Service
+      service_name:
+        description: 'Service name (for restart-service)'
+        required: false
+      platform:
+        description: 'Platform (for restart-service)'
+        required: false
+        type: choice
+        options:
+          - fly.io
+          - docker
+          - systemd
+      host:
+        description: 'Host (for restart-service with docker/systemd)'
+        required: false
+      
+      # Health Check
+      service_group:
+        description: 'Service group (for health-check)'
+        required: false
+        default: 'all'
+      auto_restart:
+        description: 'Auto-restart unhealthy (for health-check)'
+        required: false
+        default: 'true'
+
+jobs:
+  execute-operation:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          cd orchestrator
+          pip install -r requirements.txt
+      
+      - name: Execute operation
+        id: operation
+        env:
+          OPERATION_TYPE: ${{ github.event.inputs.operation_type }}
+          
+          # Deploy MCP
+          APP_NAME: ${{ github.event.inputs.app_name }}
+          SOURCE_DIR: ${{ github.event.inputs.source_dir }}
+          REGION: ${{ github.event.inputs.region }}
+          
+          # Deploy Worker
+          WORKER_NAME: ${{ github.event.inputs.worker_name }}
+          
+          # Restart Service
+          SERVICE_NAME: ${{ github.event.inputs.service_name }}
+          PLATFORM: ${{ github.event.inputs.platform }}
+          HOST: ${{ github.event.inputs.host }}
+          
+          # Health Check
+          SERVICE_GROUP: ${{ github.event.inputs.service_group }}
+          AUTO_RESTART: ${{ github.event.inputs.auto_restart }}
+        run: |
+          cd orchestrator
+          
+          case "$OPERATION_TYPE" in
+            "deploy-mcp-server")
+              python orchestrator.py deploy/mcp-server \
+                app_name=$APP_NAME \
+                source_dir=$SOURCE_DIR \
+                region=$REGION
+              ;;
+            
+            "deploy-worker")
+              python orchestrator.py deploy/worker \
+                worker_name=$WORKER_NAME \
+                source_dir=$SOURCE_DIR
+              ;;
+            
+            "restart-service")
+              if [ "$PLATFORM" = "fly.io" ]; then
+                python orchestrator.py maintain/restart-service \
+                  service_name=$SERVICE_NAME \
+                  platform=$PLATFORM
+              else
+                python orchestrator.py maintain/restart-service \
+                  service_name=$SERVICE_NAME \
+                  platform=$PLATFORM \
+                  host=$HOST
+              fi
+              ;;
+            
+            "health-check")
+              python orchestrator.py maintain/health-check \
+                service_group=$SERVICE_GROUP \
+                auto_restart=$AUTO_RESTART
+              ;;
+          esac
+      
+      - name: Commit operation results
+        if: always()
+        run: |
+          git config user.name "GARZA OS Operations"
+          git config user.email "bot@garzahive.com"
+          
+          git add infra/state/
+          git diff-index --quiet HEAD || git commit -m "chore: Manual operation executed - ${{ github.event.inputs.operation_type }} [skip ci]"
+          git push origin main
+      
+      - name: Send notification
+        if: always()
+        env:
+          OPERATION_STATUS: ${{ job.status }}
+          OPERATION_TYPE: ${{ github.event.inputs.operation_type }}
+        run: |
+          if [ "$OPERATION_STATUS" = "success" ]; then
+            echo "✅ Operation succeeded: $OPERATION_TYPE"
+          else
+            echo "❌ Operation failed: $OPERATION_TYPE"
+          fi

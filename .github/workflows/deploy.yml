@@ -1,55 +1,242 @@
-name: Deploy MCP Servers
+name: Deploy on Push
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
       - 'mcp-servers/**'
+      - 'workers/**'
+      - 'orchestrator/**'
+      - 'infra/**'
+  
   workflow_dispatch:
     inputs:
-      server:
-        description: 'Server to deploy (or "all")'
-        required: true
-        default: 'all'
+      force_deploy:
+        description: 'Force deploy all services'
+        required: false
+        default: 'false'
 
 jobs:
   detect-changes:
     runs-on: ubuntu-latest
     outputs:
-      servers: ${{ steps.changes.outputs.servers }}
+      mcp_servers: ${{ steps.changes.outputs.mcp_servers }}
+      workers: ${{ steps.changes.outputs.workers }}
+      orchestrator: ${{ steps.changes.outputs.orchestrator }}
+      infra: ${{ steps.changes.outputs.infra }}
+    
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 2
       
-      - id: changes
+      - name: Detect changes
+        id: changes
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ "${{ inputs.server }}" = "all" ]; then
-              SERVERS=$(ls -d mcp-servers/*/ 2>/dev/null | xargs -I{} basename {} | jq -R -s -c 'split("\n") | map(select(. != ""))')
-            else
-              SERVERS='["${{ inputs.server }}"]'
-            fi
+          if [ "${{ github.event.inputs.force_deploy }}" = "true" ]; then
+            echo "mcp_servers=true" >> $GITHUB_OUTPUT
+            echo "workers=true" >> $GITHUB_OUTPUT
+            echo "orchestrator=false" >> $GITHUB_OUTPUT
+            echo "infra=false" >> $GITHUB_OUTPUT
           else
-            SERVERS=$(git diff --name-only HEAD~1 HEAD | grep '^mcp-servers/' | cut -d'/' -f2 | sort -u | jq -R -s -c 'split("\n") | map(select(. != ""))')
+            # Check what changed in the push
+            git diff --name-only HEAD^ HEAD > changed_files.txt
+            
+            if grep -q "^mcp-servers/" changed_files.txt; then
+              echo "mcp_servers=true" >> $GITHUB_OUTPUT
+            else
+              echo "mcp_servers=false" >> $GITHUB_OUTPUT
+            fi
+            
+            if grep -q "^workers/" changed_files.txt; then
+              echo "workers=true" >> $GITHUB_OUTPUT
+            else
+              echo "workers=false" >> $GITHUB_OUTPUT
+            fi
+            
+            if grep -q "^orchestrator/" changed_files.txt; then
+              echo "orchestrator=true" >> $GITHUB_OUTPUT
+            else
+              echo "orchestrator=false" >> $GITHUB_OUTPUT
+            fi
+            
+            if grep -q "^infra/" changed_files.txt; then
+              echo "infra=true" >> $GITHUB_OUTPUT
+            else
+              echo "infra=false" >> $GITHUB_OUTPUT
+            fi
           fi
-          echo "servers=$SERVERS" >> $GITHUB_OUTPUT
 
-  deploy:
+  deploy-mcp-servers:
     needs: detect-changes
-    if: needs.detect-changes.outputs.servers != '[]'
+    if: needs.detect-changes.outputs.mcp_servers == 'true'
     runs-on: ubuntu-latest
+    
     strategy:
       matrix:
-        server: ${{ fromJson(needs.detect-changes.outputs.servers) }}
+        server:
+          - garza-home-mcp
+          - craft-mcp
+          - cf-mcp
+          - garza-hive-mcp
+          - last-rock-dev-mcp
+    
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       
-      - name: Deploy ${{ matrix.server }}
+      - name: Install dependencies
         run: |
-          cd mcp-servers/${{ matrix.server }}
-          flyctl deploy --remote-only
+          cd orchestrator
+          pip install -r requirements.txt
+      
+      - name: Check if server changed
+        id: check_changes
+        run: |
+          if [ "${{ github.event.inputs.force_deploy }}" = "true" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            git diff --name-only HEAD^ HEAD > changed_files.txt
+            if grep -q "^mcp-servers/${{ matrix.server }}/" changed_files.txt; then
+              echo "changed=true" >> $GITHUB_OUTPUT
+            else
+              echo "changed=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+      
+      - name: Deploy MCP server
+        if: steps.check_changes.outputs.changed == 'true'
         env:
+          SERVER: ${{ matrix.server }}
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          cd orchestrator
+          python orchestrator.py deploy/mcp-server \
+            app_name=$SERVER \
+            source_dir=../mcp-servers/$SERVER \
+            region=dfw
+      
+      - name: Commit deployment results
+        if: steps.check_changes.outputs.changed == 'true'
+        run: |
+          git config user.name "GARZA OS Deploy"
+          git config user.email "bot@garzahive.com"
+          
+          git add infra/state/
+          git diff-index --quiet HEAD || git commit -m "chore: Deploy ${{ matrix.server }} [skip ci]"
+          git push origin main
+
+  deploy-workers:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.workers == 'true'
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        worker:
+          - beeper-webhook
+          - voicenotes-webhook
+          - health-check-webhook
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          cd orchestrator
+          pip install -r requirements.txt
+      
+      - name: Check if worker changed
+        id: check_changes
+        run: |
+          if [ "${{ github.event.inputs.force_deploy }}" = "true" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            git diff --name-only HEAD^ HEAD > changed_files.txt
+            if grep -q "^workers/${{ matrix.worker }}/" changed_files.txt; then
+              echo "changed=true" >> $GITHUB_OUTPUT
+            else
+              echo "changed=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+      
+      - name: Deploy worker
+        if: steps.check_changes.outputs.changed == 'true'
+        env:
+          WORKER: ${{ matrix.worker }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          cd orchestrator
+          python orchestrator.py deploy/worker \
+            worker_name=$WORKER \
+            source_dir=../workers/$WORKER
+      
+      - name: Commit deployment results
+        if: steps.check_changes.outputs.changed == 'true'
+        run: |
+          git config user.name "GARZA OS Deploy"
+          git config user.email "bot@garzahive.com"
+          
+          git add infra/state/
+          git diff-index --quiet HEAD || git commit -m "chore: Deploy worker ${{ matrix.worker }} [skip ci]"
+          git push origin main
+
+  post-deploy-health-check:
+    needs: [deploy-mcp-servers, deploy-workers]
+    if: always() && (needs.deploy-mcp-servers.result == 'success' || needs.deploy-workers.result == 'success')
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          cd orchestrator
+          pip install -r requirements.txt
+      
+      - name: Wait for services to start
+        run: sleep 30
+      
+      - name: Run health check
+        run: |
+          cd orchestrator
+          python orchestrator.py maintain/health-check \
+            service_group=all \
+            auto_restart=false
+      
+      - name: Trigger auto-recovery on failures
+        if: failure()
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          event-type: deploy-failed
+          client-payload: |
+            {
+              "workflow_run_id": "${{ github.run_id }}",
+              "commit_sha": "${{ github.sha }}"
+            }

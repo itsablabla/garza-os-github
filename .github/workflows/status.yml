@@ -1,0 +1,203 @@
+name: Infrastructure Status
+
+on:
+  schedule:
+    # Every hour
+    - cron: '0 * * * *'
+  
+  workflow_dispatch:
+
+jobs:
+  generate-status:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests pyyaml python-dateutil
+      
+      - name: Generate status dashboard
+        run: |
+          python3 << 'EOF'
+          import json
+          import yaml
+          from datetime import datetime, timedelta
+          from pathlib import Path
+          
+          # Load state files
+          state_dir = Path("infra/state")
+          
+          deployments = {}
+          if (state_dir / "deployments.json").exists():
+              with open(state_dir / "deployments.json") as f:
+                  deployments = json.load(f)
+          
+          operations = {}
+          if (state_dir / "operations.json").exists():
+              with open(state_dir / "operations.json") as f:
+                  operations = json.load(f)
+          
+          # Load services registry
+          with open("infra/services.yml") as f:
+              services = yaml.safe_load(f)
+          
+          # Generate dashboard
+          dashboard = []
+          dashboard.append("# GARZA OS Infrastructure Status")
+          dashboard.append(f"\n**Last Updated:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n")
+          
+          # MCP Servers
+          dashboard.append("## MCP Servers\n")
+          dashboard.append("| Server | Platform | Status | Last Deploy | Health |")
+          dashboard.append("|--------|----------|--------|-------------|--------|")
+          
+          for group_name, group in services.get('service_groups', {}).items():
+              if 'mcp' in group_name.lower():
+                  for service in group.get('services', []):
+                      name = service['name']
+                      platform = service.get('platform', 'unknown')
+                      
+                      # Get deployment status
+                      status = "unknown"
+                      last_deploy = "never"
+                      health = "❓"
+                      
+                      if platform == 'fly.io' and 'fly_apps' in deployments:
+                          app_data = deployments['fly_apps'].get(name, {})
+                          status = app_data.get('status', 'unknown')
+                          last_deploy = app_data.get('last_deploy', 'never')
+                          
+                          if status == 'running':
+                              health = "✅"
+                          elif status == 'stopped':
+                              health = "🔴"
+                          else:
+                              health = "⚠️"
+                      
+                      dashboard.append(f"| {name} | {platform} | {status} | {last_deploy} | {health} |")
+          
+          # Workers
+          dashboard.append("\n## Cloudflare Workers\n")
+          dashboard.append("| Worker | Status | Last Deploy | Health |")
+          dashboard.append("|--------|--------|-------------|--------|")
+          
+          for group_name, group in services.get('service_groups', {}).items():
+              if 'worker' in group_name.lower():
+                  for service in group.get('services', []):
+                      name = service['name']
+                      
+                      status = "unknown"
+                      last_deploy = "never"
+                      health = "❓"
+                      
+                      if 'workers' in deployments:
+                          worker_data = deployments['workers'].get(name, {})
+                          status = worker_data.get('status', 'unknown')
+                          last_deploy = worker_data.get('last_deploy', 'never')
+                          
+                          if status == 'deployed':
+                              health = "✅"
+                          else:
+                              health = "⚠️"
+                      
+                      dashboard.append(f"| {name} | {status} | {last_deploy} | {health} |")
+          
+          # Recent Operations
+          dashboard.append("\n## Recent Operations (Last 10)\n")
+          dashboard.append("| Timestamp | Type | Target | Status |")
+          dashboard.append("|-----------|------|--------|--------|")
+          
+          recent_ops = operations.get('operations', [])[-10:]
+          for op in reversed(recent_ops):
+              timestamp = op.get('timestamp', 'unknown')
+              op_type = op.get('type', 'unknown')
+              target = op.get('target', 'unknown')
+              status = "✅" if op.get('status') == 'success' else "❌"
+              
+              dashboard.append(f"| {timestamp} | {op_type} | {target} | {status} |")
+          
+          # Operation Stats
+          dashboard.append("\n## Operation Statistics (Last 24h)\n")
+          
+          cutoff = datetime.utcnow() - timedelta(hours=24)
+          recent = [op for op in operations.get('operations', [])
+                    if datetime.fromisoformat(op.get('timestamp', '1970-01-01T00:00:00Z').replace('Z', ''))
+                    >= cutoff]
+          
+          total = len(recent)
+          success = sum(1 for op in recent if op.get('status') == 'success')
+          failed = total - success
+          success_rate = (success / total * 100) if total > 0 else 0
+          
+          dashboard.append(f"- **Total Operations:** {total}")
+          dashboard.append(f"- **Successful:** {success}")
+          dashboard.append(f"- **Failed:** {failed}")
+          dashboard.append(f"- **Success Rate:** {success_rate:.1f}%")
+          
+          # Write dashboard
+          with open("INFRASTRUCTURE_STATUS.md", "w") as f:
+              f.write("\n".join(dashboard))
+          
+          print("✅ Dashboard generated")
+          EOF
+      
+      - name: Commit status dashboard
+        run: |
+          git config user.name "GARZA OS Status"
+          git config user.email "bot@garzahive.com"
+          
+          git add INFRASTRUCTURE_STATUS.md
+          git diff-index --quiet HEAD || git commit -m "chore: Update infrastructure status dashboard [skip ci]"
+          git push origin main
+      
+      - name: Check for critical issues
+        run: |
+          python3 << 'EOF'
+          import json
+          from pathlib import Path
+          
+          # Load deployments
+          state_dir = Path("infra/state")
+          deployments = {}
+          if (state_dir / "deployments.json").exists():
+              with open(state_dir / "deployments.json") as f:
+                  deployments = json.load(f)
+          
+          # Check for stopped services
+          critical_issues = []
+          
+          if 'fly_apps' in deployments:
+              for app_name, app_data in deployments['fly_apps'].items():
+                  if app_data.get('status') == 'stopped':
+                      critical_issues.append(f"MCP Server down: {app_name}")
+          
+          if critical_issues:
+              print("🚨 CRITICAL ISSUES DETECTED:")
+              for issue in critical_issues:
+                  print(f"  - {issue}")
+              exit(1)
+          else:
+              print("✅ No critical issues")
+          EOF
+      
+      - name: Trigger auto-recovery
+        if: failure()
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          event-type: health-check-failed
+          client-payload: |
+            {
+              "service_group": "all",
+              "source": "status-dashboard"
+            }

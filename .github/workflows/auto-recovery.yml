@@ -1,0 +1,120 @@
+name: Auto-Recovery
+
+on:
+  repository_dispatch:
+    types: [health-check-failed, mcp-down, deploy-failed, ssh-lost]
+  
+  workflow_dispatch:
+    inputs:
+      recovery_type:
+        description: 'Recovery playbook to run'
+        required: true
+        type: choice
+        options:
+          - mcp-down
+          - ssh-lost
+          - deploy-failed
+      target:
+        description: 'Target service/host'
+        required: true
+      auto_redeploy:
+        description: 'Auto-redeploy if restart fails'
+        required: false
+        default: 'true'
+
+jobs:
+  auto-recover:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          cd orchestrator
+          pip install -r requirements.txt
+      
+      - name: Determine recovery playbook
+        id: recovery
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            case "${{ github.event.action }}" in
+              "health-check-failed")
+                echo "playbook=recovery/mcp-down" >> $GITHUB_OUTPUT
+                echo "target=mcp_core" >> $GITHUB_OUTPUT
+                ;;
+              "mcp-down")
+                echo "playbook=recovery/mcp-down" >> $GITHUB_OUTPUT
+                echo "target=${{ github.event.client_payload.mcp_server }}" >> $GITHUB_OUTPUT
+                ;;
+              "ssh-lost")
+                echo "playbook=recovery/ssh-lost" >> $GITHUB_OUTPUT
+                echo "target=${{ github.event.client_payload.host }}" >> $GITHUB_OUTPUT
+                ;;
+              "deploy-failed")
+                echo "playbook=recovery/deploy-failed" >> $GITHUB_OUTPUT
+                echo "target=${{ github.event.client_payload.service }}" >> $GITHUB_OUTPUT
+                ;;
+            esac
+          else
+            echo "playbook=recovery/${{ github.event.inputs.recovery_type }}" >> $GITHUB_OUTPUT
+            echo "target=${{ github.event.inputs.target }}" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Run recovery playbook
+        id: recover
+        env:
+          PLAYBOOK: ${{ steps.recovery.outputs.playbook }}
+          TARGET: ${{ steps.recovery.outputs.target }}
+          AUTO_REDEPLOY: ${{ github.event.inputs.auto_redeploy || 'true' }}
+        run: |
+          cd orchestrator
+          
+          # Execute recovery
+          if [[ "$PLAYBOOK" == *"mcp-down"* ]]; then
+            python orchestrator.py $PLAYBOOK \
+              mcp_server=$TARGET \
+              auto_redeploy=$AUTO_REDEPLOY
+          elif [[ "$PLAYBOOK" == *"ssh-lost"* ]]; then
+            python orchestrator.py $PLAYBOOK \
+              host=$TARGET \
+              critical=true
+          elif [[ "$PLAYBOOK" == *"deploy-failed"* ]]; then
+            python orchestrator.py $PLAYBOOK \
+              service=$TARGET \
+              auto_rollback=true
+          fi
+      
+      - name: Commit recovery results
+        if: always()
+        run: |
+          git config user.name "GARZA OS Auto-Recovery"
+          git config user.email "bot@garzahive.com"
+          
+          git add infra/state/
+          git diff-index --quiet HEAD || git commit -m "chore: Auto-recovery executed for ${{ steps.recovery.outputs.target }} [skip ci]"
+          git push origin main
+      
+      - name: Send notification
+        if: always()
+        env:
+          RECOVERY_STATUS: ${{ job.status }}
+          TARGET: ${{ steps.recovery.outputs.target }}
+          PLAYBOOK: ${{ steps.recovery.outputs.playbook }}
+        run: |
+          if [ "$RECOVERY_STATUS" = "success" ]; then
+            echo "✅ Recovery succeeded for $TARGET"
+          else
+            echo "❌ Recovery failed for $TARGET"
+          fi
+          
+          # TODO: Send to Beeper via webhook
+          # For now, just log to GitHub Actions

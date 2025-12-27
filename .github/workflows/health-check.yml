@@ -1,144 +1,73 @@
-name: Health Check All Services
+name: Scheduled Health Checks
 
 on:
-  workflow_dispatch:
   schedule:
-    # Run every 5 minutes
-    - cron: '*/5 * * * *'
+    # Every 15 minutes
+    - cron: '*/15 * * * *'
+  
+  workflow_dispatch:
+    inputs:
+      service_group:
+        description: 'Service group to check (mcp_core, workers, all)'
+        required: false
+        default: 'all'
+      auto_restart:
+        description: 'Auto-restart unhealthy services'
+        required: false
+        default: 'true'
 
 jobs:
   health-check:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
       
       - name: Install dependencies
         run: |
-          pip install pyyaml requests
+          cd orchestrator
+          pip install -r requirements.txt
       
-      - name: Run Health Checks
-        id: health
+      - name: Run health check
+        id: health_check
+        env:
+          SERVICE_GROUP: ${{ github.event.inputs.service_group || 'all' }}
+          AUTO_RESTART: ${{ github.event.inputs.auto_restart || 'true' }}
         run: |
-          python3 << 'PYEOF'
-          import json
-          import yaml
-          import requests
-          from datetime import datetime, timezone
-          
-          # Load services config
-          with open('infra/services.yml', 'r') as f:
-              services = yaml.safe_load(f)
-          
-          results = {
-              "timestamp": datetime.now(timezone.utc).isoformat(),
-              "checks": {},
-              "summary": {
-                  "total": 0,
-                  "healthy": 0,
-                  "unhealthy": 0,
-                  "unknown": 0
-              }
-          }
-          
-          # Check MCP servers
-          for name, config in services.get('mcp_servers', {}).items():
-              results["summary"]["total"] += 1
-              
-              if 'health_check' in config and 'endpoint' in config['health_check']:
-                  url = config['url'] + config['health_check']['endpoint']
-                  try:
-                      resp = requests.get(url, timeout=config['health_check'].get('timeout_seconds', 10))
-                      
-                      if resp.status_code == config['health_check'].get('expected_status', 200):
-                          results["checks"][name] = {
-                              "status": "healthy",
-                              "response_time_ms": int(resp.elapsed.total_seconds() * 1000)
-                          }
-                          results["summary"]["healthy"] += 1
-                          print(f"✅ {name}: healthy ({resp.status_code})")
-                      else:
-                          results["checks"][name] = {
-                              "status": "unhealthy",
-                              "error": f"Status {resp.status_code}"
-                          }
-                          results["summary"]["unhealthy"] += 1
-                          print(f"❌ {name}: unhealthy (status {resp.status_code})")
-                  
-                  except Exception as e:
-                      results["checks"][name] = {
-                          "status": "unhealthy",
-                          "error": str(e)
-                      }
-                      results["summary"]["unhealthy"] += 1
-                      print(f"❌ {name}: error - {e}")
-              else:
-                  results["checks"][name] = {"status": "unknown", "reason": "no_http_check"}
-                  results["summary"]["unknown"] += 1
-          
-          # Check Workers
-          for name, config in services.get('workers', {}).items():
-              results["summary"]["total"] += 1
-              
-              if 'health_check' in config and 'endpoint' in config['health_check']:
-                  url = config['url'] + config['health_check']['endpoint']
-                  try:
-                      resp = requests.get(url, timeout=5)
-                      
-                      if resp.status_code == 200:
-                          results["checks"][name] = {
-                              "status": "healthy",
-                              "response_time_ms": int(resp.elapsed.total_seconds() * 1000)
-                          }
-                          results["summary"]["healthy"] += 1
-                          print(f"✅ {name}: healthy")
-                      else:
-                          results["checks"][name] = {
-                              "status": "unhealthy",
-                              "error": f"Status {resp.status_code}"
-                          }
-                          results["summary"]["unhealthy"] += 1
-                          print(f"❌ {name}: unhealthy")
-                  
-                  except Exception as e:
-                      results["checks"][name] = {
-                          "status": "unhealthy",
-                          "error": str(e)
-                      }
-                      results["summary"]["unhealthy"] += 1
-                      print(f"❌ {name}: error - {e}")
-          
-          # Save results
-          with open('health-results.json', 'w') as f:
-              json.dump(results, f, indent=2)
-          
-          # Print summary
-          print(f"\n📊 Summary:")
-          print(f"  Total: {results['summary']['total']}")
-          print(f"  Healthy: {results['summary']['healthy']} ✅")
-          print(f"  Unhealthy: {results['summary']['unhealthy']} ❌")
-          print(f"  Unknown: {results['summary']['unknown']} ⚠️")
-          
-          # Set outputs
-          print(f"healthy={results['summary']['healthy']}")
-          print(f"unhealthy={results['summary']['unhealthy']}")
-          PYEOF
+          cd orchestrator
+          python orchestrator.py maintain/health-check \
+            service_group=$SERVICE_GROUP \
+            auto_restart=$AUTO_RESTART
       
-      - name: Upload Results
-        uses: actions/upload-artifact@v4
-        with:
-          name: health-check-results
-          path: health-results.json
-          retention-days: 7
+      - name: Commit health check results
+        if: always()
+        run: |
+          git config user.name "GARZA OS Health Check"
+          git config user.email "bot@garzahive.com"
+          
+          # Update timestamp
+          echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > infra/state/last_health_check.txt
+          
+          git add infra/state/
+          git diff-index --quiet HEAD || git commit -m "chore: Update health check timestamp [skip ci]"
+          git push origin main
       
-      - name: Alert on Failures
+      - name: Trigger auto-recovery on failures
         if: failure()
-        run: |
-          echo "🚨 Health check detected failures"
-          # Future: Send Pushcut notification
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          event-type: health-check-failed
+          client-payload: |
+            {
+              "service_group": "${{ env.SERVICE_GROUP }}",
+              "workflow_run_id": "${{ github.run_id }}"
+            }

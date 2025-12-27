@@ -1,0 +1,92 @@
+# GARZA OS Deployment Manifest
+# Single source of truth for what's running where
+# Last Updated: 2025-12-27
+
+fly_apps:
+  garza-home-mcp:
+    url: https://garza-home-mcp.fly.dev
+    domain: null
+    region: dfw
+    health: /health
+    purpose: Home automation, Bible, lightweight integrations
+    repo_path: null  # not in repo yet
+    last_deploy: 2025-12-26
+    
+  # Add more as deployed...
+
+cloudflare_workers:
+  jessica-cron:
+    url: https://jessica-cron.garzahive.workers.dev
+    trigger: cron
+    purpose: Automated Jessica messages
+    repo_path: /workers/jessica-cron
+    
+  beeper-scheduler:
+    url: https://beeper-scheduler.garzahive.workers.dev
+    purpose: Scheduled Beeper messages
+    repo_path: /workers/beeper-scheduler
+    
+  travis-friendship:
+    url: https://travis-friendship.garzahive.workers.dev
+    purpose: Travis relationship automation
+    repo_path: /workers/travis-friendship
+    
+  garza-youversion:
+    url: https://garza-youversion.garzahive.workers.dev
+    purpose: Bible verse of day
+    repo_path: /workers/garza-youversion
+
+mcp_servers:
+  cf-mcp:
+    host: Mac Mini (local)
+    ip: 192.168.4.81
+    port: 3333
+    role: Brain/orchestration
+    tools: shell_exec, ssh_exec, fs_*, beeper_*, unifi_*, computer_use_*
+    
+  garza-hive-mcp:
+    host: DigitalOcean VPS
+    ip: 64.23.180.137
+    status: PHASING OUT - use Fly.io
+    role: Legacy file ops
+    
+  garza-home-mcp:
+    host: Fly.io
+    url: https://garza-home-mcp.fly.dev/sse
+    role: Home automation hub
+    tools: abode_*, beeper_*, bible_*, unifi_*, graphiti_*
+
+  n8n-mcp:
+    host: n8n server
+    url: https://n8n-mcp.garzahive.com/sse
+    role: Workflow automation
+    tools: n8n_*, docker_*
+
+vps_servers:
+  garzahive-01:
+    ip: 64.23.180.137
+    provider: DigitalOcean
+    status: PHASING OUT
+    
+  boulder-mac:
+    ip: 192.168.4.81
+    location: Boulder home
+    role: Primary compute
+
+domains:
+  garzahive.com:
+    registrar: Cloudflare
+    zone_id: 9c70206ce57d506d1d4e9397f6bb8ebc
+    
+  nomadinternet.com:
+    registrar: Cloudflare
+    purpose: Business
+
+stacks:
+  boulder-home:
+    location: Boulder Mac Mini
+    services:
+      - Home Assistant
+      - Mosquitto MQTT
+      - Computer Use containers
+    repo_path: /stacks/boulder-home

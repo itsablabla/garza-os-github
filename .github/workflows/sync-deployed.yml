@@ -5,11 +5,16 @@ on:
     - cron: '0 */6 * * *'  # Every 6 hours
   workflow_dispatch:  # Manual trigger
 
+permissions:
+  contents: write  # Required to push commits
+
 jobs:
   health-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Install yq
         run: |
@@ -65,11 +70,17 @@ jobs:
         run: |
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           yq -i ".metadata.last_health_check = \"$TIMESTAMP\"" DEPLOYED.yml
+          cat DEPLOYED.yml | grep last_health_check
           
-      - name: Commit status update
+      - name: Commit and push
         run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add DEPLOYED.yml
-          git diff --staged --quiet || git commit -m "chore: Update health check timestamp"
-          git push || true
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: Update health check timestamp [skip ci]"
+            git push
+            echo "✓ Pushed timestamp update"
+          fi

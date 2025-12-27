@@ -1,0 +1,128 @@
+# Service Restart Operation
+# Template for restarting services across platforms
+# Usage: Load template, specify service, execute
+
+operation:
+  name: "restart_service"
+  type: "maintain"
+  description: "Restart a service (Fly app, Docker container, or system service)"
+
+parameters:
+  service_name: ""          # e.g., "garza-home-mcp"
+  platform: ""              # "fly", "docker", "systemd"
+  host: ""                  # Required for docker/systemd (e.g., "garzahive")
+  force: false              # Force kill if graceful fails
+
+prerequisites:
+  - check: "service not locked"
+    command: "test ! -f infra/state/locks/${service_name}.lock"
+    
+  - check: "service exists in registry"
+    command: "grep -q '${service_name}' infra/services.yml"
+
+steps:
+  - name: "acquire_lock"
+    type: "lock"
+    resource: "${service_name}"
+    metadata:
+      operator: "claude"
+      operation: "restart"
+    
+  - name: "check_service_platform"
+    type: "service_lookup"
+    file: "infra/services.yml"
+    service: "${service_name}"
+    get: "platform"
+    
+  - name: "restart_fly_app"
+    type: "conditional"
+    condition: "${platform} == 'fly.io'"
+    steps:
+      - type: "ssh_command"
+        host: "mac"
+        command: "flyctl apps restart ${service_name}"
+        timeout: 60
+        
+  - name: "restart_docker_container"
+    type: "conditional"
+    condition: "${platform} == 'docker'"
+    steps:
+      - type: "ssh_command"
+        host: "${host}"
+        command: "docker restart ${service_name}"
+        timeout: 30
+        
+  - name: "restart_systemd_service"
+    type: "conditional"
+    condition: "${platform} == 'systemd'"
+    steps:
+      - type: "ssh_command"
+        host: "${host}"
+        command: "systemctl restart ${service_name}"
+        timeout: 30
+    
+  - name: "wait_for_startup"
+    type: "delay"
+    seconds: 10
+    
+  - name: "verify_service_up"
+    type: "health_check"
+    service: "${service_name}"
+    from_registry: true
+    retries: 5
+    retry_delay: 10
+    
+  - name: "update_state"
+    type: "state_update"
+    file: "infra/state/deployments.json"
+    updates:
+      ".*.${service_name}.status": "running"
+      ".*.${service_name}.last_restart": "${current_timestamp}"
+    
+  - name: "release_lock"
+    type: "unlock"
+    resource: "${service_name}"
+    
+  - name: "log_operation"
+    type: "operation_log"
+    file: "infra/state/operations.json"
+    entry:
+      type: "restart"
+      target: "${service_name}"
+      status: "success"
+      timestamp: "${current_timestamp}"
+
+rollback:
+  enabled: false  # Can't rollback a restart
+  on_failure:
+    - name: "force_restart_if_enabled"
+      type: "conditional"
+      condition: "${force} == true"
+      steps:
+        - type: "ssh_command"
+          host: "${host}"
+          command: "docker kill ${service_name} && docker start ${service_name}"
+          platform_specific: "docker"
+          
+    - name: "release_lock"
+      type: "unlock"
+      resource: "${service_name}"
+      force: true
+      
+    - name: "notify_failure"
+      type: "notification"
+      channel: "beeper"
+      message: "✗ Failed to restart ${service_name}: ${error_message}"
+
+notifications:
+  on_success:
+    - channel: "beeper"
+      message: "✓ ${service_name} restarted successfully"
+      
+  on_failure:
+    - channel: "beeper"
+      message: "✗ ${service_name} restart failed: ${error_message}"
+
+# Example usage:
+# restart_service(service_name="garza-home-mcp", platform="fly.io")
+# restart_service(service_name="mosquitto-mqtt", platform="docker", host="boulder")

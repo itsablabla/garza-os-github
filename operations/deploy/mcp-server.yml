@@ -1,0 +1,139 @@
+# MCP Server Deployment Operation
+# Template for deploying MCP servers to Fly.io
+# Usage: Load this template, fill parameters, execute
+
+operation:
+  name: "deploy_mcp_server"
+  type: "deploy"
+  platform: "fly.io"
+  description: "Deploy or update MCP server to Fly.io"
+
+parameters:
+  # Required
+  app_name: ""              # e.g., "garza-home-mcp"
+  source_dir: ""            # e.g., "/mcp-servers/garza-home-mcp"
+  
+  # Optional
+  region: "dfw"             # Default to Dallas
+  vm_size: "shared-cpu-1x"  # or "shared-cpu-2x", "dedicated-cpu-1x"
+  auto_stop: true           # Auto-stop when idle
+  min_machines: 1
+  max_machines: 1
+
+prerequisites:
+  - check: "flyctl installed"
+    command: "which flyctl"
+    expected: "flyctl"
+    
+  - check: "flyctl authenticated"
+    command: "flyctl auth whoami"
+    expected_contains: "@"
+    
+  - check: "source directory exists"
+    command: "test -d ${source_dir}"
+    
+  - check: "app not locked"
+    command: "test ! -f infra/state/locks/${app_name}.lock"
+
+steps:
+  - name: "acquire_lock"
+    type: "lock"
+    resource: "${app_name}"
+    metadata:
+      operator: "claude"
+      operation: "deploy"
+    
+  - name: "pull_latest_state"
+    type: "git"
+    command: "git pull origin main"
+    
+  - name: "check_current_state"
+    type: "state_check"
+    file: "infra/state/deployments.json"
+    path: ".fly_apps.${app_name}"
+    action: "read"
+    
+  - name: "build_and_deploy"
+    type: "ssh_command"
+    host: "mac"
+    directory: "${source_dir}"
+    commands:
+      - "npm install --production"
+      - "flyctl deploy --ha=false --region=${region} --vm-size=${vm_size}"
+    timeout: 300
+    
+  - name: "verify_deployment"
+    type: "health_check"
+    method: "http"
+    url: "https://${app_name}.fly.dev/health"
+    expected_status: 200
+    retries: 5
+    retry_delay: 10
+    
+  - name: "update_state"
+    type: "state_update"
+    file: "infra/state/deployments.json"
+    updates:
+      ".fly_apps.${app_name}.status": "running"
+      ".fly_apps.${app_name}.last_deploy": "${current_date}"
+      ".fly_apps.${app_name}.region": "${region}"
+    
+  - name: "commit_state"
+    type: "git"
+    commands:
+      - "git add infra/state/deployments.json"
+      - "git commit -m 'Deploy ${app_name} to ${region}'"
+      - "git push origin main"
+    
+  - name: "release_lock"
+    type: "unlock"
+    resource: "${app_name}"
+    
+  - name: "log_operation"
+    type: "operation_log"
+    file: "infra/state/operations.json"
+    entry:
+      type: "deploy"
+      target: "${app_name}"
+      status: "success"
+      timestamp: "${current_timestamp}"
+
+rollback:
+  enabled: true
+  on_failure:
+    - name: "rollback_deployment"
+      type: "ssh_command"
+      host: "mac"
+      directory: "${source_dir}"
+      command: "flyctl releases rollback"
+      
+    - name: "update_state_failed"
+      type: "state_update"
+      file: "infra/state/deployments.json"
+      updates:
+        ".fly_apps.${app_name}.status": "deploy_failed"
+        
+    - name: "release_lock"
+      type: "unlock"
+      resource: "${app_name}"
+      force: true
+      
+    - name: "notify_failure"
+      type: "notification"
+      channel: "beeper"
+      message: "Deploy failed for ${app_name}: ${error_message}"
+
+notifications:
+  on_success:
+    - channel: "beeper"
+      message: "✓ ${app_name} deployed to ${region}"
+      
+  on_failure:
+    - channel: "beeper"
+      message: "✗ ${app_name} deploy failed: ${error_message}"
+
+# Example execution:
+# 1. Load template
+# 2. Fill parameters: app_name="garza-home-mcp", source_dir="/Users/customer/garza-os-github/mcp-servers/garza-home-mcp"
+# 3. Execute steps in order
+# 4. On failure, run rollback steps

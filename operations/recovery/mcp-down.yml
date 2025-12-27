@@ -1,0 +1,146 @@
+# MCP Server Down - Recovery Playbook
+# Automatic recovery steps when MCP server becomes unavailable
+# Triggered by: health check failure, manual invocation
+
+operation:
+  name: "recover_mcp_down"
+  type: "recovery"
+  description: "Recover from MCP server failure"
+
+parameters:
+  mcp_server: ""            # e.g., "garza-home-mcp"
+  auto_redeploy: true       # Automatically redeploy if restart fails
+
+triggers:
+  - health_check_failed:
+      service: "${mcp_server}"
+      consecutive_failures: 2
+      
+  - manual:
+      description: "Manual recovery trigger"
+
+steps:
+  - name: "verify_failure"
+    type: "health_check"
+    service: "${mcp_server}"
+    from_registry: true
+    retries: 3
+    retry_delay: 5
+    continue_on_failure: true
+    
+  - name: "check_if_still_down"
+    type: "conditional"
+    condition: "${health_status} == 'failed'"
+    steps:
+    
+      # Recovery Step 1: Simple restart
+      - name: "attempt_restart"
+        type: "load_operation"
+        template: "operations/maintain/restart-service.yml"
+        parameters:
+          service_name: "${mcp_server}"
+        timeout: 120
+        continue_on_failure: true
+        
+      - name: "wait_for_restart"
+        type: "delay"
+        seconds: 15
+        
+      - name: "verify_after_restart"
+        type: "health_check"
+        service: "${mcp_server}"
+        from_registry: true
+        retries: 5
+        retry_delay: 10
+        continue_on_failure: true
+        
+      # Recovery Step 2: Check logs for errors
+      - name: "check_logs_if_still_down"
+        type: "conditional"
+        condition: "${health_status} == 'failed'"
+        steps:
+          - type: "ssh_command"
+            host: "mac"
+            command: "flyctl logs --app ${mcp_server} --limit 50"
+            output: "recent_logs"
+            timeout: 30
+            
+          - type: "log_analysis"
+            logs: "${recent_logs}"
+            patterns:
+              - "Error:"
+              - "Exception:"
+              - "ECONNREFUSED"
+              - "timeout"
+            output: "error_summary"
+            
+      # Recovery Step 3: Redeploy if auto-enabled
+      - name: "redeploy_if_enabled"
+        type: "conditional"
+        condition: "${health_status} == 'failed' AND ${auto_redeploy} == true"
+        steps:
+          - type: "notification"
+            channel: "beeper"
+            message: "⚠️ ${mcp_server} restart failed, attempting redeploy"
+            
+          - type: "load_operation"
+            template: "operations/deploy/mcp-server.yml"
+            parameters:
+              app_name: "${mcp_server}"
+              source_dir: "/Users/customer/garza-os-github/mcp-servers/${mcp_server}"
+            timeout: 300
+            
+          - name: "verify_after_redeploy"
+            type: "health_check"
+            service: "${mcp_server}"
+            from_registry: true
+            retries: 5
+            retry_delay: 10
+            
+      # Recovery Step 4: Alert if all failed
+      - name: "alert_if_still_down"
+        type: "conditional"
+        condition: "${health_status} == 'failed'"
+        steps:
+          - type: "notification"
+            channel: "beeper"
+            priority: "high"
+            message: |
+              🚨 MCP RECOVERY FAILED: ${mcp_server}
+              
+              All recovery attempts exhausted:
+              ✗ Restart failed
+              ✗ Redeploy failed
+              
+              Error summary: ${error_summary}
+              
+              Manual intervention required
+              Check: https://fly.io/apps/${mcp_server}
+              
+          - type: "state_update"
+            file: "infra/state/deployments.json"
+            updates:
+              ".fly_apps.${mcp_server}.status": "recovery_failed"
+              ".fly_apps.${mcp_server}.last_recovery_attempt": "${current_timestamp}"
+    
+  - name: "success_notification"
+    type: "conditional"
+    condition: "${health_status} == 'ok'"
+    steps:
+      - type: "notification"
+        channel: "beeper"
+        message: "✓ ${mcp_server} recovered successfully"
+        
+      - type: "state_update"
+        file: "infra/state/deployments.json"
+        updates:
+          ".fly_apps.${mcp_server}.status": "running"
+          ".fly_apps.${mcp_server}.last_recovery": "${current_timestamp}"
+
+recovery_stats:
+  success_rate_target: 0.95
+  max_recovery_time: 300  # 5 minutes
+  escalation_threshold: 3  # Escalate after 3 consecutive failures
+
+# Example execution:
+# recover_mcp_down(mcp_server="garza-home-mcp", auto_redeploy=true)

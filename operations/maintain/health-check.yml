@@ -1,0 +1,136 @@
+# Health Check Operation
+# Template for checking service health across all platforms
+# Usage: Load template, specify services or groups, execute
+
+operation:
+  name: "health_check"
+  type: "maintain"
+  description: "Check health of services and update state"
+
+parameters:
+  # Specify either individual services or a group
+  services: []              # e.g., ["garza-home-mcp", "lrlab-mcp"]
+  service_group: ""         # e.g., "mcp_core" from services.yml
+  
+  # Options
+  auto_restart: false       # Restart unhealthy services
+  alert_threshold: 2        # Alert after N consecutive failures
+
+prerequisites:
+  - check: "services file exists"
+    command: "test -f infra/services.yml"
+
+steps:
+  - name: "load_services"
+    type: "conditional"
+    condition: "${service_group} != ''"
+    steps:
+      - type: "service_group_lookup"
+        file: "infra/services.yml"
+        group: "${service_group}"
+        output: "services"
+    
+  - name: "health_check_loop"
+    type: "foreach"
+    items: "${services}"
+    as: "service"
+    parallel: true
+    max_concurrent: 10
+    steps:
+      - name: "lookup_health_check"
+        type: "service_lookup"
+        file: "infra/services.yml"
+        service: "${service}"
+        get: "health_check"
+        
+      - name: "run_http_check"
+        type: "conditional"
+        condition: "${health_check.method} == 'http'"
+        steps:
+          - type: "http_request"
+            url: "${health_check.url}"
+            expected_status: "${health_check.expected_status}"
+            timeout: "${health_check.timeout}"
+            output: "health_status"
+            
+      - name: "run_ssh_check"
+        type: "conditional"
+        condition: "${health_check.method} == 'ssh_command'"
+        steps:
+          - type: "ssh_command"
+            host: "${health_check.host}"
+            command: "${health_check.command}"
+            expected_output: "${health_check.expected_output}"
+            timeout: "${health_check.timeout}"
+            output: "health_status"
+            
+      - name: "record_result"
+        type: "state_update"
+        file: "infra/state/deployments.json"
+        updates:
+          ".*.${service}.last_health_check": "${current_timestamp}"
+          ".*.${service}.health_status": "${health_status}"
+          
+      - name: "auto_restart_if_enabled"
+        type: "conditional"
+        condition: "${auto_restart} == true AND ${health_status} == 'failed'"
+        steps:
+          - type: "load_operation"
+            template: "operations/maintain/restart-service.yml"
+            parameters:
+              service_name: "${service}"
+            execute: true
+            
+  - name: "generate_report"
+    type: "aggregate_results"
+    format: "markdown"
+    output: "health_report"
+    
+  - name: "check_critical_failures"
+    type: "filter"
+    condition: "${health_status} == 'failed' AND ${critical} == true"
+    output: "critical_failures"
+    
+  - name: "alert_if_critical_down"
+    type: "conditional"
+    condition: "${critical_failures.length} > 0"
+    steps:
+      - type: "notification"
+        channel: "beeper"
+        priority: "high"
+        message: "🚨 Critical services down: ${critical_failures}"
+
+notifications:
+  on_complete:
+    - channel: "log"
+      message: "Health check complete: ${health_report}"
+      
+  on_critical_failure:
+    - channel: "beeper"
+      message: "🚨 Critical services down: ${critical_failures}"
+
+results:
+  report_format: |
+    # Health Check Report
+    Timestamp: ${current_timestamp}
+    
+    ## Summary
+    - Total: ${total_services}
+    - Healthy: ${healthy_count}
+    - Unhealthy: ${unhealthy_count}
+    - Critical Down: ${critical_failures.length}
+    
+    ## Details
+    ${service_details}
+    
+  save_to: "health-reports/${current_date}.md"
+
+# Example usage:
+# Check all MCP servers:
+#   health_check(service_group="mcp_core")
+#
+# Check specific services:
+#   health_check(services=["garza-home-mcp", "lrlab-mcp", "garza-ears"])
+#
+# Check and auto-restart:
+#   health_check(service_group="mcp_core", auto_restart=true)

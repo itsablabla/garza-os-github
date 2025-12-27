@@ -1,0 +1,138 @@
+# Cloudflare Worker Deployment Operation
+# Template for deploying CF Workers
+# Usage: Load this template, fill parameters, execute
+
+operation:
+  name: "deploy_cloudflare_worker"
+  type: "deploy"
+  platform: "cloudflare_workers"
+  description: "Deploy or update Cloudflare Worker"
+
+parameters:
+  # Required
+  worker_name: ""           # e.g., "voicenotes-webhook"
+  source_dir: ""            # e.g., "/workers/voicenotes-webhook"
+  
+  # Optional
+  env: "production"         # or "staging"
+  compatibility_date: ""    # e.g., "2024-12-01" (defaults to today)
+
+prerequisites:
+  - check: "wrangler installed"
+    command: "which wrangler"
+    expected: "wrangler"
+    
+  - check: "wrangler authenticated"
+    command: "wrangler whoami"
+    expected_contains: "@"
+    
+  - check: "source directory exists"
+    command: "test -d ${source_dir}"
+    
+  - check: "wrangler.toml exists"
+    command: "test -f ${source_dir}/wrangler.toml"
+    
+  - check: "worker not locked"
+    command: "test ! -f infra/state/locks/${worker_name}.lock"
+
+steps:
+  - name: "acquire_lock"
+    type: "lock"
+    resource: "${worker_name}"
+    metadata:
+      operator: "claude"
+      operation: "deploy"
+    
+  - name: "pull_latest_state"
+    type: "git"
+    command: "git pull origin main"
+    
+  - name: "check_current_state"
+    type: "state_check"
+    file: "infra/state/deployments.json"
+    path: ".cloudflare_workers.${worker_name}"
+    action: "read"
+    
+  - name: "install_dependencies"
+    type: "ssh_command"
+    host: "mac"
+    directory: "${source_dir}"
+    command: "npm install"
+    timeout: 120
+    
+  - name: "deploy_worker"
+    type: "ssh_command"
+    host: "mac"
+    directory: "${source_dir}"
+    command: "wrangler deploy --env ${env}"
+    timeout: 120
+    
+  - name: "verify_deployment"
+    type: "health_check"
+    method: "http"
+    url: "https://${worker_name}.garzahive.workers.dev/health"
+    expected_status: 200
+    retries: 5
+    retry_delay: 5
+    optional: true  # Some workers don't have health endpoints
+    
+  - name: "update_state"
+    type: "state_update"
+    file: "infra/state/deployments.json"
+    updates:
+      ".cloudflare_workers.${worker_name}.status": "deployed"
+      ".cloudflare_workers.${worker_name}.last_deploy": "${current_date}"
+    
+  - name: "commit_state"
+    type: "git"
+    commands:
+      - "git add infra/state/deployments.json"
+      - "git commit -m 'Deploy CF Worker: ${worker_name}'"
+      - "git push origin main"
+    
+  - name: "release_lock"
+    type: "unlock"
+    resource: "${worker_name}"
+    
+  - name: "log_operation"
+    type: "operation_log"
+    file: "infra/state/operations.json"
+    entry:
+      type: "deploy"
+      target: "${worker_name}"
+      platform: "cloudflare_workers"
+      status: "success"
+      timestamp: "${current_timestamp}"
+
+rollback:
+  enabled: false  # CF Workers don't have rollback - must redeploy previous version
+  on_failure:
+    - name: "update_state_failed"
+      type: "state_update"
+      file: "infra/state/deployments.json"
+      updates:
+        ".cloudflare_workers.${worker_name}.status": "deploy_failed"
+        
+    - name: "release_lock"
+      type: "unlock"
+      resource: "${worker_name}"
+      force: true
+      
+    - name: "notify_failure"
+      type: "notification"
+      channel: "beeper"
+      message: "✗ CF Worker ${worker_name} deploy failed: ${error_message}"
+
+notifications:
+  on_success:
+    - channel: "beeper"
+      message: "✓ CF Worker ${worker_name} deployed"
+      
+  on_failure:
+    - channel: "beeper"
+      message: "✗ CF Worker ${worker_name} deploy failed: ${error_message}"
+
+# Example execution:
+# 1. Load template
+# 2. Fill: worker_name="voicenotes-webhook", source_dir="/Users/customer/garza-os-github/workers/voicenotes-webhook"
+# 3. Execute steps

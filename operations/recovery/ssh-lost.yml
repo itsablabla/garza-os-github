@@ -1,0 +1,167 @@
+# SSH Connection Lost - Recovery Playbook
+# Automatic recovery when SSH to a host fails
+# Uses multi-path fallback from hosts.yml
+
+operation:
+  name: "recover_ssh_lost"
+  type: "recovery"
+  description: "Recover SSH connectivity using fallback paths"
+
+parameters:
+  host: ""                  # e.g., "garzahive"
+  critical: false           # Is this a critical host?
+
+triggers:
+  - ssh_connection_failed:
+      host: "${host}"
+      
+  - manual:
+      description: "Manual SSH recovery trigger"
+
+steps:
+  - name: "run_ssh_test"
+    type: "script"
+    script: "scripts/ssh/connect.sh"
+    args: ["${host}", "echo OK"]
+    timeout: 30
+    continue_on_failure: true
+    output: "connection_status"
+    
+  - name: "check_if_recovered"
+    type: "conditional"
+    condition: "${connection_status} == 'success'"
+    steps:
+      - type: "notification"
+        channel: "log"
+        message: "✓ SSH to ${host} recovered via fallback path"
+        
+      - type: "state_update"
+        file: "infra/state/deployments.json"
+        updates:
+          ".vps_servers.${host}.status": "running"
+          ".vps_servers.${host}.last_connection": "${current_timestamp}"
+      exit: true
+    
+  # If still failing, run auto-recovery
+  - name: "attempt_auto_recovery"
+    type: "script"
+    script: "scripts/ssh/auto-recover.sh"
+    args: ["${host}"]
+    timeout: 120
+    continue_on_failure: true
+    output: "recovery_result"
+    
+  - name: "verify_after_recovery"
+    type: "script"
+    script: "scripts/ssh/connect.sh"
+    args: ["${host}", "uptime"]
+    timeout: 30
+    continue_on_failure: true
+    output: "final_status"
+    
+  # Host-specific recovery actions
+  - name: "garzahive_specific"
+    type: "conditional"
+    condition: "${host} == 'garzahive' AND ${final_status} != 'success'"
+    steps:
+      - type: "notification"
+        channel: "beeper"
+        message: |
+          ⚠️ GarzaHive SSH lost - trying DO API reboot
+          
+      - type: "external_api"
+        api: "digitalocean"
+        action: "reboot_droplet"
+        droplet_name: "garzahive-02"
+        wait_for_completion: true
+        timeout: 120
+        
+      - type: "delay"
+        seconds: 60
+        description: "Wait for droplet to boot"
+        
+      - type: "script"
+        script: "scripts/ssh/connect.sh"
+        args: ["${host}", "uptime"]
+        retries: 5
+        retry_delay: 15
+        output: "final_status"
+  
+  - name: "mac_specific"
+    type: "conditional"
+    condition: "${host} == 'mac' AND ${final_status} != 'success'"
+    steps:
+      - type: "notification"
+        channel: "beeper"
+        message: |
+          ⚠️ Mac SSH lost - this is the local host
+          
+          Issue: Cloudflare Tunnel may be down
+          
+          Recovery: CF MCP shell_exec should still work
+          Check: cloudflared tunnel info
+          
+  - name: "boulder_specific"
+    type: "conditional"
+    condition: "${host} == 'boulder' AND ${final_status} != 'success'"
+    steps:
+      - type: "notification"
+        channel: "beeper"
+        message: |
+          ⚠️ Boulder SSH lost
+          
+          Trying local network fallback (192.168.4.81)
+          
+      - type: "ssh_command"
+        host: "192.168.4.81"
+        user: "jadengarza"
+        command: "uptime"
+        timeout: 10
+        output: "lan_status"
+        continue_on_failure: true
+        
+      - type: "conditional"
+        condition: "${lan_status} == 'success'"
+        steps:
+          - type: "notification"
+            channel: "beeper"
+            message: "✓ Boulder reachable on LAN - Cloudflare Tunnel down"
+  
+  # Final status check and alerting
+  - name: "check_final_status"
+    type: "conditional"
+    condition: "${final_status} == 'success'"
+    steps:
+      - type: "notification"
+        channel: "beeper"
+        message: "✓ SSH recovered to ${host}"
+        
+      - type: "state_update"
+        file: "infra/state/deployments.json"
+        updates:
+          ".vps_servers.${host}.status": "running"
+          ".vps_servers.${host}.last_recovery": "${current_timestamp}"
+    else:
+      - type: "notification"
+        channel: "beeper"
+        priority: "${critical ? 'high' : 'normal'}"
+        message: |
+          🚨 SSH RECOVERY FAILED: ${host}
+          
+          All recovery methods exhausted:
+          ✗ Direct connection failed
+          ✗ Fallback paths failed
+          ✗ Auto-recovery failed
+          ✗ Host-specific recovery failed
+          
+          Manual intervention required
+          
+      - type: "state_update"
+        file: "infra/state/deployments.json"
+        updates:
+          ".vps_servers.${host}.status": "unreachable"
+          ".vps_servers.${host}.last_recovery_attempt": "${current_timestamp}"
+
+# Example execution:
+# recover_ssh_lost(host="garzahive", critical=true)
+# recover_ssh_lost(host="boulder", critical=false)

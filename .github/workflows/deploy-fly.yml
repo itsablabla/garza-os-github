@@ -1,0 +1,59 @@
+name: Deploy to Fly.io
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'mcp-servers/garza-home-mcp/**'
+      - 'mcp-servers/beeper-matrix-mcp/**'
+  workflow_dispatch:
+    inputs:
+      server:
+        description: 'Which server to deploy'
+        required: true
+        type: choice
+        options:
+          - garza-home-mcp
+          - beeper-matrix-mcp
+          - both
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      garza-home: ${{ steps.filter.outputs.garza-home }}
+      beeper-matrix: ${{ steps.filter.outputs.beeper-matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            garza-home:
+              - 'mcp-servers/garza-home-mcp/**'
+            beeper-matrix:
+              - 'mcp-servers/beeper-matrix-mcp/**'
+
+  deploy-garza-home:
+    needs: changes
+    if: needs.changes.outputs.garza-home == 'true' || github.event.inputs.server == 'garza-home-mcp' || github.event.inputs.server == 'both'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --remote-only
+        working-directory: mcp-servers/garza-home-mcp
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  deploy-beeper-matrix:
+    needs: changes
+    if: needs.changes.outputs.beeper-matrix == 'true' || github.event.inputs.server == 'beeper-matrix-mcp' || github.event.inputs.server == 'both'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --remote-only
+        working-directory: mcp-servers/beeper-matrix-mcp
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

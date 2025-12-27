@@ -1,6 +1,7 @@
 name = "garza-log-aggregator"
 main = "index.js"
 compatibility_date = "2024-01-01"
+account_id = "14adde85f76060c6edef6f3239d36e6a"
 
 [vars]
 ENVIRONMENT = "production"

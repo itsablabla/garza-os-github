@@ -47,6 +47,8 @@ async def init_db():
     os.makedirs("/data", exist_ok=True)
     os.makedirs(STORE_PATH, exist_ok=True)
     db = await aiosqlite.connect(DB_PATH)
+    
+    # Create tables if they don't exist
     await db.executescript("""
         CREATE TABLE IF NOT EXISTS rooms (
             room_id TEXT PRIMARY KEY,
@@ -61,10 +63,6 @@ async def init_db():
             sender TEXT,
             body TEXT,
             msg_type TEXT,
-            mxc_url TEXT,
-            mimetype TEXT,
-            filename TEXT,
-            file_size INTEGER,
             timestamp INTEGER,
             created_at TEXT,
             FOREIGN KEY (room_id) REFERENCES rooms(room_id)
@@ -72,9 +70,23 @@ async def init_db():
         CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_id);
         CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp DESC);
         CREATE INDEX IF NOT EXISTS idx_messages_body ON messages(body);
-        CREATE INDEX IF NOT EXISTS idx_messages_mxc ON messages(mxc_url);
     """)
     await db.commit()
+    
+    # Schema migration: add media columns if they don't exist
+    cursor = await db.execute("PRAGMA table_info(messages)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    
+    if 'mxc_url' not in columns:
+        logger.info("Migrating schema: adding media columns...")
+        await db.execute("ALTER TABLE messages ADD COLUMN mxc_url TEXT")
+        await db.execute("ALTER TABLE messages ADD COLUMN mimetype TEXT")
+        await db.execute("ALTER TABLE messages ADD COLUMN filename TEXT")
+        await db.execute("ALTER TABLE messages ADD COLUMN file_size INTEGER")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_messages_mxc ON messages(mxc_url)")
+        await db.commit()
+        logger.info("Schema migration complete")
+    
     logger.info("Database initialized")
 
 

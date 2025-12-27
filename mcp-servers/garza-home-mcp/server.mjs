@@ -206,6 +206,13 @@ const TOOLS = [
   { name: 'search_protonmail', description: 'Search inbox', inputSchema: { type: 'object', properties: { criteria: { type: 'string' }, limit: { type: 'number' } }, required: [] } },
   { name: 'read_protonmail', description: 'Read message by UID', inputSchema: { type: 'object', properties: { uid: { type: 'number' } }, required: ['uid'] } },
   { name: 'send_protonmail', description: 'Send email', inputSchema: { type: 'object', properties: { to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' }, cc: { type: 'string' }, bcc: { type: 'string' } }, required: ['to', 'subject', 'body'] } },
+  { name: 'list_protonmail_folders', description: 'List all folders/labels', inputSchema: { type: 'object', properties: {}, required: [] } },
+  { name: 'archive_protonmail', description: 'Archive email (move to Archive)', inputSchema: { type: 'object', properties: { uid: { type: 'number' }, folder: { type: 'string', default: 'INBOX' } }, required: ['uid'] } },
+  { name: 'delete_protonmail', description: 'Delete email (move to Trash)', inputSchema: { type: 'object', properties: { uid: { type: 'number' }, folder: { type: 'string', default: 'INBOX' } }, required: ['uid'] } },
+  { name: 'mark_protonmail', description: 'Mark read/unread', inputSchema: { type: 'object', properties: { uid: { type: 'number' }, read: { type: 'boolean', default: true }, folder: { type: 'string', default: 'INBOX' } }, required: ['uid'] } },
+  { name: 'star_protonmail', description: 'Star/unstar email', inputSchema: { type: 'object', properties: { uid: { type: 'number' }, starred: { type: 'boolean', default: true }, folder: { type: 'string', default: 'INBOX' } }, required: ['uid'] } },
+  { name: 'move_protonmail', description: 'Move to folder', inputSchema: { type: 'object', properties: { uid: { type: 'number' }, destFolder: { type: 'string' }, sourceFolder: { type: 'string', default: 'INBOX' } }, required: ['uid', 'destFolder'] } },
+  { name: 'bulk_protonmail', description: 'Bulk actions (archive|delete|mark_read|mark_unread|star|unstar|move)', inputSchema: { type: 'object', properties: { uids: { type: 'array', items: { type: 'number' } }, action: { type: 'string' }, folder: { type: 'string', default: 'INBOX' }, destFolder: { type: 'string' } }, required: ['uids', 'action'] } },
 
   // ===== BIBLE API TOOLS =====
   { name: 'bible_passage', description: 'Get passage', inputSchema: { type: 'object', properties: { reference: { type: 'string' }, version: { type: 'string' } }, required: ['reference'] } },
@@ -328,6 +335,112 @@ async function sendProtonmail({ to, subject, body, cc, bcc }) {
   const transporter = nodemailer.createTransport({ host: PROTON_SMTP_HOST, port: PROTON_SMTP_PORT, secure: true, auth: { user: PROTON_USER, pass: PROTON_PASS }, tls: { rejectUnauthorized: false } });
   const info = await transporter.sendMail({ from: PROTON_USER, to, cc, bcc, subject, text: body });
   return { messageId: info.messageId, accepted: info.accepted };
+}
+
+async function listProtonmailFolders() {
+  if (!PROTON_PASS) throw new Error('PROTON_PASS not configured');
+  return new Promise((resolve, reject) => {
+    const imap = createImap();
+    imap.once('ready', () => {
+      imap.getBoxes((err, boxes) => {
+        if (err) { imap.end(); return reject(err); }
+        const folders = [];
+        function extractFolders(boxObj, prefix = '') {
+          for (const [name, box] of Object.entries(boxObj)) {
+            const fullPath = prefix ? `${prefix}/${name}` : name;
+            folders.push({ name: fullPath, delimiter: box.delimiter, flags: box.attribs });
+            if (box.children) extractFolders(box.children, fullPath);
+          }
+        }
+        extractFolders(boxes);
+        imap.end();
+        resolve(folders);
+      });
+    });
+    imap.once('error', reject);
+    imap.connect();
+  });
+}
+
+async function moveProtonmail(uid, sourceFolder, destFolder) {
+  if (!PROTON_PASS) throw new Error('PROTON_PASS not configured');
+  return new Promise((resolve, reject) => {
+    const imap = createImap();
+    imap.once('ready', () => {
+      imap.openBox(sourceFolder, false, (err) => {
+        if (err) { imap.end(); return reject(err); }
+        imap.move(uid, destFolder, (err) => {
+          if (err) { imap.end(); return reject(err); }
+          imap.end();
+          resolve({ success: true, uid, movedTo: destFolder });
+        });
+      });
+    });
+    imap.once('error', reject);
+    imap.connect();
+  });
+}
+
+async function setProtonmailFlags(uid, flags, add = true, folder = 'INBOX') {
+  if (!PROTON_PASS) throw new Error('PROTON_PASS not configured');
+  return new Promise((resolve, reject) => {
+    const imap = createImap();
+    imap.once('ready', () => {
+      imap.openBox(folder, false, (err) => {
+        if (err) { imap.end(); return reject(err); }
+        const method = add ? imap.addFlags.bind(imap) : imap.delFlags.bind(imap);
+        method(uid, flags, (err) => {
+          if (err) { imap.end(); return reject(err); }
+          imap.end();
+          resolve({ success: true, uid, flags, action: add ? 'added' : 'removed' });
+        });
+      });
+    });
+    imap.once('error', reject);
+    imap.connect();
+  });
+}
+
+async function archiveProtonmail(uid, folder = 'INBOX') {
+  return moveProtonmail(uid, folder, 'Archive');
+}
+
+async function deleteProtonmail(uid, folder = 'INBOX') {
+  return moveProtonmail(uid, folder, 'Trash');
+}
+
+async function markProtonmail(uid, read = true, folder = 'INBOX') {
+  return setProtonmailFlags(uid, ['\\Seen'], read, folder);
+}
+
+async function starProtonmail(uid, starred = true, folder = 'INBOX') {
+  return setProtonmailFlags(uid, ['\\Flagged'], starred, folder);
+}
+
+async function bulkProtonmail(uids, action, folder = 'INBOX', destFolder = null) {
+  const results = [];
+  for (const uid of uids) {
+    try {
+      let result;
+      switch (action) {
+        case 'archive': result = await archiveProtonmail(uid, folder); break;
+        case 'delete': result = await deleteProtonmail(uid, folder); break;
+        case 'mark_read': result = await markProtonmail(uid, true, folder); break;
+        case 'mark_unread': result = await markProtonmail(uid, false, folder); break;
+        case 'star': result = await starProtonmail(uid, true, folder); break;
+        case 'unstar': result = await starProtonmail(uid, false, folder); break;
+        case 'move':
+          if (!destFolder) throw new Error('destFolder required for move action');
+          result = await moveProtonmail(uid, folder, destFolder);
+          break;
+        default: throw new Error(`Unknown action: ${action}`);
+      }
+      results.push({ uid, success: true, ...result });
+    } catch (err) {
+      results.push({ uid, success: false, error: err.message });
+    }
+  }
+  return results;
 }
 
 async function biblePassage(ref, ver = 'KJV') {
@@ -504,6 +617,13 @@ async function handleTool(name, args) {
     case 'search_protonmail': return searchProtonmail(args.criteria || 'ALL', args.limit || 10);
     case 'read_protonmail': return readProtonmail(args.uid);
     case 'send_protonmail': return sendProtonmail(args);
+    case 'list_protonmail_folders': return listProtonmailFolders();
+    case 'archive_protonmail': return archiveProtonmail(args.uid, args.folder || 'INBOX');
+    case 'delete_protonmail': return deleteProtonmail(args.uid, args.folder || 'INBOX');
+    case 'mark_protonmail': return markProtonmail(args.uid, args.read !== false, args.folder || 'INBOX');
+    case 'star_protonmail': return starProtonmail(args.uid, args.starred !== false, args.folder || 'INBOX');
+    case 'move_protonmail': return moveProtonmail(args.uid, args.sourceFolder || 'INBOX', args.destFolder);
+    case 'bulk_protonmail': return bulkProtonmail(args.uids, args.action, args.folder || 'INBOX', args.destFolder);
 
     // Bible
     case 'bible_passage': return biblePassage(args.reference, args.version);

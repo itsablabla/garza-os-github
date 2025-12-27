@@ -1,0 +1,12 @@
+# Octelium Identity Provider - GitHub OAuth2
+# Authenticate GARZA OS users via GitHub
+kind: IdentityProvider
+metadata:
+  name: github
+  displayName: GitHub OAuth
+spec:
+  displayName: Login with GitHub
+  github:
+    clientID: GITHUB_CLIENT_ID_PLACEHOLDER
+    clientSecret:
+      fromSecret: github-oauth-secret

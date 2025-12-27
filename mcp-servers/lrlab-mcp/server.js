@@ -299,11 +299,11 @@ app.get('/sse', (req, res) => {
   req.on('close', () => clients.delete(clientId));
 });
 
-// Message endpoint
+// Message endpoint - sends response via SSE stream
 app.post('/message/:clientId', async (req, res) => {
   const { clientId } = req.params;
-  const client = clients.get(clientId);
-  if (!client) return res.status(404).json({ error: 'Client not found' });
+  const sseClient = clients.get(clientId);
+  if (!sseClient) return res.status(404).json({ error: 'Client not found' });
 
   const { method, params, id } = req.body;
 
@@ -317,6 +317,10 @@ app.post('/message/:clientId', async (req, res) => {
           capabilities: { tools: {} }
         };
         break;
+      case 'notifications/initialized':
+        // Notification, no response needed
+        res.status(202).json({ status: 'ok' });
+        return;
       case 'tools/list':
         result = { tools: TOOLS };
         break;
@@ -327,9 +331,17 @@ app.post('/message/:clientId', async (req, res) => {
       default:
         result = {};
     }
-    res.json({ jsonrpc: '2.0', id, result });
+    
+    // Send response via SSE stream
+    const response = { jsonrpc: '2.0', id, result };
+    sseClient.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
+    
+    // Acknowledge POST
+    res.status(202).json({ status: 'accepted' });
   } catch (err) {
-    res.json({ jsonrpc: '2.0', id, error: { code: -32000, message: err.message } });
+    const errorResponse = { jsonrpc: '2.0', id, error: { code: -32000, message: err.message } };
+    sseClient.write(`event: message\ndata: ${JSON.stringify(errorResponse)}\n\n`);
+    res.status(202).json({ status: 'accepted' });
   }
 });
 

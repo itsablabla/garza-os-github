@@ -1,0 +1,55 @@
+name: Deploy MCP Servers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'mcp-servers/**'
+  workflow_dispatch:
+    inputs:
+      server:
+        description: 'Server to deploy (or "all")'
+        required: true
+        default: 'all'
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      servers: ${{ steps.changes.outputs.servers }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      
+      - id: changes
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ inputs.server }}" = "all" ]; then
+              SERVERS=$(ls -d mcp-servers/*/ 2>/dev/null | xargs -I{} basename {} | jq -R -s -c 'split("\n") | map(select(. != ""))')
+            else
+              SERVERS='["${{ inputs.server }}"]'
+            fi
+          else
+            SERVERS=$(git diff --name-only HEAD~1 HEAD | grep '^mcp-servers/' | cut -d'/' -f2 | sort -u | jq -R -s -c 'split("\n") | map(select(. != ""))')
+          fi
+          echo "servers=$SERVERS" >> $GITHUB_OUTPUT
+
+  deploy:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.servers != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        server: ${{ fromJson(needs.detect-changes.outputs.servers) }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      
+      - name: Deploy ${{ matrix.server }}
+        run: |
+          cd mcp-servers/${{ matrix.server }}
+          flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

@@ -1,6 +1,6 @@
 # GARZA OS
 
-Jaden's unified AI infrastructure. MCP servers, configs, templates, and scripts.
+Jaden's unified AI infrastructure. MCP servers, services, configs, templates, and scripts.
 
 ---
 
@@ -26,6 +26,31 @@ git add -A && git commit -m "description" && git push
 
 ```
 garza-os/
+├── mcp-servers/            # MCP server code
+│   ├── cf-mcp/             # Brain - Mac orchestration
+│   ├── garza-home-mcp/     # Home automation
+│   ├── garza-cloud-mcp/    # Cloudflare Workers
+│   ├── beeper-matrix-mcp/  # Messaging integration
+│   ├── unifi-protect-mcp/  # Camera integration
+│   ├── protonmail-mcp/     # Email integration
+│   └── lrlab-mcp/          # Last Rock Labs tools
+│
+├── services/               # Fly.io services
+│   ├── garza-ears/         # Voice pipeline
+│   ├── chat-watcher/       # Auto-responders
+│   ├── morning-messages/   # Jessica morning love
+│   ├── email-craft/        # Email→Craft pipeline
+│   ├── voicenotes-webhook/ # Voicenotes processing
+│   ├── jessica-bot/        # Jessica automation
+│   ├── dashboard/          # Web dashboard
+│   └── mcp-controller/     # MCP orchestration
+│
+├── workers/                # Cloudflare Workers
+│   └── health-monitor/     # Health checks
+│
+├── stacks/                 # Docker compose stacks
+│   └── boulder-home/       # Home server stack
+│
 ├── templates/              # Copy-paste starters
 │   ├── fly-node-mcp/       # Node.js MCP template
 │   ├── fly-python-mcp/     # Python MCP template
@@ -34,22 +59,44 @@ garza-os/
 ├── scripts/                # Automation
 │   ├── deploy-fly.sh       # Deploy to Fly.io
 │   ├── add-domain.sh       # DNS + certs
-│   └── sync.sh             # Sync configs
+│   ├── daily-bible.sh      # Bible verse cron
+│   └── claude-remote.sh    # Remote Claude trigger
 │
 ├── docs/                   # Reference
 │   ├── fallback-patterns.md
 │   ├── mcp-routing.md
-│   └── infra-map.md
+│   ├── architecture.md
+│   └── deployment.md
 │
 ├── configs/                # System configs
 │   ├── master-config.md
 │   └── identity/
 │
-└── mcp-servers/            # Deployed server code
-    ├── cf-mcp/
-    ├── garza-home-mcp/
-    └── lrlab-mcp/
+└── prompts/                # System prompts
+    ├── jada-soul.md
+    └── personas/
 ```
+
+## Quick Reference
+
+| Resource | Location |
+|----------|----------|
+| API Keys | Craft doc 7061 |
+| IP List | Craft doc 9239 |
+| Identity Map | Craft doc 6996 |
+| Master Config | Craft doc 14219 |
+| Jada Soul | Craft doc 14522 |
+
+## Services Overview
+
+| Service | Platform | Purpose |
+|---------|----------|---------|
+| CF MCP | Mac (local) | Brain/orchestration |
+| Garza Home MCP | Fly.io | Home automation |
+| Garza Ears | Fly.io | Voice pipeline |
+| Chat Watcher | Mac (local) | Auto-responders |
+| Morning Messages | Mac (cron) | Jessica love notes |
+| Health Monitor | CF Workers | System health |
 
 ## Quick Commands
 
@@ -67,11 +114,6 @@ cd ~/my-new-mcp
 git add -A && git commit -m "update" && git push
 ```
 
-## MCP Servers
+---
 
-| Server | URL | Purpose |
-|--------|-----|---------|
-| CF MCP | localhost:3333 | Mac orchestration |
-| Garza Home | garza-home-mcp.fly.dev | Home automation |
-| Garza Hive | mcp.garzahive.com | VPS operations |
-| LRLab | lrlab-mcp.fly.dev | Dev tools |
+*Built with 💜 by Jaden Garza*

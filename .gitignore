@@ -29,3 +29,7 @@ Thumbs.db
 *.pem
 *.key
 .ha_token
+
+# State files
+state*.json
+config-*.json

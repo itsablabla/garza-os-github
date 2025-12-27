@@ -1,0 +1,9 @@
+config/secrets.yaml
+config/.storage/
+config/home-assistant_v2.db*
+config/tts/
+config/.cloud/
+mosquitto/log/
+mosquitto/data/
+*.log
+.DS_Store

@@ -1,0 +1,40 @@
+name: Health Check
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'  # Every 15 minutes
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check MCP Servers
+        run: |
+          SERVERS=(
+            "garza-home-mcp.fly.dev"
+            "lrlab-mcp.fly.dev"
+          )
+          
+          FAILED=()
+          
+          for server in "${SERVERS[@]}"; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://$server/health" || echo "000")
+            if [ "$STATUS" != "200" ]; then
+              FAILED+=("$server ($STATUS)")
+            fi
+          done
+          
+          if [ ${#FAILED[@]} -gt 0 ]; then
+            echo "❌ Failed servers:"
+            printf '%s\n' "${FAILED[@]}"
+            exit 1
+          else
+            echo "✅ All servers healthy"
+          fi
+      
+      - name: Notify on Failure
+        if: failure()
+        run: |
+          # Add notification here (Pushcut, email, etc.)
+          echo "Would notify about failure"

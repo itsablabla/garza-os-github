@@ -1,0 +1,15 @@
+{
+  "active": false,
+  "chat_id": "!ECSkgCenayeTghdcmI:beeper.com",
+  "chat_name": "Jessica (Bonnie and Clyde)",
+  "my_user_id": "@jadengarza:beeper.com",
+  "backend_url": "http://134.122.8.40:5678/webhook/jaden-respond",
+  "expires_at": "2025-12-31T23:59:59Z",
+  "beeper_token": "3a48068b-e6df-4d9c-b39b-0e41979edaa7",
+  "beeper_api": "http://localhost:23373",
+  "anthropic_key": "{{ANTHROPIC_API_KEY}}",
+  "poll_interval_seconds": 30,
+  "max_responses_per_hour": 20,
+  "response_delay_min": 45,
+  "response_delay_max": 120
+}

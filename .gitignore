@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+
+# Environment
+.env
+.env.*
+*.env
+
+# Logs
+*.log
+stderr.log
+stdout.log
+
+# Build outputs
+dist/
+.wrangler/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+*.pem
+*.key
+.ha_token

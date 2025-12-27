@@ -1,0 +1,16 @@
+app = "beeper-matrix-mcp"
+primary_region = "sjc"
+
+[build]
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[env]
+  PORT = "3000"
+  MATRIX_HOMESERVER = "https://matrix.beeper.com"
+  MATRIX_USER_ID = "@jadengarza:beeper.com"

@@ -1,0 +1,36 @@
+{
+  "name": "unifi-protect-mcp",
+  "version": "5.2.0",
+  "description": "MCP server for UniFi Protect cameras - snapshots, PTZ, events, sensors, lights, chimes",
+  "main": "server-v5.2.js",
+  "bin": {
+    "unifi-protect-mcp": "./server-v5.2.js"
+  },
+  "scripts": {
+    "start": "node server-v5.2.js"
+  },
+  "keywords": [
+    "mcp",
+    "unifi",
+    "protect",
+    "camera",
+    "nvr",
+    "ubiquiti",
+    "claude",
+    "anthropic",
+    "model-context-protocol"
+  ],
+  "author": "Jaden Garza <jadengarza@pm.me>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/itsablabla/unifi-protect-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/itsablabla/unifi-protect-mcp/issues"
+  },
+  "homepage": "https://github.com/itsablabla/unifi-protect-mcp#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

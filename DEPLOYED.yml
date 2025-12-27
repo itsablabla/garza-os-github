@@ -77,14 +77,16 @@ cloudflare_workers:
     url: https://garza-youversion.garzahive.workers.dev
     purpose: Bible verse of day
     repo_path: /workers/garza-youversion
-  garza-voicenotes-sync:
-    url: https://garza-voicenotes-sync.garzahive.workers.dev
-    trigger: cron (every 30 min)
-    purpose: Sync voice memos from VoiceNotes.com
+  voicenotes-webhook:
+    url: https://voicenotes-webhook.jadengarza.workers.dev
+    purpose: VoiceNotes API sync - pulls transcripts to KV
+    repo_path: /workers/voicenotes-webhook
     status: active
-  garza-voicenotes-extract:
-    url: https://garza-voicenotes-extract.garzahive.workers.dev
+    last_deploy: 2025-12-27
+  voicenotes-indexer:
+    url: https://voicenotes-indexer.jadengarza.workers.dev
     purpose: Entity extraction from voice memos using Claude
+    repo_path: /workers/voicenotes-indexer
     status: active
   garza-mcp:
     url: https://garza-mcp.garzahive.workers.dev

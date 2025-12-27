@@ -82,3 +82,17 @@ Prevents wasted tool calls by providing:
 - Credential locations without hunting
 - Common mistakes to avoid
 - Tested commands instead of guessing syntax
+
+## [v0.5.1] - 2025-12-27
+
+### Added
+- `docs/stack-first.md` - Decision matrix for using existing stack (Fly.io, n8n, Supabase, GitHub, CF Workers)
+- Stack summary table in preflight checklist
+- "Building something new?" as first decision tree branch
+
+### Changed
+- `docs/claude-preflight.md` - Now routes to stack-first.md before any new build
+- Added anti-patterns section to prevent spinning up new services
+
+### Philosophy
+> If the stack can do it, use the stack.

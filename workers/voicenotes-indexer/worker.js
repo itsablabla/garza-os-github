@@ -42,6 +42,7 @@ async function processUnsynced(env) {
     try {
       const extraction = await extractEntities(env, note.transcript, note.title);
       if (extraction) {
+        // Store extraction WITH full transcript
         await env.EXTRACTIONS.put("ext:" + note.id, JSON.stringify({ 
           note_id: note.id, 
           title: note.title, 
@@ -53,9 +54,11 @@ async function processUnsynced(env) {
           ...extraction 
         }));
         
+        // Sync to Craft with transcript
         const craftResult = await syncToCraft(env, note, extraction);
         if (craftResult.success) results.craft_synced++;
         
+        // Update person index
         await updatePeopleIndex(env, note, extraction);
         
         await env.VOICENOTES.fetch(new Request("https://voicenotes-webhook.jadengarza.workers.dev/notes/" + note.id + "/synced", { method: "POST" }));
@@ -104,6 +107,7 @@ Rules: Only include people mentioned by name. Be specific about context. Return 
 
 async function syncToCraft(env, note, extraction) {
   try {
+    // Build markdown content with FULL TRANSCRIPT
     let md = `**Extracted:** ${new Date().toISOString().split('T')[0]} | **Note ID:** ${note.id}`;
     if (note.duration) md += ` | **Duration:** ${Math.round(note.duration)}s`;
     md += `\n\n## Summary\n${extraction.summary}\n`;
@@ -133,12 +137,15 @@ async function syncToCraft(env, note, extraction) {
       extraction.key_facts.forEach(f => { md += `- ${f}\n`; });
     }
 
+    // Add full transcript
     md += `\n## Full Transcript\n${note.transcript}\n`;
     
+    // Add audio link if available
     if (note.audio_url) {
       md += `\n---\n[Audio File](${note.audio_url})\n`;
     }
 
+    // Call Craft MCP to create document
     const createResp = await fetch(CRAFT_API, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -156,14 +163,21 @@ async function syncToCraft(env, note, extraction) {
       })
     });
     
-    if (!createResp.ok) return { success: false, error: "create failed" };
+    if (!createResp.ok) {
+      console.error("Craft create failed:", createResp.status);
+      return { success: false, error: "create failed" };
+    }
     
     const createData = await createResp.json();
     const docId = createData.result?.content?.[0]?.text ? 
       JSON.parse(createData.result.content[0].text).documents?.[0]?.id : null;
     
-    if (!docId) return { success: false, error: "no doc id" };
+    if (!docId) {
+      console.error("No doc ID returned");
+      return { success: false, error: "no doc id" };
+    }
 
+    // Add content to document
     const addResp = await fetch(CRAFT_API, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -181,6 +195,7 @@ async function syncToCraft(env, note, extraction) {
       })
     });
 
+    // Store Craft doc ID in extraction
     if (addResp.ok) {
       const ext = JSON.parse(await env.EXTRACTIONS.get("ext:" + note.id) || "{}");
       ext.craft_doc_id = docId;
@@ -189,6 +204,7 @@ async function syncToCraft(env, note, extraction) {
 
     return { success: addResp.ok, docId: docId };
   } catch (e) {
+    console.error("Craft sync error:", e);
     return { success: false, error: e.message };
   }
 }

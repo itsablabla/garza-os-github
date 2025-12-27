@@ -22,11 +22,11 @@ jobs:
           echo "| App | Status | Response Time |" >> $GITHUB_STEP_SUMMARY
           echo "|-----|--------|---------------|" >> $GITHUB_STEP_SUMMARY
           
-          for app in $(yq '.fly_apps | keys | .[]' DEPLOYED.yml); do
+          for app in $(yq '.fly_apps | keys | .[]' DEPLOYED.yml 2>/dev/null || echo ""); do
             url=$(yq ".fly_apps.${app}.url" DEPLOYED.yml)
             health=$(yq ".fly_apps.${app}.health // \"/health\"" DEPLOYED.yml)
             
-            if [ "$url" != "null" ]; then
+            if [ "$url" != "null" ] && [ -n "$url" ]; then
               start=$(date +%s%N)
               status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${url}${health}" 2>/dev/null || echo "000")
               end=$(date +%s%N)
@@ -47,10 +47,10 @@ jobs:
           echo "| Worker | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
           
-          for worker in $(yq '.cloudflare_workers | keys | .[]' DEPLOYED.yml); do
+          for worker in $(yq '.cloudflare_workers | keys | .[]' DEPLOYED.yml 2>/dev/null || echo ""); do
             url=$(yq ".cloudflare_workers.${worker}.url" DEPLOYED.yml)
             
-            if [ "$url" != "null" ]; then
+            if [ "$url" != "null" ] && [ -n "$url" ]; then
               status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${url}" 2>/dev/null || echo "000")
               
               if [ "$status" = "200" ] || [ "$status" = "204" ]; then
@@ -63,8 +63,8 @@ jobs:
       
       - name: Update status timestamp
         run: |
-          # Update last_checked in DEPLOYED.yml
-          yq -i '.metadata.last_health_check = now | .metadata.last_health_check |= sub("\\..*"; "Z")' DEPLOYED.yml
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          yq -i ".metadata.last_health_check = \"$TIMESTAMP\"" DEPLOYED.yml
           
       - name: Commit status update
         run: |

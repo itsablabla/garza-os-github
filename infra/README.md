@@ -1,124 +1,166 @@
-# GARZA OS Infrastructure State
+# Infrastructure State Management
 
-This directory contains the single source of truth for all GARZA OS infrastructure state, enabling concurrent operations, automatic recovery, and stateful deployments.
+This directory contains the single source of truth for GARZA OS infrastructure state.
 
-## Directory Structure
+## Purpose
+
+Git becomes the database. Before any operation (deploy, restart, configure), check state here. After any operation, update state and commit. This prevents race conditions, enables concurrent operations with locking, and provides audit trail.
+
+## Structure
 
 ```
 /infra/
 ├── state/
-│   ├── deployments.json      # Live deployment state (auto-updated)
+│   ├── deployments.json      # Live deployment state
 │   ├── operations.json        # Operation queue and history
-│   └── locks/                # Lock files for concurrent operations
-├── hosts.yml                 # SSH connection matrix with fallbacks
-├── services.yml              # Service catalog with health checks
-└── README.md                 # This file
+│   └── locks/                 # Lock files (gitignored except .gitkeep)
+├── hosts.yml                  # SSH connection matrix with fallbacks
+├── services.yml               # Service registry with health checks
+└── README.md                  # This file
 ```
 
 ## Files
 
-### state/deployments.json
-**Purpose:** Live state of all deployed services  
-**Updated:** Automatically after each deployment  
-**Usage:** Check before deploying to avoid conflicts
-
-```bash
-# Before deploying
-current_state=$(cat infra/state/deployments.json)
-# Check if already deployed, what version, etc.
+### `state/deployments.json`
+**Purpose:** Track what's deployed where  
+**Updated by:** Deploy scripts, operation orchestrator  
+**Schema:**
+```json
+{
+  "fly_apps": {
+    "app-name": {
+      "status": "running|suspended|down",
+      "url": "https://...",
+      "region": "...",
+      "last_deploy": "YYYY-MM-DD",
+      "locked": false
+    }
+  },
+  "cloudflare_workers": { ... },
+  "mcp_servers": { ... },
+  "vps_servers": { ... }
+}
 ```
 
-### state/operations.json
-**Purpose:** Track operation queue and history  
-**Contains:**
-- `queue`: Operations waiting to execute
-- `history`: Completed operations log
-- `active_locks`: Currently locked resources
+### `state/operations.json`
+**Purpose:** Operation queue and audit trail  
+**Updated by:** All operations  
+**Schema:**
+```json
+{
+  "queue": [
+    {
+      "id": "uuid",
+      "type": "deploy|restart|update",
+      "target": "service-name",
+      "status": "queued|running|complete|failed",
+      "started_at": "ISO timestamp",
+      "completed_at": "ISO timestamp",
+      "result": "success|failure",
+      "logs": "..."
+    }
+  ],
+  "history": [ ... ]
+}
+```
 
-### state/locks/
+### `state/locks/`
 **Purpose:** Prevent concurrent operations on same resource  
-**Usage:** Create lock file before operation, delete after
+**Mechanism:** 
+- Before operating on resource, create `locks/resource-name.lock`
+- Lock file contains: operator, timestamp, operation type
+- After operation, delete lock file
+- Git commit/push provides distributed locking
 
-```bash
-# Acquire lock
-touch infra/state/locks/fly-garza-home-mcp.lock
-# ... do operation ...
-rm infra/state/locks/fly-garza-home-mcp.lock
-```
-
-### hosts.yml
-**Purpose:** Complete SSH connection matrix  
+### `hosts.yml`
+**Purpose:** Complete SSH connection matrix with redundancy  
 **Features:**
 - Primary connection details
-- Fallback paths (relay, MCP tools, API)
+- Fallback paths (relay SSH, MCP tools, API)
 - Health check commands
-- SSH key references
+- Service inventory per host
 
-**Enables:** Automatic failover if primary SSH fails
-
-### services.yml
-**Purpose:** Catalog of all services  
-**Contains:**
-- Health check endpoints
+### `services.yml`
+**Purpose:** Service registry with health checks  
+**Features:**
+- All services across all platforms
+- Health check methods (HTTP, SSH command)
 - Dependencies
 - Criticality flags
-- Alert thresholds
-
-**Enables:** Automated health monitoring and recovery
+- Service groupings
 
 ## Usage Patterns
 
 ### Before Deploying
 ```bash
-# 1. Check current state
-cat infra/state/deployments.json | jq '.fly_apps["garza-home-mcp"]'
+# Check if already deployed
+cat state/deployments.json | jq '.fly_apps["my-app"]'
 
-# 2. Check for active locks
-ls infra/state/locks/
-
-# 3. Deploy if safe
+# Check if locked
+ls state/locks/my-app.lock 2>/dev/null && echo "LOCKED" || echo "FREE"
 ```
 
-### After Deploying
+### During Operation
 ```bash
-# 1. Update deployments.json
-# 2. Add to operations.json history
-# 3. Commit and push to GitHub
-# 4. Remove any locks
+# Acquire lock
+echo "operator: claude, ts: $(date -u +%Y-%m-%dT%H:%M:%SZ)" > state/locks/my-app.lock
+git add state/locks/my-app.lock && git commit -m "Lock: my-app deploy" && git push
+
+# Do the operation
+fly deploy ...
+
+# Update state
+jq '.fly_apps["my-app"].status = "running"' state/deployments.json > tmp && mv tmp state/deployments.json
+
+# Release lock
+rm state/locks/my-app.lock
+git add state/ && git commit -m "Deploy complete: my-app" && git push
 ```
 
-### Concurrent Operations
-```bash
-# Safe: Different resources
-deploy garza-home-mcp & deploy lrlab-mcp &
-
-# Blocked: Same resource (lock prevents)
-deploy garza-home-mcp & deploy garza-home-mcp &
+### Health Checking
+```python
+# Read services.yml
+# For each critical service:
+#   - Run health check
+#   - If fails: log, alert, attempt recovery
+#   - Update deployments.json with last_health_check
 ```
 
-## Auto-Update Strategy
+## Lock File Format
 
-GitHub Actions will automatically update these files:
-- **On deployment:** Update `deployments.json` with new version/timestamp
-- **On health check:** Update service status
-- **On operation:** Log to `operations.json`
-
-## Lock File Convention
-
-Lock files use format: `{type}-{resource}.lock`
-
-Examples:
-- `fly-garza-home-mcp.lock` - Deploying Fly app
-- `ssh-garzahive.lock` - SSH operation in progress
-- `worker-voicenotes-webhook.lock` - Worker deployment
-
-## State Consistency
-
-All state files are version controlled and must be committed after updates:
-```bash
-git add infra/state/
-git commit -m "Update: deployed garza-home-mcp v2.1"
-git push
+```
+operator: <who/what is doing operation>
+timestamp: <ISO 8601>
+operation: <deploy|restart|update|...>
+reason: <optional context>
 ```
 
-This ensures state is always synchronized across all systems.
+## State Update Rules
+
+1. **Always read before write** - Load current state from Git first
+2. **Atomic updates** - Single commit per state change
+3. **Descriptive commits** - "Deploy garza-home-mcp v2.1.0" not "update"
+4. **Pull before push** - Handle merge conflicts if concurrent updates
+5. **Lock for writes** - Create lock file for any mutating operation
+
+## Benefits
+
+- **Prevents duplicate deploys** - Check state first
+- **Enables parallelism** - Lock only specific resources
+- **Audit trail** - Git log shows every infrastructure change
+- **Self-documenting** - State files + commits = full history
+- **Recovery** - Can reconstruct what was deployed when
+- **Coordination** - Multiple automation systems can cooperate via Git
+
+## Next Steps
+
+After infrastructure state is working:
+1. SSH redundancy scripts (`/scripts/ssh/`)
+2. Operation templates (`/operations/`)
+3. Concurrent operation manager
+4. GitHub Actions for self-healing
+
+## See Also
+
+- `/docs/architecture.md` - Overall system design
+- `DEPLOYED.yml` - Human-readable deployment manifest (not used by automation)

@@ -1,14 +1,15 @@
 {
-  "version": "1.0.0",
+  "meta": {
+    "version": "1.0.0",
+    "description": "Operation history and queue management",
+    "last_updated": "2025-12-27T11:30:00Z"
+  },
   "queue": [],
-  "history": [
-    {
-      "id": "op_init_001",
-      "type": "system_init",
-      "timestamp": "2025-12-27T11:00:00Z",
-      "status": "completed",
-      "description": "Initial state tracking system deployed"
-    }
-  ],
-  "active_locks": []
+  "history": [],
+  "stats": {
+    "total_operations": 0,
+    "successful": 0,
+    "failed": 0,
+    "in_progress": 0
+  }
 }

@@ -2,6 +2,21 @@
 
 All notable changes to GARZA OS infrastructure.
 
+## [0.4.0] - 2025-12-27
+
+### Added
+- `.github/workflows/sync-deployed.yml` - Auto health checks every 6 hours
+- `docs/fallback-diagram.md` - Mermaid decision trees for all tool cascades
+- `scripts/generate-snippet-index.sh` - Auto-generate snippet documentation
+- `templates/snippets/INDEX.md` - Auto-generated snippet reference
+- `DEPLOYED.yml` metadata section with version and health check timestamp
+
+### Changed
+- README.md completely rewritten with quick-reference table
+- Better structure documentation
+
+---
+
 ## [0.3.0] - 2025-12-27
 
 ### Added

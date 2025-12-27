@@ -1,0 +1,75 @@
+name: Sync DEPLOYED.yml Status
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+      
+      - name: Check Fly Apps
+        run: |
+          echo "## Fly.io Apps Health Check" >> $GITHUB_STEP_SUMMARY
+          echo "| App | Status | Response Time |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|---------------|" >> $GITHUB_STEP_SUMMARY
+          
+          for app in $(yq '.fly_apps | keys | .[]' DEPLOYED.yml); do
+            url=$(yq ".fly_apps.${app}.url" DEPLOYED.yml)
+            health=$(yq ".fly_apps.${app}.health // \"/health\"" DEPLOYED.yml)
+            
+            if [ "$url" != "null" ]; then
+              start=$(date +%s%N)
+              status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${url}${health}" 2>/dev/null || echo "000")
+              end=$(date +%s%N)
+              ms=$(( (end - start) / 1000000 ))
+              
+              if [ "$status" = "200" ]; then
+                echo "| ${app} | ✅ ${status} | ${ms}ms |" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "| ${app} | ❌ ${status} | ${ms}ms |" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          done
+      
+      - name: Check Cloudflare Workers
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Cloudflare Workers Health Check" >> $GITHUB_STEP_SUMMARY
+          echo "| Worker | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
+          
+          for worker in $(yq '.cloudflare_workers | keys | .[]' DEPLOYED.yml); do
+            url=$(yq ".cloudflare_workers.${worker}.url" DEPLOYED.yml)
+            
+            if [ "$url" != "null" ]; then
+              status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${url}" 2>/dev/null || echo "000")
+              
+              if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+                echo "| ${worker} | ✅ ${status} |" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "| ${worker} | ⚠️ ${status} |" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          done
+      
+      - name: Update status timestamp
+        run: |
+          # Update last_checked in DEPLOYED.yml
+          yq -i '.metadata.last_health_check = now | .metadata.last_health_check |= sub("\\..*"; "Z")' DEPLOYED.yml
+          
+      - name: Commit status update
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add DEPLOYED.yml
+          git diff --staged --quiet || git commit -m "chore: Update health check timestamp"
+          git push || true

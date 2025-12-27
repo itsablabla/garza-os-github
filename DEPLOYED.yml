@@ -209,3 +209,9 @@ stacks:
       - Computer Use containers
       - Homebridge (UniFi Protect cameras)
     repo_path: /stacks/boulder-home
+
+# Metadata - auto-updated by GitHub Actions
+metadata:
+  last_health_check: null
+  version: "0.4.0"
+  repo: https://github.com/jadengarza/garza-os

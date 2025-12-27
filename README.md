@@ -1,119 +1,107 @@
 # GARZA OS
 
-Jaden's unified AI infrastructure. MCP servers, services, configs, templates, and scripts.
+Infrastructure, templates, and automation for the GARZA OS ecosystem.
 
 ---
 
 ## 🤖 CLAUDE: READ THIS FIRST
 
-Before building anything new, check this repo:
+Before building anything, check these resources:
 
-1. **Building a new MCP?** → Use `templates/fly-node-mcp/`
-2. **Tool failing?** → Check `docs/fallback-patterns.md`
-3. **Which MCP reaches what?** → Check `docs/mcp-routing.md`
-4. **Deploying to Fly?** → Use `scripts/deploy-fly.sh`
-5. **Adding a domain?** → Use `scripts/add-domain.sh`
+| Need | Check |
+|------|-------|
+| Building new MCP/service | `templates/` folder |
+| Tool failing with errors | `docs/error-playbook.md` |
+| Tool routing questions | `docs/mcp-routing.md` |
+| Visual fallback flows | `docs/fallback-diagram.md` |
+| Deploying to Fly.io | `scripts/deploy-fly.sh` |
+| Adding custom domain | `scripts/add-domain.sh` |
+| What's deployed where | `DEPLOYED.yml` |
+| Code snippets | `templates/snippets/INDEX.md` |
 
-**After building anything:**
-```bash
-cd /Users/customer/garza-os-github
-git add -A && git commit -m "description" && git push
+---
+
+## 📁 Structure
+
+```
+├── DEPLOYED.yml          # 🎯 Single source of truth - all running services
+├── CHANGELOG.md          # Version history
+├── templates/
+│   ├── snippets/         # Reusable code patterns (with INDEX.md)
+│   ├── fly-node-mcp/     # MCP server template
+│   ├── fly-python-mcp/   # Python MCP template
+│   └── cloudflare-worker/# Worker template
+├── scripts/
+│   ├── deploy-fly.sh     # Automated Fly deployment
+│   ├── add-domain.sh     # DNS + cert setup
+│   ├── exec-fallback.sh  # Command with auto-fallback
+│   ├── health-check.sh   # Manual health checks
+│   └── generate-snippet-index.sh
+├── docs/
+│   ├── error-playbook.md # Error → Fix guide
+│   ├── fallback-diagram.md # Visual decision trees
+│   ├── fallback-patterns.md# Text-based cascades
+│   ├── mcp-routing.md    # Server capabilities
+│   └── mcp-registry.md   # Full MCP documentation
+├── workers/              # Cloudflare Workers source
+├── stacks/               # Docker Compose stacks
+├── configs/              # Configuration files
+├── prompts/              # AI prompts and personas
+└── .github/workflows/    # CI/CD automation
 ```
 
 ---
 
-## Structure
+## 🚀 Quick Start
 
-```
-garza-os/
-├── mcp-servers/            # MCP server code
-│   ├── cf-mcp/             # Brain - Mac orchestration
-│   ├── garza-home-mcp/     # Home automation
-│   ├── garza-cloud-mcp/    # Cloudflare Workers
-│   ├── beeper-matrix-mcp/  # Messaging integration
-│   ├── unifi-protect-mcp/  # Camera integration
-│   ├── protonmail-mcp/     # Email integration
-│   └── lrlab-mcp/          # Last Rock Labs tools
-│
-├── services/               # Fly.io services
-│   ├── garza-ears/         # Voice pipeline
-│   ├── chat-watcher/       # Auto-responders
-│   ├── morning-messages/   # Jessica morning love
-│   ├── email-craft/        # Email→Craft pipeline
-│   ├── voicenotes-webhook/ # Voicenotes processing
-│   ├── jessica-bot/        # Jessica automation
-│   ├── dashboard/          # Web dashboard
-│   └── mcp-controller/     # MCP orchestration
-│
-├── workers/                # Cloudflare Workers
-│   └── health-monitor/     # Health checks
-│
-├── stacks/                 # Docker compose stacks
-│   └── boulder-home/       # Home server stack
-│
-├── templates/              # Copy-paste starters
-│   ├── fly-node-mcp/       # Node.js MCP template
-│   ├── fly-python-mcp/     # Python MCP template
-│   └── cloudflare-worker/  # CF Worker template
-│
-├── scripts/                # Automation
-│   ├── deploy-fly.sh       # Deploy to Fly.io
-│   ├── add-domain.sh       # DNS + certs
-│   ├── daily-bible.sh      # Bible verse cron
-│   └── claude-remote.sh    # Remote Claude trigger
-│
-├── docs/                   # Reference
-│   ├── fallback-patterns.md
-│   ├── mcp-routing.md
-│   ├── architecture.md
-│   └── deployment.md
-│
-├── configs/                # System configs
-│   ├── master-config.md
-│   └── identity/
-│
-└── prompts/                # System prompts
-    ├── jada-soul.md
-    └── personas/
-```
-
-## Quick Reference
-
-| Resource | Location |
-|----------|----------|
-| API Keys | Craft doc 7061 |
-| IP List | Craft doc 9239 |
-| Identity Map | Craft doc 6996 |
-| Master Config | Craft doc 14219 |
-| Jada Soul | Craft doc 14522 |
-
-## Services Overview
-
-| Service | Platform | Purpose |
-|---------|----------|---------|
-| CF MCP | Mac (local) | Brain/orchestration |
-| Garza Home MCP | Fly.io | Home automation |
-| Garza Ears | Fly.io | Voice pipeline |
-| Chat Watcher | Mac (local) | Auto-responders |
-| Morning Messages | Mac (cron) | Jessica love notes |
-| Health Monitor | CF Workers | System health |
-
-## Quick Commands
-
+### Deploy new MCP to Fly.io
 ```bash
-# Deploy new MCP
-cd templates/fly-node-mcp
-cp -r . ~/my-new-mcp
-cd ~/my-new-mcp
-../../scripts/deploy-fly.sh my-new-mcp
+cp -r templates/fly-node-mcp my-new-mcp
+cd my-new-mcp
+# Edit server.js with your tools
+../scripts/deploy-fly.sh my-new-mcp
+```
 
-# Add custom domain
-./scripts/add-domain.sh subdomain app-name
+### Add custom domain
+```bash
+./scripts/add-domain.sh api my-app-name
+# Creates api.garzahive.com → my-app-name.fly.dev
+```
 
-# Sync after changes
-git add -A && git commit -m "update" && git push
+### Check what's deployed
+```bash
+cat DEPLOYED.yml
 ```
 
 ---
 
-*Built with 💜 by Jaden Garza*
+## 🔧 GitHub Actions
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `sync-deployed.yml` | Every 6h / Manual | Health check all services |
+| `deploy-fly.yml` | Push to workers/ | Auto-deploy Fly apps |
+| `deploy-cloudflare.yml` | Push to workers/ | Auto-deploy CF Workers |
+| `health-check.yml` | Manual | On-demand health check |
+
+---
+
+## 📊 Health Status
+
+Check the [Actions tab](../../actions) for latest health check results.
+
+Last automated check timestamp is in `DEPLOYED.yml` under `metadata.last_health_check`.
+
+---
+
+## 🏷️ Versioning
+
+```bash
+# View current version
+git describe --tags
+
+# Rollback to previous version
+git checkout v0.3.0
+```
+
+See `CHANGELOG.md` for version history.

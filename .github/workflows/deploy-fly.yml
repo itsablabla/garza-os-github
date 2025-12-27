@@ -40,13 +40,10 @@ jobs:
         id: set-matrix
         run: |
           if [ "${{ github.event.inputs.target }}" != "" ] && [ "${{ github.event.inputs.target }}" != "all-changed" ]; then
-            # Manual trigger for specific app
             echo "matrix={\"app\":[\"${{ github.event.inputs.target }}\"]}" >> $GITHUB_OUTPUT
           else
-            # Auto-detect from changed files
             APPS=()
             
-            # Check each app directory
             declare -A APP_PATHS=(
               ["garza-home-mcp"]="mcp-servers/garza-home-mcp"
               ["last-rock-dev"]="mcp-servers/last-rock-dev"
@@ -103,23 +100,92 @@ jobs:
           )
           echo "path=${APP_PATHS[${{ matrix.app }}]}" >> $GITHUB_OUTPUT
       
+      - name: Get current release (for rollback)
+        id: current
+        run: |
+          cd ${{ steps.path.outputs.path }}
+          # Get current release version before deploy
+          CURRENT_VERSION=$(flyctl releases --json 2>/dev/null | jq -r '.[0].Version // "none"') || CURRENT_VERSION="none"
+          echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "📦 Current version: $CURRENT_VERSION"
+      
       - name: Deploy ${{ matrix.app }}
+        id: deploy
         run: |
           cd ${{ steps.path.outputs.path }}
           flyctl deploy --remote-only
       
-      - name: Notify on success
+      - name: Health check after deploy
+        id: health
         if: success()
+        run: |
+          # Wait for deploy to stabilize
+          sleep 10
+          
+          # Get app URL and check health
+          APP_URL="https://${{ matrix.app }}.fly.dev"
+          
+          # Try health endpoint
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/health" --max-time 10) || HTTP_STATUS="000"
+          
+          if [ "$HTTP_STATUS" == "200" ]; then
+            echo "✅ Health check passed"
+            echo "healthy=true" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ Health check returned $HTTP_STATUS"
+            echo "healthy=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Auto-rollback on failure
+        if: failure() || steps.health.outputs.healthy == 'false'
+        run: |
+          cd ${{ steps.path.outputs.path }}
+          PREV_VERSION="${{ steps.current.outputs.version }}"
+          
+          if [ "$PREV_VERSION" != "none" ] && [ -n "$PREV_VERSION" ]; then
+            echo "🔄 Rolling back to version $PREV_VERSION..."
+            flyctl releases rollback "$PREV_VERSION" --yes || echo "Rollback failed"
+            
+            # Post to callback
+            curl -s -X POST "https://workflow-results.jadengarza.workers.dev/result" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"run_id\": \"${{ github.run_id }}\",
+                \"workflow\": \"deploy-fly-rollback\",
+                \"host\": \"${{ matrix.app }}\",
+                \"command\": \"rollback to $PREV_VERSION\",
+                \"output\": \"Auto-rollback triggered\",
+                \"status\": \"rollback\"
+              }" || true
+          else
+            echo "❌ No previous version to rollback to"
+          fi
+      
+      - name: Post deploy result
+        if: always()
+        run: |
+          curl -s -X POST "https://workflow-results.jadengarza.workers.dev/result" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"run_id\": \"${{ github.run_id }}\",
+              \"workflow\": \"deploy-fly\",
+              \"host\": \"${{ matrix.app }}\",
+              \"command\": \"flyctl deploy\",
+              \"status\": \"${{ job.status }}\"
+            }" || true
+      
+      - name: Notify on success
+        if: success() && steps.health.outputs.healthy != 'false'
         run: |
           echo "✅ Deployed ${{ matrix.app }}"
       
       - name: Notify on failure
-        if: failure()
+        if: failure() || steps.health.outputs.healthy == 'false'
         run: |
-          curl -X POST "https://api.pushcut.io/${{ secrets.PUSHCUT_API_KEY }}/notifications/GARZA%20OS%20Alert" \
+          curl -s -X POST "https://api.pushcut.io/${{ secrets.PUSHCUT_KEY }}/notifications/Deploy%20Failed" \
             -H "Content-Type: application/json" \
             -d '{
-              "title": "❌ Deploy Failed",
-              "text": "${{ matrix.app }} failed to deploy",
+              "title": "❌ Deploy Failed: ${{ matrix.app }}",
+              "text": "Auto-rollback attempted. Check GitHub Actions.",
               "isTimeSensitive": true
-            }'
+            }' || true

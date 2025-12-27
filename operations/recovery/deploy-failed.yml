@@ -1,0 +1,234 @@
+# Deploy Failed - Recovery Playbook
+# Automatic recovery when deployment fails
+# Handles rollback, cleanup, and retry logic
+
+operation:
+  name: "recover_deploy_failed"
+  type: "recovery"
+  description: "Recover from failed deployment"
+
+parameters:
+  service: ""               # Service that failed to deploy
+  platform: ""              # "fly.io", "cloudflare_workers", etc.
+  error_type: ""            # "build_failed", "deploy_failed", "health_check_failed"
+  auto_rollback: true       # Automatically rollback on failure
+  retry_deploy: false       # Retry deployment after cleanup
+
+triggers:
+  - deploy_failed:
+      service: "${service}"
+      platform: "${platform}"
+      
+  - manual:
+      description: "Manual deploy recovery trigger"
+
+steps:
+  - name: "acquire_recovery_lock"
+    type: "lock"
+    resource: "${service}-recovery"
+    metadata:
+      operator: "claude"
+      operation: "deploy_recovery"
+    
+  # Step 1: Check current state
+  - name: "check_deployment_state"
+    type: "state_check"
+    file: "infra/state/deployments.json"
+    service: "${service}"
+    output: "current_state"
+    
+  # Step 2: Rollback based on platform
+  - name: "rollback_fly_app"
+    type: "conditional"
+    condition: "${platform} == 'fly.io' AND ${auto_rollback} == true"
+    steps:
+      - type: "notification"
+        channel: "beeper"
+        message: "⚠️ Rolling back ${service} to previous version"
+        
+      - type: "ssh_command"
+        host: "mac"
+        command: "flyctl releases rollback --app ${service} --yes"
+        timeout: 120
+        output: "rollback_status"
+        
+      - type: "delay"
+        seconds: 15
+        description: "Wait for rollback to complete"
+        
+      - type: "health_check"
+        service: "${service}"
+        from_registry: true
+        retries: 5
+        retry_delay: 10
+        output: "health_after_rollback"
+  
+  - name: "cleanup_cloudflare_worker"
+    type: "conditional"
+    condition: "${platform} == 'cloudflare_workers'"
+    steps:
+      - type: "notification"
+        channel: "log"
+        message: "CF Workers don't support rollback - keeping failed deployment"
+        
+      - type: "state_update"
+        file: "infra/state/deployments.json"
+        updates:
+          ".cloudflare_workers.${service}.status": "deploy_failed"
+  
+  # Step 3: Analyze failure logs
+  - name: "analyze_build_failure"
+    type: "conditional"
+    condition: "${error_type} == 'build_failed'"
+    steps:
+      - type: "ssh_command"
+        host: "mac"
+        command: "flyctl logs --app ${service} --limit 100"
+        timeout: 30
+        output: "build_logs"
+        
+      - type: "log_analysis"
+        logs: "${build_logs}"
+        patterns:
+          - "npm ERR!"
+          - "Error:"
+          - "failed"
+          - "timeout"
+        output: "build_errors"
+        
+      - type: "notification"
+        channel: "beeper"
+        message: |
+          Build failed for ${service}
+          
+          Common errors found:
+          ${build_errors}
+  
+  - name: "analyze_deploy_failure"
+    type: "conditional"
+    condition: "${error_type} == 'deploy_failed'"
+    steps:
+      - type: "ssh_command"
+        host: "mac"
+        command: "flyctl status --app ${service}"
+        timeout: 30
+        output: "deploy_status"
+        
+      - type: "notification"
+        channel: "beeper"
+        message: |
+          Deploy failed for ${service}
+          
+          Status: ${deploy_status}
+  
+  - name: "analyze_health_check_failure"
+    type: "conditional"
+    condition: "${error_type} == 'health_check_failed'"
+    steps:
+      - type: "ssh_command"
+        host: "mac"
+        command: "flyctl logs --app ${service} --limit 50"
+        timeout: 30
+        output: "runtime_logs"
+        
+      - type: "health_check"
+        service: "${service}"
+        from_registry: true
+        retries: 3
+        retry_delay: 10
+        output: "health_recheck"
+        
+      - type: "conditional"
+        condition: "${health_recheck} == 'ok'"
+        steps:
+          - type: "notification"
+            channel: "beeper"
+            message: "✓ ${service} health check now passing - false alarm"
+            
+          - type: "state_update"
+            file: "infra/state/deployments.json"
+            updates:
+              ".*.${service}.status": "running"
+          exit: true
+  
+  # Step 4: Cleanup failed deployment artifacts
+  - name: "cleanup_locks"
+    type: "unlock"
+    resource: "${service}"
+    force: true
+    
+  - name: "cleanup_temp_files"
+    type: "ssh_command"
+    host: "mac"
+    command: "rm -rf /tmp/${service}-deploy-*"
+    continue_on_failure: true
+  
+  # Step 5: Retry deployment if enabled
+  - name: "retry_deployment"
+    type: "conditional"
+    condition: "${retry_deploy} == true"
+    steps:
+      - type: "notification"
+        channel: "beeper"
+        message: "🔄 Retrying deployment for ${service}"
+        
+      - type: "delay"
+        seconds: 30
+        description: "Wait before retry"
+        
+      - type: "load_operation"
+        template: "operations/deploy/${platform}.yml"
+        parameters:
+          service_name: "${service}"
+        timeout: 300
+        output: "retry_status"
+        
+      - type: "conditional"
+        condition: "${retry_status} == 'success'"
+        steps:
+          - type: "notification"
+            channel: "beeper"
+            message: "✓ ${service} deployment succeeded on retry"
+        else:
+          - type: "notification"
+            channel: "beeper"
+            priority: "high"
+            message: |
+              🚨 DEPLOY RETRY FAILED: ${service}
+              
+              Both initial deploy and retry failed
+              Manual intervention required
+  
+  # Step 6: Final cleanup and state update
+  - name: "release_recovery_lock"
+    type: "unlock"
+    resource: "${service}-recovery"
+    
+  - name: "update_final_state"
+    type: "state_update"
+    file: "infra/state/deployments.json"
+    updates:
+      ".*.${service}.last_deploy_attempt": "${current_timestamp}"
+      ".*.${service}.last_deploy_status": "${retry_status || 'failed'}"
+    
+  - name: "log_recovery_operation"
+    type: "operation_log"
+    file: "infra/state/operations.json"
+    entry:
+      type: "deploy_recovery"
+      target: "${service}"
+      platform: "${platform}"
+      error_type: "${error_type}"
+      rollback_performed: "${auto_rollback}"
+      retry_performed: "${retry_deploy}"
+      final_status: "${retry_status || 'failed'}"
+      timestamp: "${current_timestamp}"
+
+# Example execution:
+# recover_deploy_failed(
+#   service="garza-home-mcp",
+#   platform="fly.io",
+#   error_type="health_check_failed",
+#   auto_rollback=true,
+#   retry_deploy=false
+# )

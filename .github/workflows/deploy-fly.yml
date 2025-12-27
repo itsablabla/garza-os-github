@@ -15,6 +15,7 @@ on:
         options:
           - all-changed
           - garza-home-mcp
+          - last-rock-dev
           - lrlab-mcp
           - beeper-matrix-mcp
           - beeper-fast-mcp
@@ -48,6 +49,7 @@ jobs:
             # Check each app directory
             declare -A APP_PATHS=(
               ["garza-home-mcp"]="mcp-servers/garza-home-mcp"
+              ["last-rock-dev"]="mcp-servers/last-rock-dev"
               ["lrlab-mcp"]="mcp-servers/lrlab-mcp"
               ["beeper-matrix-mcp"]="mcp-servers/beeper-matrix-mcp"
               ["beeper-fast-mcp"]="mcp-servers/beeper-fast-mcp"
@@ -91,6 +93,7 @@ jobs:
         run: |
           declare -A APP_PATHS=(
             ["garza-home-mcp"]="mcp-servers/garza-home-mcp"
+            ["last-rock-dev"]="mcp-servers/last-rock-dev"
             ["lrlab-mcp"]="mcp-servers/lrlab-mcp"
             ["beeper-matrix-mcp"]="mcp-servers/beeper-matrix-mcp"
             ["beeper-fast-mcp"]="mcp-servers/beeper-fast-mcp"

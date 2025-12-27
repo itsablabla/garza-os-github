@@ -5,286 +5,319 @@ import { v4 as uuidv4 } from 'uuid';
 const app = express();
 app.use(express.json());
 
-// Store active browser sessions
-const sessions = new Map();
+// Browser and page management
+let browser = null;
+let pages = new Map(); // sessionId -> page
 
-// Get or create browser session
-async function getSession(sessionId) {
-  if (!sessions.has(sessionId)) {
-    const browser = await puppeteer.launch({
+const VIEWPORT = { width: 1280, height: 800 };
+
+// Initialize browser
+async function getBrowser() {
+  if (!browser) {
+    browser = await puppeteer.launch({
       headless: 'new',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
-        '--window-size=1280,800'
+        '--single-process'
       ]
     });
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
-    sessions.set(sessionId, { browser, page, lastUsed: Date.now() });
   }
-  const session = sessions.get(sessionId);
-  session.lastUsed = Date.now();
-  return session;
+  return browser;
 }
 
-// MCP Tools definition
+// Get or create page for session
+async function getPage(sessionId) {
+  if (!pages.has(sessionId)) {
+    const b = await getBrowser();
+    const page = await b.newPage();
+    await page.setViewport(VIEWPORT);
+    pages.set(sessionId, page);
+  }
+  return pages.get(sessionId);
+}
+
+// Tool definitions
 const TOOLS = [
   {
-    name: 'computer_screenshot',
-    description: 'Take a screenshot of the current browser state. Returns base64 image.',
+    name: 'screenshot',
+    description: 'Take a screenshot of the current page. Returns base64 PNG image.',
     inputSchema: {
       type: 'object',
       properties: {
-        session_id: { type: 'string', description: 'Session ID for browser persistence (optional, auto-generated if not provided)' }
+        sessionId: { type: 'string', description: 'Session ID (optional, creates new if not provided)' }
       }
     }
   },
   {
-    name: 'computer_navigate',
-    description: 'Navigate browser to a URL',
+    name: 'navigate',
+    description: 'Navigate to a URL',
     inputSchema: {
       type: 'object',
       properties: {
         url: { type: 'string', description: 'URL to navigate to' },
-        session_id: { type: 'string', description: 'Session ID for browser persistence' }
+        sessionId: { type: 'string', description: 'Session ID (optional)' }
       },
       required: ['url']
     }
   },
   {
-    name: 'computer_click',
+    name: 'click',
     description: 'Click at specific x,y coordinates on the page',
     inputSchema: {
       type: 'object',
       properties: {
         x: { type: 'number', description: 'X coordinate' },
         y: { type: 'number', description: 'Y coordinate' },
-        session_id: { type: 'string', description: 'Session ID for browser persistence' }
+        sessionId: { type: 'string', description: 'Session ID (optional)' }
       },
       required: ['x', 'y']
     }
   },
   {
-    name: 'computer_type',
-    description: 'Type text at current cursor position',
+    name: 'type',
+    description: 'Type text. If x,y provided, clicks there first.',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string', description: 'Text to type' },
-        session_id: { type: 'string', description: 'Session ID for browser persistence' }
+        x: { type: 'number', description: 'X coordinate to click before typing (optional)' },
+        y: { type: 'number', description: 'Y coordinate to click before typing (optional)' },
+        pressEnter: { type: 'boolean', description: 'Press Enter after typing' },
+        sessionId: { type: 'string', description: 'Session ID (optional)' }
       },
       required: ['text']
     }
   },
   {
-    name: 'computer_scroll',
+    name: 'scroll',
     description: 'Scroll the page',
     inputSchema: {
       type: 'object',
       properties: {
-        direction: { type: 'string', enum: ['up', 'down'], description: 'Scroll direction' },
+        direction: { type: 'string', enum: ['up', 'down', 'left', 'right'], description: 'Scroll direction' },
         amount: { type: 'number', description: 'Pixels to scroll (default 300)' },
-        session_id: { type: 'string', description: 'Session ID for browser persistence' }
+        sessionId: { type: 'string', description: 'Session ID (optional)' }
       },
       required: ['direction']
     }
   },
   {
-    name: 'computer_key',
+    name: 'wait',
+    description: 'Wait for specified milliseconds or for page to load',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ms: { type: 'number', description: 'Milliseconds to wait (default 1000)' },
+        sessionId: { type: 'string', description: 'Session ID (optional)' }
+      }
+    }
+  },
+  {
+    name: 'key',
     description: 'Press a keyboard key (Enter, Tab, Escape, etc)',
     inputSchema: {
       type: 'object',
       properties: {
         key: { type: 'string', description: 'Key to press (Enter, Tab, Escape, Backspace, etc)' },
-        session_id: { type: 'string', description: 'Session ID for browser persistence' }
+        sessionId: { type: 'string', description: 'Session ID (optional)' }
       },
       required: ['key']
     }
   },
   {
-    name: 'computer_close',
+    name: 'close_session',
     description: 'Close a browser session',
     inputSchema: {
       type: 'object',
       properties: {
-        session_id: { type: 'string', description: 'Session ID to close' }
+        sessionId: { type: 'string', description: 'Session ID to close' }
       },
-      required: ['session_id']
+      required: ['sessionId']
     }
   }
 ];
 
-// Tool execution
+// Execute tool
 async function executeTool(name, args) {
-  const sessionId = args.session_id || uuidv4();
+  const sessionId = args.sessionId || uuidv4();
   
   try {
     switch (name) {
-      case 'computer_screenshot': {
-        const { page } = await getSession(sessionId);
+      case 'screenshot': {
+        const page = await getPage(sessionId);
         const screenshot = await page.screenshot({ encoding: 'base64', type: 'png' });
         const url = page.url();
-        return { 
-          session_id: sessionId, 
+        return {
+          sessionId,
           url,
-          screenshot: `data:image/png;base64,${screenshot}`,
-          width: 1280,
-          height: 800
+          viewport: VIEWPORT,
+          image: {
+            type: 'image',
+            data: screenshot,
+            mimeType: 'image/png'
+          }
         };
       }
       
-      case 'computer_navigate': {
-        const { page } = await getSession(sessionId);
+      case 'navigate': {
+        const page = await getPage(sessionId);
         await page.goto(args.url, { waitUntil: 'networkidle2', timeout: 30000 });
-        const screenshot = await page.screenshot({ encoding: 'base64', type: 'png' });
-        return { 
-          session_id: sessionId, 
-          url: page.url(),
-          title: await page.title(),
-          screenshot: `data:image/png;base64,${screenshot}`
-        };
+        const title = await page.title();
+        return { sessionId, url: args.url, title, status: 'navigated' };
       }
       
-      case 'computer_click': {
-        const { page } = await getSession(sessionId);
+      case 'click': {
+        const page = await getPage(sessionId);
         await page.mouse.click(args.x, args.y);
-        await page.waitForTimeout(500); // Wait for any animations/navigation
-        const screenshot = await page.screenshot({ encoding: 'base64', type: 'png' });
-        return { 
-          session_id: sessionId, 
-          clicked: { x: args.x, y: args.y },
-          url: page.url(),
-          screenshot: `data:image/png;base64,${screenshot}`
-        };
+        await page.waitForTimeout(500); // Brief wait for any reactions
+        return { sessionId, clicked: { x: args.x, y: args.y }, status: 'clicked' };
       }
       
-      case 'computer_type': {
-        const { page } = await getSession(sessionId);
-        await page.keyboard.type(args.text, { delay: 50 });
-        const screenshot = await page.screenshot({ encoding: 'base64', type: 'png' });
-        return { 
-          session_id: sessionId, 
-          typed: args.text,
-          screenshot: `data:image/png;base64,${screenshot}`
-        };
-      }
-      
-      case 'computer_scroll': {
-        const { page } = await getSession(sessionId);
-        const amount = args.amount || 300;
-        const delta = args.direction === 'up' ? -amount : amount;
-        await page.mouse.wheel({ deltaY: delta });
-        await page.waitForTimeout(300);
-        const screenshot = await page.screenshot({ encoding: 'base64', type: 'png' });
-        return { 
-          session_id: sessionId, 
-          scrolled: { direction: args.direction, amount },
-          screenshot: `data:image/png;base64,${screenshot}`
-        };
-      }
-      
-      case 'computer_key': {
-        const { page } = await getSession(sessionId);
-        await page.keyboard.press(args.key);
-        await page.waitForTimeout(300);
-        const screenshot = await page.screenshot({ encoding: 'base64', type: 'png' });
-        return { 
-          session_id: sessionId, 
-          pressed: args.key,
-          screenshot: `data:image/png;base64,${screenshot}`
-        };
-      }
-      
-      case 'computer_close': {
-        const session = sessions.get(sessionId);
-        if (session) {
-          await session.browser.close();
-          sessions.delete(sessionId);
-          return { closed: sessionId };
+      case 'type': {
+        const page = await getPage(sessionId);
+        if (args.x !== undefined && args.y !== undefined) {
+          await page.mouse.click(args.x, args.y);
+          await page.waitForTimeout(200);
         }
-        return { error: 'Session not found' };
+        await page.keyboard.type(args.text, { delay: 50 });
+        if (args.pressEnter) {
+          await page.keyboard.press('Enter');
+        }
+        return { sessionId, typed: args.text, status: 'typed' };
+      }
+      
+      case 'scroll': {
+        const page = await getPage(sessionId);
+        const amount = args.amount || 300;
+        const scrollMap = {
+          up: [0, -amount],
+          down: [0, amount],
+          left: [-amount, 0],
+          right: [amount, 0]
+        };
+        const [x, y] = scrollMap[args.direction];
+        await page.mouse.wheel({ deltaX: x, deltaY: y });
+        return { sessionId, scrolled: args.direction, amount, status: 'scrolled' };
+      }
+      
+      case 'wait': {
+        const page = await getPage(sessionId);
+        const ms = args.ms || 1000;
+        await page.waitForTimeout(ms);
+        return { sessionId, waited: ms, status: 'waited' };
+      }
+      
+      case 'key': {
+        const page = await getPage(sessionId);
+        await page.keyboard.press(args.key);
+        return { sessionId, pressed: args.key, status: 'key_pressed' };
+      }
+      
+      case 'close_session': {
+        if (pages.has(args.sessionId)) {
+          const page = pages.get(args.sessionId);
+          await page.close();
+          pages.delete(args.sessionId);
+          return { sessionId: args.sessionId, status: 'closed' };
+        }
+        return { sessionId: args.sessionId, status: 'not_found' };
       }
       
       default:
-        return { error: `Unknown tool: ${name}` };
+        throw new Error(`Unknown tool: ${name}`);
     }
-  } catch (err) {
-    return { error: err.message, session_id: sessionId };
+  } catch (error) {
+    return { sessionId, error: error.message, status: 'error' };
   }
 }
 
-// SSE endpoint for MCP
+// SSE endpoint
 app.get('/sse', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('Access-Control-Allow-Origin', '*');
-  
-  const sessionId = uuidv4();
-  
+  res.flushHeaders();
+
+  const clientId = uuidv4();
+  console.log(`Client connected: ${clientId}`);
+
   // Send endpoint info
-  res.write(`event: endpoint\ndata: /messages?sessionId=${sessionId}\n\n`);
-  
+  res.write(`event: endpoint\ndata: /messages?clientId=${clientId}\n\n`);
+
   // Keep alive
   const keepAlive = setInterval(() => {
     res.write(': keepalive\n\n');
   }, 30000);
-  
+
   req.on('close', () => {
     clearInterval(keepAlive);
+    console.log(`Client disconnected: ${clientId}`);
   });
 });
 
-// Messages endpoint for MCP
+// Messages endpoint (JSON-RPC over HTTP)
 app.post('/messages', async (req, res) => {
-  const { method, params, id } = req.body;
-  
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Content-Type', 'application/json');
-  
+
+  const { method, params, id } = req.body;
+  console.log(`Request: ${method}`, params);
+
   try {
     switch (method) {
       case 'initialize':
-        return res.json({
+        res.json({
           jsonrpc: '2.0',
           id,
           result: {
             protocolVersion: '2024-11-05',
-            serverInfo: { name: 'computer-use-mcp', version: '1.0.0' },
-            capabilities: { tools: {} }
+            capabilities: { tools: {} },
+            serverInfo: { name: 'computer-use-mcp', version: '1.0.0' }
           }
         });
-        
+        break;
+
+      case 'notifications/initialized':
+        res.json({ jsonrpc: '2.0', id, result: {} });
+        break;
+
       case 'tools/list':
-        return res.json({
+        res.json({
           jsonrpc: '2.0',
           id,
           result: { tools: TOOLS }
         });
-        
+        break;
+
       case 'tools/call':
-        const result = await executeTool(params.name, params.arguments || {});
-        return res.json({
+        const { name, arguments: args } = params;
+        const result = await executeTool(name, args || {});
+        res.json({
           jsonrpc: '2.0',
           id,
-          result: { content: [{ type: 'text', text: JSON.stringify(result) }] }
+          result: {
+            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
+          }
         });
-        
+        break;
+
       default:
-        return res.json({
+        res.json({
           jsonrpc: '2.0',
           id,
-          result: {}
+          error: { code: -32601, message: `Method not found: ${method}` }
         });
     }
-  } catch (err) {
-    return res.json({
+  } catch (error) {
+    console.error('Error:', error);
+    res.json({
       jsonrpc: '2.0',
       id,
-      error: { code: -32000, message: err.message }
+      error: { code: -32603, message: error.message }
     });
   }
 });
@@ -294,26 +327,15 @@ app.options('*', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.sendStatus(200);
+  res.sendStatus(204);
 });
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', sessions: sessions.size });
+  res.json({ status: 'ok', sessions: pages.size });
 });
 
-// Cleanup old sessions every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, session] of sessions) {
-    if (now - session.lastUsed > 10 * 60 * 1000) { // 10 min idle
-      session.browser.close();
-      sessions.delete(id);
-    }
-  }
-}, 5 * 60 * 1000);
-
-const PORT = process.env.PORT || 8931;
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Computer Use MCP running on port ${PORT}`);
+  console.log(`Computer Use MCP server running on port ${PORT}`);
 });

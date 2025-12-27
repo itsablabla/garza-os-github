@@ -1,10 +1,10 @@
-app = 'computer-use-mcp'
+app = 'garza-computer-use'
 primary_region = 'dfw'
 
 [build]
 
 [http_service]
-  internal_port = 8931
+  internal_port = 8080
   force_https = true
   auto_stop_machines = 'stop'
   auto_start_machines = true

@@ -1,6 +1,6 @@
 # Tool Knowledge Base
 
-**Compiled: 2025-12-26**
+**Compiled: December 26, 2025**
 **Source: Claude Chat History Analysis**
 
 This document contains learned patterns, gotchas, and best practices for GARZA OS tools.
@@ -31,7 +31,14 @@ This document contains learned patterns, gotchas, and best practices for GARZA O
 ### Message Automation
 - When building auto-responders, sender filtering requires **exact user ID matching**
 - Format: `@username:beeper.com` (full Matrix format)
-- Even small discrepancies (missing characters) cause message loops
+- Config must use `@jadengarza:beeper.com` NOT `@jaden:beeper.com`
+- Even small discrepancies cause message loops where bot responds to itself
+
+### Auto-Responder Debugging
+- Check recent messages with API to see actual senderID format
+- Beeper API shows senderIDs in full Matrix format like `@username:beeper.com`
+- launchd services: `launchctl unload ~/Library/LaunchAgents/[service].plist`
+- Check config file user IDs match actual sender format
 
 ---
 
@@ -72,6 +79,13 @@ primary_region = "dfw"
   auto_start_machines = true
 ```
 
+### Custom Domains for Fly.io
+1. Create DNS A/AAAA records pointing to Fly IPs:
+   - IPv4: `66.241.124.34`
+   - IPv6: `2a09:8280:1::be:5a29:0`
+2. Run: `fly certs add domain.com -a app-name`
+3. Set `proxied: false` in Cloudflare (Fly handles SSL)
+
 ---
 
 ## Cloudflare Configuration
@@ -89,12 +103,10 @@ primary_region = "dfw"
 - Config location: `~/.cloudflared/config.yml`
 - DNS records: CNAME to `[tunnel-uuid].cfargotunnel.com`
 
-### Custom Domains for Fly.io
-1. Create DNS A/AAAA records pointing to Fly IPs:
-   - IPv4: `66.241.124.34`
-   - IPv6: `2a09:8280:1::be:5a29:0`
-2. Run: `fly certs add domain.com -a app-name`
-3. Set `proxied: false` in Cloudflare (Fly handles SSL)
+### Workers Service Bindings
+- Worker-to-worker fetch causes error 1042 (direct fetch not allowed)
+- Use service bindings: `env.SERVICENAME.fetch()` instead of HTTP calls
+- Configure in wrangler.toml with exact namespace IDs
 
 ---
 
@@ -137,11 +149,17 @@ Container restart required after changes.
 
 ## UniFi Protect Integration
 
-### Camera Streaming
+### Camera Streaming with MediaMTX
 - Use MediaMTX for RTSP re-streaming to avoid API rate limits
 - RTSPS URLs require SSL fingerprint for certificate bypass
-- Fingerprint format: 64-character hex string
+- Fingerprint format: 64-character hex string (not "insecure")
 - When containers can't reach local network, use `network_mode: host`
+- RTSP URL format: `rtsps://192.168.10.49:7441/[token]?enableSrtp`
+
+### Authentication
+- Local administrator accounts required (SSO won't work for API)
+- Rate limiting (HTTP 429) at IP level, can persist 15-30 minutes
+- Create local account like "server" with password for API access
 
 ### Network Architecture
 - UniFi Protect at 192.168.10.49 (Boulder local network)
@@ -160,54 +178,59 @@ Headers:
 Body: {}
 ```
 - Only accepts POST with empty JSON body, not GET
-- Transcripts contain HTML `<br>` tags - clean with regex
-
----
-
-## Garza Ears Pipeline
-
-### Processing Flow
-1. Poll Beeper for audio messages (60-second intervals)
-2. Download encrypted Matrix media
-3. Decrypt using AES-256-CTR
-4. Transcribe with OpenAI Whisper
-5. Summarize with Claude
-6. Store in Craft `/Garza Memory/Voice Memos/`
-
-### Decryption Pattern
+- Transcripts contain HTML `<br>` tags - clean with:
 ```javascript
-const keyBuffer = Buffer.from(base64urlDecode(key), 'base64');
-const ivBuffer = Buffer.from(base64urlDecode(iv), 'base64');
-const decipher = crypto.createDecipheriv('aes-256-ctr', keyBuffer, ivBuffer);
+.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, '')
 ```
 
 ---
 
-## Mac Automation (launchd)
+## HOOBS / Homebridge
 
-### Service Control
+### Node.js Compatibility
+- HOOBS Docker images use Node 14, but homebridge-unifi-protect requires Node 20+
+- Use official Homebridge Docker container with Node 24 for better compatibility
+- HOOBS SDK is just an API wrapper, needs HOOBS daemon to connect to
+
+### Installation
 ```bash
-# Stop service
-launchctl unload ~/Library/LaunchAgents/[service-name].plist
-
-# Check what's running on a port
-lsof -nP -iTCP:PORT -sTCP:LISTEN
-```
-
-### Path Configuration
-```bash
-export PATH="/opt/homebrew/opt/node@20/bin:$PATH"  # Force Node version
+npm install -g hoobs-cli
+hoobs-cli init
+hoobs-cli start
 ```
 
 ---
 
-## Claude Remote Control (Discord Bridge)
+## Discord Bot Integration
 
-### Architecture
-- Discord messages → n8n webhook → Claude Desktop remote server
+### Configuration
+- Guild ID: `1438654921430929620` (Jaden AI Server)
+- Channel creation: type 0 for text channels
+- Token format: `Bot [token]` in Authorization header
+
+### Claude Desktop Bridge
+- n8n webhooks trigger Claude Desktop via remote control server
 - Uses AppleScript for Cmd+K chat switching
 - Requires 0.3-0.5 second delays between keystrokes
 - Screen recording permissions needed for screenshot-based OCR
+
+---
+
+## Element Web for Beeper
+
+### Configuration
+Element Web can connect to Beeper's Matrix backend:
+```json
+{
+  "default_server_config": {
+    "m.homeserver": {
+      "base_url": "https://matrix.beeper.com",
+      "server_name": "beeper.com"
+    }
+  }
+}
+```
+Note: Beeper uses proprietary auth - third-party clients may not fully work.
 
 ---
 
@@ -244,6 +267,24 @@ certbot certonly --dns-cloudflare \
 
 ---
 
+## Mac Automation (launchd)
+
+### Service Control
+```bash
+# Stop service
+launchctl unload ~/Library/LaunchAgents/[service-name].plist
+
+# Check what's running on a port
+lsof -nP -iTCP:PORT -sTCP:LISTEN
+```
+
+### Path Configuration
+```bash
+export PATH="/opt/homebrew/opt/node@20/bin:$PATH"  # Force Node version
+```
+
+---
+
 ## MCP Server Debugging
 
 ### Connectivity Testing
@@ -260,3 +301,147 @@ ps aux | grep [service]
 - Server connected ≠ tools available (can fail independently)
 - Tool prefixes (e.g., "CF MCP:") indicate proxy routing
 - Test underlying services before debugging MCP proxy layer
+- Health endpoint verifies connectivity, but check tools endpoint separately
+
+### MCP Server SSE Pattern
+```javascript
+// SSE endpoint with API key
+app.get('/sse', (req, res) => {
+  if (req.query.key !== API_KEY) return res.status(401).send('Unauthorized');
+  // ... SSE setup
+});
+
+// Messages endpoint should also verify key
+app.post('/messages', (req, res) => {
+  if (req.query.key !== API_KEY) return res.status(401).json({ error: 'Invalid key' });
+  // ... handle messages
+});
+```
+
+---
+
+## n8n Integration
+
+### Workflow Execution
+- Workflows created via API don't auto-register webhooks until activated in UI
+- Error watcher workflow runs every 15 minutes
+- MCP Server requires JWT token from n8n UI (not standard API key)
+
+### Configuration
+```bash
+# Enable MCP Server
+N8N_PUBLIC_API_ENABLED=true
+N8N_MCP_SERVER_ENABLED=true
+```
+
+---
+
+## GitHub Repository Workflow
+
+### Sync Pattern
+```bash
+cd /Users/customer/garza-os-github
+./sync.sh
+git add -A && git commit -m "description" && git push
+```
+
+### After MCP Server Changes
+Always sync to garza-os repo to maintain version history.
+
+
+---
+
+## DigitalOcean Deployments
+
+### API Pattern
+```bash
+curl -X POST "https://api.digitalocean.com/v2/droplets" \
+  -H "Authorization: Bearer [DO_TOKEN]" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"droplet-name","region":"nyc1","size":"s-2vcpu-4gb","image":"ubuntu-24-04-x64","ssh_keys":[52860258,52893304,52816292],"tags":["garza-infra"]}'
+```
+- SSH key IDs: 52860258, 52893304, 52816292
+- Common sizes: s-2vcpu-4gb (8GB RAM), s-4vcpu-8gb
+- Images: ubuntu-24-04-x64
+
+### Octelium Zero Trust on DigitalOcean
+- Deploy 4GB+ RAM droplet for k3s cluster
+- Install script handles k3s + Octelium automatically
+- DNS: Create A record pointing to droplet IP
+- TLS: Use certbot with cloudflare plugin for wildcard certs
+
+---
+
+## Beeper Media Download
+
+### Matrix Encrypted Media
+```javascript
+// Media URLs with encryptedFileInfoJSON contain base64-encoded metadata
+// Keys need base64url decoding: replace - with + and _ with /
+const key = atob(encKey.replace(/-/g, '+').replace(/_/g, '/'));
+```
+- Encryption: AES-256-CTR
+- IV from file info JSON
+- Use Node.js crypto for decryption
+
+### Backfill Endpoint Pattern
+```javascript
+app.get('/backfill', async (req, res) => {
+  const { room_id, limit = 100 } = req.query;
+  // Fetch historical messages from Matrix
+  // Store voice memos in database
+});
+```
+
+---
+
+## Cloudflare Workers Entity Extraction
+
+### Claude API for Processing
+```javascript
+const response = await fetch('https://api.anthropic.com/v1/messages', {
+  method: 'POST',
+  headers: {
+    'x-api-key': ANTHROPIC_KEY,
+    'anthropic-version': '2023-06-01',
+    'content-type': 'application/json'
+  },
+  body: JSON.stringify({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 2000,
+    messages: [{ role: 'user', content: prompt }]
+  })
+});
+```
+- Use explicit JSON instructions: "Return ONLY valid JSON"
+- Helps avoid markdown formatting in responses
+
+### KV Namespace Bindings
+```toml
+# wrangler.toml
+[[kv_namespaces]]
+binding = "VOICENOTES_KV"
+id = "actual-namespace-id"
+```
+
+---
+
+## SSH Relay Pattern
+
+### Fly.io SSH Tunnels
+- SSH Back Up: https://ssh-backup2.garzahive.com (DFW region)
+- Telnet Back Up: https://ssh-backup.garzahive.com (DEN region - legacy)
+- Both provide SSH access to mac, garzahive, vps hosts
+
+### Host Aliases
+```
+mac = customer@45.147.93.59 (hosted Mac)
+garzahive = root@garzahive-01.garzahive.com
+vps = root@[VPS IP]
+ssh-bastion = relay jump host
+```
+
+---
+
+## Last Updated
+December 27, 2025 - Added DigitalOcean deployment, Beeper media, entity extraction patterns

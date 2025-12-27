@@ -1,0 +1,12 @@
+# Octelium User Configuration
+# Admin user for GARZA OS zero-trust layer
+apiVersion: core.octelium.com/v1
+kind: User
+metadata:
+  name: jaden
+spec:
+  displayName: Jaden Garza
+  email: jadengarza@pm.me
+  isAdmin: true
+  status:
+    isDisabled: false

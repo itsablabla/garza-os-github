@@ -1,105 +1,260 @@
 # Deployment Guide
 
-## GitHub Actions Setup
+**Updated: 2025-12-26**
 
-### Required Secrets
+## Fly.io Deployment
 
-Add these secrets to the repo (Settings → Secrets → Actions):
+### Prerequisites
+```bash
+# Install flyctl
+curl -L https://fly.io/install.sh | sh
+export PATH="$HOME/.fly/bin:$PATH"
 
-| Secret | Description | Where to get it |
-|--------|-------------|-----------------|
-| `FLY_API_TOKEN` | Fly.io API token | `flyctl tokens create deploy` |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare API token | Cloudflare dashboard → API Tokens |
+# Login
+fly auth login
+```
 
-### Auto-Deploy Triggers
+### Standard Deployment Flow
 
-| Server | Trigger |
-|--------|---------|
-| garza-home-mcp | Push to `mcp-servers/garza-home-mcp/**` |
-| beeper-matrix-mcp | Push to `mcp-servers/beeper-matrix-mcp/**` |
-| garza-cloud-mcp | Push to `mcp-servers/garza-cloud-mcp/**` |
+1. **Create app**
+```bash
+fly apps create [app-name] --org personal
+```
 
-### Manual Deploy
+2. **Deploy**
+```bash
+fly deploy --ha=false
+```
 
-1. Go to Actions tab in GitHub
-2. Select the workflow
-3. Click "Run workflow"
-4. Select which server to deploy
+3. **Set secrets**
+```bash
+flyctl secrets set KEY1=value1 KEY2=value2 -a [app-name]
+```
+
+4. **Create volume (if needed)**
+```bash
+fly volumes create [name] --size 1 --region dfw -a [app-name]
+```
+
+### fly.toml Template
+```toml
+app = "your-app-name"
+primary_region = "dfw"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+[mounts]
+  source = "data"
+  destination = "/data"
+```
+
+### Custom Domain Setup
+
+1. **Add DNS in Cloudflare**
+```bash
+# A record
+curl -X POST "https://api.cloudflare.com/client/v4/zones/[zone-id]/dns_records" \
+  -H "X-Auth-Email: jadengarza@pm.me" \
+  -H "X-Auth-Key: [api-key]" \
+  -H "Content-Type: application/json" \
+  --data '{"type":"A","name":"subdomain","content":"66.241.124.34","ttl":1,"proxied":false}'
+```
+
+2. **Add cert to Fly**
+```bash
+fly certs add subdomain.garzahive.com -a [app-name]
+fly certs check subdomain.garzahive.com -a [app-name]
+```
+
+**Important:** Set `proxied: false` in Cloudflare - Fly handles SSL.
 
 ---
 
-## Manual Deployment
+## Cloudflare Workers Deployment
 
-### Fly.io Servers
-
+### Using Wrangler
 ```bash
-cd mcp-servers/garza-home-mcp
-flyctl deploy
-```
-
-### Cloudflare Worker
-
-```bash
-cd mcp-servers/garza-cloud-mcp
 npx wrangler deploy
+
+# With secrets
+npx wrangler secret put SECRET_NAME
 ```
 
-### CF MCP (Mac)
+### wrangler.toml Template
+```toml
+name = "worker-name"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
 
-CF MCP runs locally on the Mac Mini. To update:
+[vars]
+PUBLIC_VAR = "value"
 
+[[kv_namespaces]]
+binding = "KV_NAME"
+id = "kv-namespace-id"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "db-name"
+database_id = "db-id"
+```
+
+---
+
+## Cloudflare Tunnel Setup
+
+### Config Location
+```
+~/.cloudflared/config.yml
+```
+
+### Example Config
+```yaml
+tunnel: [tunnel-uuid]
+credentials-file: /Users/customer/.cloudflared/[tunnel-uuid].json
+
+ingress:
+  - hostname: ha.garzahive.com
+    service: http://127.0.0.1:8123
+  - hostname: beeper-mcp.garzahive.com
+    service: http://127.0.0.1:23373
+  - service: http_status:404
+```
+
+### Commands
 ```bash
-cd /Users/customer/mcp-server
-# Pull latest from repo
-git pull
-# Restart the service
-pm2 restart mcp-server
+# Create tunnel
+cloudflared tunnel create [name]
+
+# Run tunnel
+cloudflared tunnel run [name]
+
+# DNS record (CNAME to tunnel)
+cloudflared tunnel route dns [name] subdomain.garzahive.com
+```
+
+**Important:** Use `127.0.0.1` not `localhost` to avoid IPv6 issues.
+
+---
+
+## Docker Deployments
+
+### Standard Dockerfile Pattern
+```dockerfile
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+EXPOSE 8080
+CMD ["node", "server.js"]
+```
+
+### Docker Compose for Home Stack
+```yaml
+version: '3.8'
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    network_mode: host
+    volumes:
+      - ./config:/config
+    restart: unless-stopped
+    
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    network_mode: host
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml
+    restart: unless-stopped
 ```
 
 ---
 
-## Environment Variables
+## MCP Server Deployment
 
-### garza-home-mcp (Fly.io)
+### Standard MCP Server Pattern
+```javascript
+import express from 'express';
+const app = express();
+const API_KEY = process.env.API_KEY;
 
-Set via `flyctl secrets set`:
+// SSE endpoint
+app.get('/sse', (req, res) => {
+  if (req.query.key !== API_KEY) {
+    return res.status(401).json({ error: 'Invalid key' });
+  }
+  
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive'
+  });
+  
+  const sid = crypto.randomUUID();
+  res.write(`data: /messages?sessionId=${sid}&key=${req.query.key}\n\n`);
+});
 
+// Messages endpoint
+app.post('/messages', (req, res) => {
+  if (req.query.key !== API_KEY) {
+    return res.status(401).json({ error: 'Invalid key' });
+  }
+  // Handle tool calls...
+});
+
+app.listen(8080);
 ```
-BEEPER_PROXY_URL=...
-BEEPER_TOKEN=...
-PROTECT_URL=...
-ABODE_USER=...
-ABODE_PASS=...
-GRAPHITI_URL=...
+
+### MCP Connection URL Format
 ```
-
-### garza-cloud-mcp (Cloudflare)
-
-Set in wrangler.toml or via dashboard:
-
-```
-API_KEY=...
-ADMIN_KEY=...
-PROTECT_URL=...
-BEEPER_PROXY_URL=...
-BEEPER_TOKEN=...
+https://[app].fly.dev/sse?key=[api-key]
 ```
 
 ---
 
-## Syncing Local Changes to Repo
+## GitHub Sync
 
-After making changes on the Mac:
-
+### After MCP Server Changes
 ```bash
 cd /Users/customer/garza-os-github
-
-# Copy updated files
-cp /Users/customer/mcp-server/server.js mcp-servers/cf-mcp/
-cp /Users/customer/garza-os-v2/garza-home-mcp/server.mjs mcp-servers/garza-home-mcp/
-
-# Commit and push
+./sync.sh
 git add -A
-git commit -m "Update server code"
-git push origin main
+git commit -m "description of changes"
+git push
 ```
+
+---
+
+## Common Issues
+
+### Fly.io Region Redirect
+Denver (den) is deprecated → auto-redirects to Dallas (dfw). Update fly.toml accordingly.
+
+### Volume Mount Failures
+Existing machines without volume mounts need destruction before redeployment:
+```bash
+fly machines list -a [app-name]
+fly machines destroy [machine-id] -a [app-name]
+fly deploy
+```
+
+### Cloudflare DNS Propagation
+After adding records, wait 30-60 seconds before cert validation. Use:
+```bash
+dig subdomain.garzahive.com
+```
+
+### MCP Server Not Exposing Tools
+Server connection ≠ tool availability. Debug:
+1. Check `/health` endpoint
+2. Verify API key authentication
+3. Check tool registration in server code

@@ -1,78 +1,125 @@
 # GARZA OS Architecture
 
-## Overview
+**Updated: 2025-12-26**
 
-GARZA OS is a unified AI intelligence layer that operates across multiple platforms to provide Jaden with seamless operational support, automation, and intelligent assistance.
+## System Overview
+
+GARZA OS is Jaden Garza's unified AI intelligence layer - an extension of his cognition operating across all systems with full context and memory.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         GARZA OS                                 │
+│                        GARZA OS                                  │
+│         (Claude as Unified Intelligence Layer)                   │
 ├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐          │
-│  │   Claude    │◄───│    Craft    │───►│   Beeper    │          │
-│  │   (Brain)   │    │   (Memory)  │    │  (Comms)    │          │
-│  └──────┬──────┘    └─────────────┘    └─────────────┘          │
-│         │                                                        │
-│         ▼                                                        │
-│  ┌─────────────────────────────────────────────────────┐        │
-│  │                 MCP Server Layer                      │        │
-│  ├─────────────┬─────────────┬─────────────────────────┤        │
-│  │   CF MCP    │ Garza Home  │   Garza Cloud           │        │
-│  │   (Mac)     │  (Fly.io)   │   (Cloudflare)          │        │
-│  │             │             │                         │        │
-│  │ • SSH       │ • Beeper    │ • KV Storage            │        │
-│  │ • Shell     │ • UniFi     │ • R2 Files              │        │
-│  │ • Files     │ • Abode     │ • D1 Database           │        │
-│  │ • Secrets   │ • Bible     │ • API Gateway           │        │
-│  └─────────────┴─────────────┴─────────────────────────┘        │
-│                                                                  │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
+│  │   CF MCP    │  │ Garza Home  │  │  Garza Ears │             │
+│  │   (Brain)   │  │    MCP      │  │  (Voice AI) │             │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘             │
+│         │                │                │                     │
+├─────────┼────────────────┼────────────────┼─────────────────────┤
+│         ▼                ▼                ▼                     │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │                    Craft (Source of Truth)               │   │
+│  │  - Configs     - Contacts    - Voice Memos              │   │
+│  │  - Identity    - Projects    - Cognitive Insights       │   │
+│  └─────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+## Component Hierarchy
+
+| Component | Role | Status |
+|-----------|------|--------|
+| GARZA OS | Unified intelligence (Claude) | Active |
+| CF MCP | Brain/orchestration on Mac | Active |
+| Garza Home MCP | Home automation (Fly.io) | Active |
+| Garza Hive | Legacy DO VPS | Phasing out |
+| Garza Ears | Voice memo pipeline | Active (Fly.io) |
+
+## MCP Server Architecture
+
+### CF MCP (Brain)
+- **Location:** Local Mac
+- **Role:** Primary orchestration, SSH gateway
+- **Capabilities:** Shell execution, file operations, SSH to other servers
+- **Port:** 3333
+
+### Garza Home MCP
+- **Location:** Fly.io (garza-home-mcp.fly.dev)
+- **Role:** Home automation integration
+- **Capabilities:** Abode security, UniFi cameras, Beeper messaging, Bible tools
+- **Auth:** API key in URL parameter
+
+### Garza Ears
+- **Location:** Fly.io (garza-ears.fly.dev)
+- **Role:** Voice memo intelligence pipeline
+- **Flow:** Beeper audio → Decrypt → Whisper transcription → Claude summary → Craft storage
+
 ## Data Flow
 
-### Context Loading (Session Start)
-1. Graphiti → Relevant historical context
-2. Craft → Specific documents needed
-3. Beeper → Recent conversation history
-4. Calendar/Email → Time-sensitive context
+```
+Voice Memos → Garza Ears → Craft
+      ↓
+Messages → Beeper MCP → Identity Resolution → Craft
+      ↓
+Commands → CF MCP → System Actions
+      ↓
+Home Control → Garza Home MCP → Abode/UniFi
+      ↓
+All Context → Craft (Source of Truth)
+```
 
-### Memory Persistence (Session End)
-1. Add Graphiti episode with facts/decisions
-2. Create/update Craft doc if significant
+## Infrastructure
 
-## MCP Server Responsibilities
+### Hosting
+- **Fly.io** - New deployments (preferred)
+- **DigitalOcean** - Legacy (Garza Hive)
+- **Cloudflare** - DNS, Workers, tunnels
 
-### CF MCP (Mac Mini)
-**Role:** Brain and orchestration hub
+### Key Services
 
-- SSH gateway to all servers
-- Shell command execution
-- File system operations
-- Secret management (Supabase vault)
-- Computer Use containers
-- Primary control plane
+| Service | URL | Purpose |
+|---------|-----|---------|
+| Craft | craft.do | Knowledge/memory |
+| Beeper | beeper.com | Unified messaging |
+| Fly.io | fly.io | App hosting |
+| Cloudflare | cloudflare.com | DNS/tunnels |
 
-### Garza Home MCP (Fly.io)
-**Role:** Home automation and messaging
+### Network
 
-- Beeper integration (unified messaging)
-- UniFi Protect (cameras, events, snapshots)
-- Abode security system
-- Bible tools
-- Graphiti knowledge graph
+| Domain | Points To |
+|--------|-----------|
+| *.garzahive.com | Various services via Cloudflare |
+| garza-home-mcp.fly.dev | Home MCP |
+| garza-ears.fly.dev | Voice pipeline |
 
-### Garza Cloud MCP (Cloudflare Worker)
-**Role:** API gateway and data storage
+## Naming Conventions
 
-- KV namespace operations
-- R2 bucket file storage
-- D1 database queries
-- API key management
-- Rate limiting
-- Audit logging
+| Name | Purpose |
+|------|---------|
+| GARZA OS | Unified intelligence - everything together |
+| Garza Hive | Server infrastructure (beehive of activity) |
+| Garza Deployment Engine | Infrastructure automation |
+| Garza Echo | Bidirectional reflection |
+| Garza Ears | Voice memo listening |
 
-## Redundancy
+## Security Model
 
-If any MCP server goes down, CF MCP can SSH directly to the underlying infrastructure to maintain operations.
+1. **Craft = Source of Truth** - All sensitive data in Craft docs
+2. **API Keys** - Stored in Craft doc 7061
+3. **MCP Auth** - Per-server API keys
+4. **Cloudflare Tunnels** - Secure external access
+5. **Purchase Rule** - Always confirm with Jaden before any purchase
+
+## Contact Loading Protocol
+
+1. Graphiti search for relevant context
+2. Craft docs as needed
+3. Beeper conversation history
+4. Calendar/Email for time-sensitive context
+
+## Post-Chat Requirements
+
+After each conversation:
+1. Create Graphiti episode with facts/decisions
+2. Update Craft doc in /System/ if significant

@@ -1,0 +1,145 @@
+{
+  "version": "1.0.0",
+  "last_updated": "2025-12-27T11:00:00Z",
+  "fly_apps": {
+    "garza-home-mcp": {
+      "url": "https://garza-home-mcp.fly.dev",
+      "sse": "https://garza-home-mcp.fly.dev/sse?key=garza-home-v2-26f93afcebe2ea974cceeddbddeb4fdb",
+      "region": "dfw",
+      "status": "active",
+      "health_endpoint": "/health",
+      "last_deploy": "2025-12-26",
+      "tools_count": 15,
+      "purpose": "Home automation, Bible, lightweight integrations"
+    },
+    "lrlab-mcp": {
+      "url": "https://lrlab-mcp.fly.dev",
+      "sse": "https://lastrock-mcp.garzahive.com/sse?key=lrlab-dev-v2-a7c9e3f18b2d4e6f",
+      "region": "dfw",
+      "status": "active",
+      "health_endpoint": "/health",
+      "last_deploy": "2025-12-27",
+      "tools_count": 32,
+      "purpose": "Last Rock Labs dev tools"
+    },
+    "garza-ears": {
+      "url": "https://garza-ears.fly.dev",
+      "region": "dfw",
+      "status": "active",
+      "purpose": "Voice memo transcription pipeline"
+    },
+    "beeper-matrix-mcp": {
+      "url": "https://beeper-matrix-mcp.fly.dev",
+      "region": "dfw",
+      "status": "active",
+      "purpose": "Beeper Matrix API bridge"
+    },
+    "garza-n8n": {
+      "url": "https://garza-n8n.fly.dev",
+      "region": "dfw",
+      "status": "active",
+      "purpose": "N8N workflow server (self-hosted)"
+    },
+    "stagehand-mcp": {
+      "url": "https://stagehand-mcp.fly.dev",
+      "sse": "https://stagehand-mcp.fly.dev/sse",
+      "region": "dfw",
+      "status": "active",
+      "last_deploy": "2025-12-27",
+      "purpose": "Browser automation (Playwright)"
+    },
+    "garza-ssh-relay-2": {
+      "url": "https://garza-ssh-relay-2.fly.dev",
+      "region": "dfw",
+      "status": "active",
+      "purpose": "SSH tunnel relay"
+    },
+    "garza-element-web": {
+      "url": "https://garza-element-web.fly.dev",
+      "region": "dfw",
+      "status": "suspended",
+      "purpose": "Element Web client for Beeper"
+    },
+    "jessica-bot": {
+      "url": "https://jessica-bot.fly.dev",
+      "status": "suspended",
+      "purpose": "Jessica daily messages"
+    }
+  },
+  "cloudflare_workers": {
+    "voicenotes-webhook": {
+      "url": "https://voicenotes-webhook.jadengarza.workers.dev",
+      "status": "active",
+      "last_deploy": "2025-12-27",
+      "purpose": "VoiceNotes API sync"
+    },
+    "voicenotes-indexer": {
+      "url": "https://voicenotes-indexer.jadengarza.workers.dev",
+      "status": "active",
+      "purpose": "Entity extraction from voice memos"
+    },
+    "jessica-cron": {
+      "url": "https://jessica-cron.garzahive.workers.dev",
+      "status": "active",
+      "purpose": "Automated Jessica messages"
+    },
+    "beeper-scheduler": {
+      "url": "https://beeper-scheduler.garzahive.workers.dev",
+      "status": "active",
+      "purpose": "Scheduled Beeper messages"
+    },
+    "travis-friendship": {
+      "url": "https://travis-friendship.garzahive.workers.dev",
+      "status": "active",
+      "purpose": "Travis relationship automation"
+    },
+    "garza-youversion": {
+      "url": "https://garza-youversion.garzahive.workers.dev",
+      "status": "active",
+      "purpose": "Bible verse of day"
+    },
+    "garza-mcp": {
+      "url": "https://garza-mcp.garzahive.workers.dev",
+      "status": "active",
+      "purpose": "Main GARZA OS MCP server"
+    },
+    "garza-cloud-mcp": {
+      "url": "https://garza-cloud-mcp.garzahive.workers.dev",
+      "status": "active",
+      "purpose": "Cloud orchestration MCP"
+    },
+    "mcp-gateway": {
+      "url": "https://mcp-gateway.garzahive.workers.dev",
+      "status": "active",
+      "purpose": "MCP routing gateway"
+    },
+    "garza-health-monitor": {
+      "url": "https://garza-health-monitor.garzahive.workers.dev",
+      "status": "active",
+      "purpose": "System health monitoring"
+    }
+  },
+  "vps_servers": {
+    "garzahive-01": {
+      "ip": "64.23.180.137",
+      "provider": "digitalocean",
+      "status": "phasing_out",
+      "purpose": "Legacy MCP server"
+    },
+    "octelium-secure": {
+      "ip": "68.183.108.79",
+      "provider": "digitalocean",
+      "region": "nyc1",
+      "status": "active",
+      "purpose": "Zero trust gateway"
+    }
+  },
+  "local_servers": {
+    "boulder-mac": {
+      "ip": "192.168.4.81",
+      "location": "Boulder home",
+      "status": "active",
+      "role": "Primary compute, CF MCP host"
+    }
+  }
+}

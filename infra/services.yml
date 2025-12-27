@@ -1,0 +1,208 @@
+# GARZA OS Services Inventory
+# Complete catalog of all services with health checks
+
+version: "1.0.0"
+last_updated: "2025-12-27"
+
+# MCP Servers
+mcp_servers:
+  garza-home-mcp:
+    type: fly_app
+    url: https://garza-home-mcp.fly.dev
+    sse_url: https://garza-home-mcp.fly.dev/sse?key=garza-home-v2-26f93afcebe2ea974cceeddbddeb4fdb
+    health_check:
+      endpoint: /health
+      method: GET
+      expected_status: 200
+      expected_body_contains: "healthy"
+      timeout_seconds: 10
+    tools_count: 15
+    critical: true
+    
+  lrlab-mcp:
+    type: fly_app
+    url: https://lrlab-mcp.fly.dev
+    sse_url: https://lastrock-mcp.garzahive.com/sse?key=lrlab-dev-v2-a7c9e3f18b2d4e6f
+    health_check:
+      endpoint: /health
+      method: GET
+      expected_status: 200
+      timeout_seconds: 10
+    tools_count: 32
+    critical: true
+  
+  cf-mcp:
+    type: local_service
+    host: mac
+    sse_url: https://mcp-cf.garzahive.com/sse?key=a505d6e718eec02e2ee95ec3fcd6c0623197b013d143b993dcfa4d5eb60eaf0c
+    health_check:
+      method: ping_tool
+      tool: CF MCP:ping
+      expected: "pong"
+      timeout_seconds: 5
+    critical: true
+    role: "Brain/orchestration"
+  
+  stagehand-mcp:
+    type: fly_app
+    url: https://stagehand-mcp.fly.dev
+    sse_url: https://stagehand-mcp.fly.dev/sse
+    health_check:
+      endpoint: /health
+      method: GET
+      expected_status: 200
+      timeout_seconds: 10
+    purpose: "Browser automation (Playwright)"
+    critical: false
+
+# Voice & Communication Services
+voice_services:
+  garza-ears:
+    type: fly_app
+    url: https://garza-ears.fly.dev
+    health_check:
+      endpoint: /health
+      method: GET
+      expected_status: 200
+      timeout_seconds: 10
+    purpose: "Voice memo transcription"
+    dependencies:
+      - openai_api
+      - anthropic_api
+    critical: true
+  
+  beeper-matrix-mcp:
+    type: fly_app
+    url: https://beeper-matrix-mcp.fly.dev
+    health_check:
+      endpoint: /health
+      method: GET
+      expected_status: 200
+      timeout_seconds: 10
+    purpose: "Beeper messaging bridge"
+    critical: true
+
+# Cloudflare Workers
+workers:
+  voicenotes-webhook:
+    type: cloudflare_worker
+    url: https://voicenotes-webhook.jadengarza.workers.dev
+    health_check:
+      endpoint: /health
+      method: GET
+      expected_status: 200
+      timeout_seconds: 5
+    critical: true
+  
+  voicenotes-indexer:
+    type: cloudflare_worker
+    url: https://voicenotes-indexer.jadengarza.workers.dev
+    health_check:
+      endpoint: /health
+      method: GET
+      expected_status: 200
+      timeout_seconds: 5
+    critical: false
+  
+  jessica-cron:
+    type: cloudflare_worker
+    url: https://jessica-cron.garzahive.workers.dev
+    health_check:
+      method: scheduled
+      cron: "0 7 * * *"
+    critical: true
+    dependencies:
+      - beeper-matrix-mcp
+
+# Automation Services
+automation:
+  garza-n8n:
+    type: fly_app
+    url: https://garza-n8n.fly.dev
+    health_check:
+      endpoint: /healthz
+      method: GET
+      expected_status: 200
+      timeout_seconds: 10
+    purpose: "Self-hosted workflow automation"
+    critical: false
+  
+  garza-health-monitor:
+    type: cloudflare_worker
+    url: https://garza-health-monitor.garzahive.workers.dev
+    health_check:
+      endpoint: /health
+      method: GET
+      expected_status: 200
+      timeout_seconds: 5
+    purpose: "System health monitoring"
+    critical: false
+
+# Infrastructure Services
+infrastructure:
+  octelium-secure:
+    type: vps
+    host: octelium
+    services:
+      - cloudflared
+    health_check:
+      method: ssh_command
+      host: octelium
+      command: "systemctl status cloudflared"
+      expected_contains: "active (running)"
+      timeout_seconds: 10
+    critical: true
+    role: "Zero trust gateway"
+  
+  boulder-home-assistant:
+    type: docker_stack
+    host: boulder
+    services:
+      - home-assistant
+      - mosquitto
+    health_check:
+      method: http
+      url: http://192.168.4.81:8123
+      expected_status: 200
+      timeout_seconds: 10
+    critical: false
+    role: "Home automation"
+
+# Health Check Schedule
+health_check_schedule:
+  critical_services:
+    interval_seconds: 60
+    retry_attempts: 3
+    alert_on_failure: true
+    
+  non_critical_services:
+    interval_seconds: 300
+    retry_attempts: 2
+    alert_on_failure: false
+
+# Alert Configuration
+alerts:
+  pushcut:
+    webhook_location: craft_doc
+    doc_id: "7061"
+    field: "Pushcut Webhook"
+  
+  thresholds:
+    consecutive_failures: 3
+    failure_window_seconds: 300
+
+# Dependencies
+dependencies:
+  openai_api:
+    type: external_api
+    health_check:
+      endpoint: https://api.openai.com/v1/models
+      method: GET
+      requires_auth: true
+      
+  anthropic_api:
+    type: external_api
+    health_check:
+      endpoint: https://api.anthropic.com/v1/messages
+      method: POST
+      requires_auth: true

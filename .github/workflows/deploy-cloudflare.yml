@@ -13,6 +13,7 @@ on:
         type: choice
         options:
           - all-changed
+          - workflow-results
           - log-aggregator
           - jessica-cron
           - garza-mcp
@@ -77,12 +78,29 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: wrangler deploy
       
+      - name: Post deploy result
+        if: always()
+        run: |
+          # Only post if workflow-results is deployed (avoid circular dependency on first deploy)
+          if [ "${{ matrix.worker }}" != "workflow-results" ]; then
+            curl -s -X POST "https://workflow-results.jadengarza.workers.dev/result" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"run_id\": \"${{ github.run_id }}\",
+                \"workflow\": \"deploy-cloudflare\",
+                \"host\": \"${{ matrix.worker }}\",
+                \"command\": \"wrangler deploy\",
+                \"status\": \"${{ job.status }}\"
+              }" || true
+          fi
+      
       - name: Notify on failure
         if: failure()
         run: |
-          curl -X POST "https://api.pushcut.io/${{ secrets.PUSHCUT_API_KEY }}/notifications/GARZA%20OS%20Alert" \
+          curl -s -X POST "https://api.pushcut.io/${{ secrets.PUSHCUT_KEY }}/notifications/Worker%20Deploy%20Failed" \
             -H "Content-Type: application/json" \
             -d '{
               "title": "❌ Worker Deploy Failed",
-              "text": "${{ matrix.worker }} failed to deploy"
-            }'
+              "text": "${{ matrix.worker }} failed to deploy",
+              "isTimeSensitive": true
+            }' || true

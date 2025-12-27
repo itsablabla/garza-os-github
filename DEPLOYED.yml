@@ -11,7 +11,6 @@ fly_apps:
     purpose: Home automation, Bible, lightweight integrations
     tools: abode_*, beeper_*, bible_*, unifi_*, graphiti_*
     last_deploy: 2025-12-26
-    
   lrlab-mcp:
     url: https://lrlab-mcp.fly.dev
     sse: https://lastrock-mcp.garzahive.com/sse?key=lrlab-dev-v2-a7c9e3f18b2d4e6f
@@ -21,19 +20,16 @@ fly_apps:
     tools: 32 total (github_*, fly_*, cf_dns_*, n8n_*, scout_*, health_check_all)
     repo_path: /mcp-servers/lrlab-mcp
     last_deploy: 2025-12-27
-    
   garza-ears:
     url: https://garza-ears.fly.dev
     region: dfw
     purpose: Voice memo transcription (Whisper + Claude)
     status: active
-    
   beeper-matrix-mcp:
     url: https://beeper-matrix-mcp.fly.dev
     region: dfw
     purpose: Beeper Matrix API bridge
     status: active
-    
   garza-n8n:
     url: https://garza-n8n.fly.dev
     region: dfw
@@ -48,121 +44,99 @@ fly_apps:
     base_image: mcr.microsoft.com/playwright/mcp
     repo_path: /mcp-servers/playwright-mcp
     last_deploy: 2025-12-27
-    
-    
   garza-ssh-relay-2:
     url: https://garza-ssh-relay-2.fly.dev
     region: dfw
     purpose: SSH tunnel relay
     status: active
-
   # Suspended (On-Demand)
   garza-element-web:
     url: https://garza-element-web.fly.dev
     region: dfw
     purpose: Element Web client for Beeper
     status: suspended
-    
   jessica-bot:
     url: https://jessica-bot.fly.dev
     purpose: Jessica daily messages
     status: suspended
-
 cloudflare_workers:
   jessica-cron:
     url: https://jessica-cron.garzahive.workers.dev
     trigger: cron
     purpose: Automated Jessica messages
     repo_path: /workers/jessica-cron
-    
   beeper-scheduler:
     url: https://beeper-scheduler.garzahive.workers.dev
     purpose: Scheduled Beeper messages
     repo_path: /workers/beeper-scheduler
-    
   travis-friendship:
     url: https://travis-friendship.garzahive.workers.dev
     purpose: Travis relationship automation
     repo_path: /workers/travis-friendship
-    
   garza-youversion:
     url: https://garza-youversion.garzahive.workers.dev
     purpose: Bible verse of day
     repo_path: /workers/garza-youversion
-    
   garza-voicenotes-sync:
     url: https://garza-voicenotes-sync.garzahive.workers.dev
     trigger: cron (every 30 min)
     purpose: Sync voice memos from VoiceNotes.com
     status: active
-    
   garza-voicenotes-extract:
     url: https://garza-voicenotes-extract.garzahive.workers.dev
     purpose: Entity extraction from voice memos using Claude
     status: active
-    
   garza-mcp:
     url: https://garza-mcp.garzahive.workers.dev
     purpose: Main GARZA OS MCP server - primary brain
     status: active
-    
   garza-cloud-mcp:
     url: https://garza-cloud-mcp.garzahive.workers.dev
     purpose: Cloud orchestration MCP
     status: active
-    
   mcp-gateway:
     url: https://mcp-gateway.garzahive.workers.dev
     purpose: MCP routing gateway
     status: active
-    
   garza-health-monitor:
     url: https://garza-health-monitor.garzahive.workers.dev
     purpose: System health monitoring
     status: active
-
 mcp_servers:
   cf-mcp:
     host: Mac Mini (Boulder)
     sse: https://mcp-cf.garzahive.com/sse?key=a505d6e718eec02e2ee95ec3fcd6c0623197b013d143b993dcfa4d5eb60eaf0c
     role: Brain/orchestration/SSH gateway
     tools: shell_exec, ssh_exec, fs_*, beeper_*, unifi_*, computer_use_*, protonmail_*
-    
   garza-hive-mcp:
     host: DigitalOcean VPS
     ip: 64.23.180.137
     sse: https://mcp.garzahive.com/sse?key=a63bed37c48272d6f2e4d87e59953348ffe65edf58919654527644fe84b9c85c
     status: PHASING OUT - use Fly.io
     role: Legacy file ops
-    
   garza-home-mcp:
     host: Fly.io
     sse: https://garza-home-mcp.fly.dev/sse?key=garza-home-v2-26f93afcebe2ea974cceeddbddeb4fdb
     role: Home automation hub
     tools: abode_*, beeper_*, bible_*, unifi_*, graphiti_*
-    
   lrlab-mcp:
     host: Fly.io
     sse: https://lastrock-mcp.garzahive.com/sse?key=lrlab-dev-v2-a7c9e3f18b2d4e6f
     role: Dev tools for Last Rock Labs
     tools: 32 total (github, fly, cf_dns, n8n, scout, ssh)
-
   n8n-mcp:
     host: Fly.io (garza-n8n)
     sse: https://n8n-mcp.garzahive.com/sse?key=n8n-mcp-2025-garza-secure
     role: Workflow automation
     tools: n8n_*, docker_*
-    
   ssh-backup:
     host: Fly.io
     sse: https://ssh-backup2.garzahive.com/sse?key=9a9193a26df4e06f622f512b89fa45dc05191decd71417f7084b9881a6b4f0ee
     role: SSH redundancy relay
-    
   telnet-backup:
     host: Fly.io
     sse: https://ssh-backup.garzahive.com/sse?key=3253b99f890b88d11af53da8262147647043d360447778c507819d5d25016a29
     role: Telnet access relay
-
 zero_trust:
   octelium:
     host: DigitalOcean
@@ -172,44 +146,36 @@ zero_trust:
     purpose: Zero trust gateway for MCP servers and homelab
     status: active
     last_deploy: 2025-12-27
-
 vps_servers:
   garzahive-01:
     ip: 64.23.180.137
     provider: DigitalOcean
     status: PHASING OUT
-    
   octelium-secure:
     ip: 68.183.108.79
     provider: DigitalOcean
     region: nyc1
     purpose: Octelium zero trust cluster
     status: active
-    
   boulder-mac:
     ip: 192.168.4.81
     location: Boulder home
     role: Primary compute, CF MCP host
-
 n8n_instances:
   cloud_garzasync:
     url: https://jadengarza.app.n8n.cloud
     api_key: in vault (doc 7061)
     purpose: Main automation workflows
-    
   fly_garza_n8n:
     url: https://garza-n8n.fly.dev
     purpose: Self-hosted backup
-
 domains:
   garzahive.com:
     registrar: Cloudflare
     zone_id: 9c70206ce57d506d1d4e9397f6bb8ebc
-    
   nomadinternet.com:
     registrar: Cloudflare
     purpose: Business
-
 stacks:
   boulder-home:
     location: Boulder Mac Mini
@@ -219,9 +185,8 @@ stacks:
       - Computer Use containers
       - Homebridge (UniFi Protect cameras)
     repo_path: /stacks/boulder-home
-
 # Metadata - auto-updated by GitHub Actions
 metadata:
-  last_health_check: null
+  last_health_check: "2025-12-27T01:27:46Z"
   version: "0.4.0"
   repo: https://github.com/jadengarza/garza-os

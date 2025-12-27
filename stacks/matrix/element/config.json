@@ -1,0 +1,25 @@
+{
+    "default_server_config": {
+        "m.homeserver": {
+            "base_url": "https://matrix.beeper.com",
+            "server_name": "beeper.com"
+        }
+    },
+    "brand": "Element",
+    "integrations_ui_url": "",
+    "integrations_rest_url": "",
+    "integrations_widgets_urls": [],
+    "show_labs_settings": true,
+    "default_theme": "dark",
+    "room_directory": {
+        "servers": ["beeper.com"]
+    },
+    "features": {
+        "feature_latex_maths": true,
+        "feature_pinning": true,
+        "feature_threads": true
+    },
+    "setting_defaults": {
+        "breadcrumbs": true
+    }
+}

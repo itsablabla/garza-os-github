@@ -1,0 +1,14 @@
+[global]
+server_name = "matrix.garzahive.com"
+database_backend = "rocksdb"
+database_path = "/data/conduit.db"
+port = 6167
+address = "0.0.0.0"
+max_request_size = 20000000
+allow_registration = false
+allow_federation = true
+trusted_servers = ["matrix.org"]
+
+[global.well_known]
+client = "https://matrix.garzahive.com"
+server = "matrix.garzahive.com:443"

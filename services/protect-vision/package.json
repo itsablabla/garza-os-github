@@ -1,0 +1,16 @@
+{
+  "name": "protect-vision-server",
+  "version": "1.0.0",
+  "description": "UniFi Protect camera vision server with AI analysis",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2"
+  }
+}

@@ -1,0 +1,15 @@
+name = "travis-friendship"
+main = "index.js"
+compatibility_date = "2024-01-01"
+account_id = "14adde85f76060c6edef6f3239d36e6a"
+
+[triggers]
+crons = ["0 14 * * SUN", "0 15 * * *"]
+
+[[d1_databases]]
+binding = "RELATIONSHIPS_DB"
+database_name = "garza-relationships"
+database_id = "6535caf7-c1b0-4412-b02e-df8742638b70"
+
+[vars]
+PUSHCUT_WEBHOOK = "https://api.pushcut.io/fRMLJVVtySzvdDoLi93Wh/notifications/garzaos"

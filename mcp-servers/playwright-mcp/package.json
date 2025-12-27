@@ -1,0 +1,11 @@
+{
+  "name": "playwright-mcp-fly",
+  "version": "1.0.0",
+  "description": "Playwright MCP server for GARZA OS on Fly.io",
+  "scripts": {
+    "start": "npx @playwright/mcp@latest --port 3000 --host 0.0.0.0 --headless"
+  },
+  "dependencies": {
+    "@playwright/mcp": "^0.0.28"
+  }
+}

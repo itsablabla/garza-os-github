@@ -1,0 +1,9 @@
+{
+  "name": "protect-proxy",
+  "version": "1.0.0",
+  "description": "Local proxy for UniFi Protect snapshots",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

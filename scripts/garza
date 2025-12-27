@@ -1,0 +1,284 @@
+#!/bin/bash
+# GARZA OS CLI
+# Usage: garza <command> [args]
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+# Load Fly token if not set
+if [ -z "$FLY_API_TOKEN" ]; then
+  export PATH="$HOME/.fly/bin:$PATH"
+fi
+
+# App mappings
+declare -A FLY_APPS=(
+  ["home"]="garza-home-mcp"
+  ["lrlab"]="lrlab-mcp"
+  ["ears"]="garza-ears"
+  ["beeper"]="beeper-matrix-mcp"
+  ["n8n"]="garza-n8n"
+  ["jessica"]="jessica-bot"
+  ["element"]="garza-element-web"
+)
+
+declare -A HEALTH_ENDPOINTS=(
+  ["home"]="https://garza-home-mcp.fly.dev/health"
+  ["lrlab"]="https://lrlab-mcp.fly.dev/health"
+  ["ears"]="https://garza-ears.fly.dev/health"
+  ["beeper"]="https://beeper-matrix-mcp.fly.dev/health"
+  ["n8n"]="https://garza-n8n.fly.dev"
+  ["cf"]="https://mcp-cf.garzahive.com/health"
+  ["hive"]="https://mcp.garzahive.com/health"
+)
+
+show_help() {
+  echo -e "${BLUE}GARZA OS CLI${NC}"
+  echo ""
+  echo "Usage: garza <command> [args]"
+  echo ""
+  echo "Commands:"
+  echo "  deploy <app>      Deploy an app to Fly.io"
+  echo "  logs <app>        Stream logs from an app"
+  echo "  health            Check all service health"
+  echo "  restart <app>     Restart an app"
+  echo "  ssh <app>         SSH into an app"
+  echo "  status            Show all app statuses"
+  echo "  secret <action>   Manage secrets (list, set, rotate)"
+  echo "  backup            Backup Craft docs to repo"
+  echo "  sync              Sync and push to GitHub"
+  echo ""
+  echo "Apps: home, lrlab, ears, beeper, n8n, jessica, element"
+}
+
+cmd_deploy() {
+  local app=$1
+  if [ -z "$app" ]; then
+    echo -e "${RED}Error: Specify an app to deploy${NC}"
+    echo "Apps: ${!FLY_APPS[*]}"
+    exit 1
+  fi
+  
+  local fly_app="${FLY_APPS[$app]}"
+  if [ -z "$fly_app" ]; then
+    echo -e "${RED}Unknown app: $app${NC}"
+    exit 1
+  fi
+  
+  echo -e "${BLUE}Deploying $fly_app...${NC}"
+  
+  # Find the app directory
+  local app_dir=""
+  if [ -d "$REPO_DIR/mcp-servers/$fly_app" ]; then
+    app_dir="$REPO_DIR/mcp-servers/$fly_app"
+  elif [ -d "$REPO_DIR/services/$fly_app" ]; then
+    app_dir="$REPO_DIR/services/$fly_app"
+  else
+    echo -e "${RED}Cannot find directory for $fly_app${NC}"
+    exit 1
+  fi
+  
+  cd "$app_dir"
+  flyctl deploy --remote-only
+  echo -e "${GREEN}✅ Deployed $fly_app${NC}"
+}
+
+cmd_logs() {
+  local app=$1
+  if [ -z "$app" ]; then
+    echo -e "${RED}Error: Specify an app${NC}"
+    exit 1
+  fi
+  
+  local fly_app="${FLY_APPS[$app]}"
+  if [ -z "$fly_app" ]; then
+    echo -e "${RED}Unknown app: $app${NC}"
+    exit 1
+  fi
+  
+  echo -e "${BLUE}Streaming logs for $fly_app...${NC}"
+  flyctl logs -a "$fly_app"
+}
+
+cmd_health() {
+  echo -e "${BLUE}Checking GARZA OS Health...${NC}"
+  echo ""
+  
+  local failed=0
+  
+  for name in "${!HEALTH_ENDPOINTS[@]}"; do
+    url="${HEALTH_ENDPOINTS[$name]}"
+    status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || echo "000")
+    
+    if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+      echo -e "  ${GREEN}✅${NC} $name"
+    else
+      echo -e "  ${RED}❌${NC} $name ($status)"
+      ((failed++))
+    fi
+  done
+  
+  echo ""
+  if [ $failed -eq 0 ]; then
+    echo -e "${GREEN}All services healthy!${NC}"
+  else
+    echo -e "${RED}$failed service(s) down${NC}"
+    exit 1
+  fi
+}
+
+cmd_restart() {
+  local app=$1
+  if [ -z "$app" ]; then
+    echo -e "${RED}Error: Specify an app${NC}"
+    exit 1
+  fi
+  
+  local fly_app="${FLY_APPS[$app]}"
+  if [ -z "$fly_app" ]; then
+    echo -e "${RED}Unknown app: $app${NC}"
+    exit 1
+  fi
+  
+  echo -e "${BLUE}Restarting $fly_app...${NC}"
+  flyctl apps restart "$fly_app"
+  echo -e "${GREEN}✅ Restarted $fly_app${NC}"
+}
+
+cmd_ssh() {
+  local app=$1
+  if [ -z "$app" ]; then
+    echo -e "${RED}Error: Specify an app${NC}"
+    exit 1
+  fi
+  
+  local fly_app="${FLY_APPS[$app]}"
+  if [ -z "$fly_app" ]; then
+    echo -e "${RED}Unknown app: $app${NC}"
+    exit 1
+  fi
+  
+  echo -e "${BLUE}SSHing into $fly_app...${NC}"
+  flyctl ssh console -a "$fly_app"
+}
+
+cmd_status() {
+  echo -e "${BLUE}GARZA OS Status${NC}"
+  echo ""
+  
+  echo "Fly.io Apps:"
+  flyctl apps list 2>/dev/null | grep -E "garza|lrlab|beeper|jessica|element" || echo "  (flyctl not configured)"
+  
+  echo ""
+  echo "Run 'garza health' for detailed health check"
+}
+
+cmd_secret() {
+  local action=$1
+  local app=$2
+  
+  case "$action" in
+    list)
+      if [ -z "$app" ]; then
+        echo -e "${RED}Error: Specify an app${NC}"
+        exit 1
+      fi
+      local fly_app="${FLY_APPS[$app]}"
+      flyctl secrets list -a "$fly_app"
+      ;;
+    set)
+      if [ -z "$app" ]; then
+        echo -e "${RED}Usage: garza secret set <app> KEY=value${NC}"
+        exit 1
+      fi
+      local fly_app="${FLY_APPS[$app]}"
+      shift 2
+      flyctl secrets set "$@" -a "$fly_app"
+      ;;
+    rotate)
+      echo -e "${YELLOW}Secret rotation not yet implemented${NC}"
+      echo "TODO: Generate new keys and update all services"
+      ;;
+    *)
+      echo "Usage: garza secret <list|set|rotate> [app] [args]"
+      ;;
+  esac
+}
+
+cmd_backup() {
+  echo -e "${BLUE}Backing up Craft docs...${NC}"
+  
+  # This would use Craft MCP to export key docs
+  # For now, just sync the repo
+  cd "$REPO_DIR"
+  
+  echo "TODO: Export Craft docs via API"
+  echo "  - Master Config (14219)"
+  echo "  - Identity Map (6996)"
+  echo "  - Jada Soul (14522)"
+  echo "  - App Index (16391)"
+  
+  echo -e "${YELLOW}Backup not yet implemented - need Craft API integration${NC}"
+}
+
+cmd_sync() {
+  echo -e "${BLUE}Syncing to GitHub...${NC}"
+  
+  cd "$REPO_DIR"
+  git add -A
+  
+  if git diff --staged --quiet; then
+    echo "No changes to commit"
+  else
+    git commit -m "Auto-sync $(date '+%Y-%m-%d %H:%M')"
+    git push
+    echo -e "${GREEN}✅ Synced to GitHub${NC}"
+  fi
+}
+
+# Main dispatch
+case "$1" in
+  deploy)
+    cmd_deploy "$2"
+    ;;
+  logs)
+    cmd_logs "$2"
+    ;;
+  health)
+    cmd_health
+    ;;
+  restart)
+    cmd_restart "$2"
+    ;;
+  ssh)
+    cmd_ssh "$2"
+    ;;
+  status)
+    cmd_status
+    ;;
+  secret)
+    cmd_secret "$2" "$3" "${@:4}"
+    ;;
+  backup)
+    cmd_backup
+    ;;
+  sync)
+    cmd_sync
+    ;;
+  help|--help|-h|"")
+    show_help
+    ;;
+  *)
+    echo -e "${RED}Unknown command: $1${NC}"
+    show_help
+    exit 1
+    ;;
+esac

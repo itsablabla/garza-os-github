@@ -9,32 +9,82 @@ jobs:
   health-check:
     runs-on: ubuntu-latest
     steps:
-      - name: Check MCP Servers
+      - name: Check All Services
+        id: health
         run: |
-          SERVERS=(
-            "garza-home-mcp.fly.dev"
-            "lrlab-mcp.fly.dev"
+          declare -A SERVERS=(
+            ["garza-home-mcp"]="https://garza-home-mcp.fly.dev/health"
+            ["lrlab-mcp"]="https://lrlab-mcp.fly.dev/health"
+            ["garza-ears"]="https://garza-ears.fly.dev/health"
+            ["beeper-matrix-mcp"]="https://beeper-matrix-mcp.fly.dev/health"
+            ["garza-n8n"]="https://garza-n8n.fly.dev"
+            ["cf-mcp"]="https://mcp-cf.garzahive.com/health"
+            ["n8n-mcp"]="https://n8n-mcp.garzahive.com/health"
+          )
+          
+          declare -A WORKERS=(
+            ["jessica-cron"]="https://jessica-cron.garzahive.workers.dev"
+            ["garza-mcp"]="https://garza-mcp.garzahive.workers.dev/health"
+            ["garza-health-monitor"]="https://garza-health-monitor.garzahive.workers.dev"
           )
           
           FAILED=()
+          RESULTS=""
           
-          for server in "${SERVERS[@]}"; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://$server/health" || echo "000")
-            if [ "$STATUS" != "200" ]; then
-              FAILED+=("$server ($STATUS)")
+          echo "=== Checking Fly.io Apps ==="
+          for name in "${!SERVERS[@]}"; do
+            url="${SERVERS[$name]}"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url" || echo "000")
+            if [ "$STATUS" = "200" ] || [ "$STATUS" = "204" ]; then
+              echo "✅ $name"
+              RESULTS="$RESULTS\n✅ $name"
+            else
+              echo "❌ $name ($STATUS)"
+              RESULTS="$RESULTS\n❌ $name ($STATUS)"
+              FAILED+=("$name")
             fi
           done
           
+          echo ""
+          echo "=== Checking Cloudflare Workers ==="
+          for name in "${!WORKERS[@]}"; do
+            url="${WORKERS[$name]}"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url" || echo "000")
+            if [ "$STATUS" = "200" ] || [ "$STATUS" = "204" ]; then
+              echo "✅ $name"
+              RESULTS="$RESULTS\n✅ $name"
+            else
+              echo "❌ $name ($STATUS)"
+              RESULTS="$RESULTS\n❌ $name ($STATUS)"
+              FAILED+=("$name")
+            fi
+          done
+          
+          echo ""
+          echo "failed_count=${#FAILED[@]}" >> $GITHUB_OUTPUT
+          echo "failed_services=${FAILED[*]}" >> $GITHUB_OUTPUT
+          
           if [ ${#FAILED[@]} -gt 0 ]; then
-            echo "❌ Failed servers:"
-            printf '%s\n' "${FAILED[@]}"
+            echo "❌ ${#FAILED[@]} services down"
             exit 1
           else
-            echo "✅ All servers healthy"
+            echo "✅ All services healthy"
           fi
       
-      - name: Notify on Failure
+      - name: Send Pushcut Alert on Failure
         if: failure()
         run: |
-          # Add notification here (Pushcut, email, etc.)
-          echo "Would notify about failure"
+          curl -X POST "https://api.pushcut.io/${{ secrets.PUSHCUT_API_KEY }}/notifications/GARZA%20OS%20Alert" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "title": "🚨 GARZA OS Service Down",
+              "text": "Failed: ${{ steps.health.outputs.failed_services }}",
+              "isTimeSensitive": true
+            }'
+      
+      - name: Log to Craft (Optional)
+        if: always()
+        continue-on-error: true
+        run: |
+          # Could add Craft logging here via API
+          echo "Health check completed at $(date)"

@@ -1,15 +1,65 @@
-name: Deploy Cloudflare Worker
+name: Deploy Cloudflare Workers
 
 on:
   push:
     branches: [main]
     paths:
-      - 'mcp-servers/garza-cloud-mcp/**'
+      - 'workers/**'
   workflow_dispatch:
+    inputs:
+      worker:
+        description: 'Which worker to deploy'
+        required: true
+        type: choice
+        options:
+          - all-changed
+          - log-aggregator
+          - jessica-cron
+          - garza-mcp
+          - garza-health-monitor
+          - rate-limiter
 
 jobs:
-  deploy:
+  detect-changes:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      
+      - name: Detect changed workers
+        id: set-matrix
+        run: |
+          if [ "${{ github.event.inputs.worker }}" != "" ] && [ "${{ github.event.inputs.worker }}" != "all-changed" ]; then
+            echo "matrix={\"worker\":[\"${{ github.event.inputs.worker }}\"]}" >> $GITHUB_OUTPUT
+          else
+            WORKERS=()
+            CHANGED=$(git diff --name-only HEAD~1 HEAD)
+            
+            for dir in workers/*/; do
+              name=$(basename "$dir")
+              if echo "$CHANGED" | grep -q "^workers/$name/"; then
+                WORKERS+=("\"$name\"")
+              fi
+            done
+            
+            if [ ${#WORKERS[@]} -eq 0 ]; then
+              echo "matrix={\"worker\":[]}" >> $GITHUB_OUTPUT
+            else
+              JOINED=$(IFS=,; echo "${WORKERS[*]}")
+              echo "matrix={\"worker\":[$JOINED]}" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  deploy:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.matrix != '{"worker":[]}' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+      fail-fast: false
     steps:
       - uses: actions/checkout@v4
       
@@ -18,12 +68,21 @@ jobs:
         with:
           node-version: '20'
       
-      - name: Install dependencies
-        working-directory: mcp-servers/garza-cloud-mcp
-        run: npm install
+      - name: Install Wrangler
+        run: npm install -g wrangler
       
-      - name: Deploy to Cloudflare
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          workingDirectory: mcp-servers/garza-cloud-mcp
+      - name: Deploy ${{ matrix.worker }}
+        working-directory: workers/${{ matrix.worker }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: wrangler deploy
+      
+      - name: Notify on failure
+        if: failure()
+        run: |
+          curl -X POST "https://api.pushcut.io/${{ secrets.PUSHCUT_API_KEY }}/notifications/GARZA%20OS%20Alert" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "title": "❌ Worker Deploy Failed",
+              "text": "${{ matrix.worker }} failed to deploy"
+            }'

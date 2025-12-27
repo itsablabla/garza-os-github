@@ -1,0 +1,72 @@
+name: Backup Craft Docs
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 6 AM UTC (midnight MST)
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Backup Critical Docs
+        env:
+          CRAFT_MCP_URL: ${{ secrets.CRAFT_MCP_URL }}
+        run: |
+          mkdir -p backups/craft
+          
+          # Document IDs to backup
+          declare -A DOCS=(
+            ["master-config"]="14219"
+            ["identity-map"]="6996"
+            ["jada-soul"]="14522"
+            ["app-index"]="16391"
+            ["run-registry"]="6991"
+            ["run-state"]="6995"
+            ["mcp-registry"]="7037"
+            ["api-passwords"]="7061"
+          )
+          
+          for name in "${!DOCS[@]}"; do
+            id="${DOCS[$name]}"
+            echo "Fetching $name (doc $id)..."
+            
+            # Call Craft MCP to get doc content
+            curl -s -X POST "$CRAFT_MCP_URL" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"jsonrpc\": \"2.0\",
+                \"method\": \"tools/call\",
+                \"params\": {
+                  \"name\": \"blocks_get\",
+                  \"arguments\": {
+                    \"id\": \"$id\",
+                    \"format\": \"markdown\"
+                  }
+                },
+                \"id\": 1
+              }" | jq -r '.result.content // empty' > "backups/craft/$name.md" 2>/dev/null || echo "Failed to fetch $name"
+          done
+          
+          echo "Backup completed at $(date)" > backups/craft/LAST_BACKUP.txt
+      
+      - name: Commit backups
+        run: |
+          git config user.name "GARZA OS Bot"
+          git config user.email "bot@garzahive.com"
+          
+          git add backups/
+          
+          if git diff --staged --quiet; then
+            echo "No changes to backup"
+          else
+            git commit -m "Backup Craft docs $(date '+%Y-%m-%d')"
+            git push
+          fi

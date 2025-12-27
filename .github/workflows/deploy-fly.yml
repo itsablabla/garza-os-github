@@ -4,56 +4,119 @@ on:
   push:
     branches: [main]
     paths:
-      - 'mcp-servers/garza-home-mcp/**'
-      - 'mcp-servers/beeper-matrix-mcp/**'
+      - 'mcp-servers/**'
+      - 'services/**'
   workflow_dispatch:
     inputs:
-      server:
-        description: 'Which server to deploy'
+      target:
+        description: 'Which app to deploy'
         required: true
         type: choice
         options:
+          - all-changed
           - garza-home-mcp
+          - lrlab-mcp
           - beeper-matrix-mcp
-          - both
+          - beeper-fast-mcp
+          - garza-ears
+          - jessica-bot
+          - email-craft
+
+env:
+  FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
 jobs:
-  changes:
+  detect-changes:
     runs-on: ubuntu-latest
     outputs:
-      garza-home: ${{ steps.filter.outputs.garza-home }}
-      beeper-matrix: ${{ steps.filter.outputs.beeper-matrix }}
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
         with:
-          filters: |
-            garza-home:
-              - 'mcp-servers/garza-home-mcp/**'
-            beeper-matrix:
-              - 'mcp-servers/beeper-matrix-mcp/**'
+          fetch-depth: 2
+      
+      - name: Detect changed apps
+        id: set-matrix
+        run: |
+          if [ "${{ github.event.inputs.target }}" != "" ] && [ "${{ github.event.inputs.target }}" != "all-changed" ]; then
+            # Manual trigger for specific app
+            echo "matrix={\"app\":[\"${{ github.event.inputs.target }}\"]}" >> $GITHUB_OUTPUT
+          else
+            # Auto-detect from changed files
+            APPS=()
+            
+            # Check each app directory
+            declare -A APP_PATHS=(
+              ["garza-home-mcp"]="mcp-servers/garza-home-mcp"
+              ["lrlab-mcp"]="mcp-servers/lrlab-mcp"
+              ["beeper-matrix-mcp"]="mcp-servers/beeper-matrix-mcp"
+              ["beeper-fast-mcp"]="mcp-servers/beeper-fast-mcp"
+              ["garza-ears"]="services/garza-ears"
+              ["jessica-bot"]="services/jessica-bot"
+              ["email-craft"]="services/email-craft"
+            )
+            
+            CHANGED=$(git diff --name-only HEAD~1 HEAD)
+            
+            for app in "${!APP_PATHS[@]}"; do
+              path="${APP_PATHS[$app]}"
+              if echo "$CHANGED" | grep -q "^$path/"; then
+                APPS+=("\"$app\"")
+              fi
+            done
+            
+            if [ ${#APPS[@]} -eq 0 ]; then
+              echo "No apps changed"
+              echo "matrix={\"app\":[]}" >> $GITHUB_OUTPUT
+            else
+              JOINED=$(IFS=,; echo "${APPS[*]}")
+              echo "matrix={\"app\":[$JOINED]}" >> $GITHUB_OUTPUT
+            fi
+          fi
 
-  deploy-garza-home:
-    needs: changes
-    if: needs.changes.outputs.garza-home == 'true' || github.event.inputs.server == 'garza-home-mcp' || github.event.inputs.server == 'both'
+  deploy:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.matrix != '{"app":[]}' }}
     runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+      fail-fast: false
     steps:
       - uses: actions/checkout@v4
+      
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only
-        working-directory: mcp-servers/garza-home-mcp
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-
-  deploy-beeper-matrix:
-    needs: changes
-    if: needs.changes.outputs.beeper-matrix == 'true' || github.event.inputs.server == 'beeper-matrix-mcp' || github.event.inputs.server == 'both'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only
-        working-directory: mcp-servers/beeper-matrix-mcp
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      
+      - name: Determine app path
+        id: path
+        run: |
+          declare -A APP_PATHS=(
+            ["garza-home-mcp"]="mcp-servers/garza-home-mcp"
+            ["lrlab-mcp"]="mcp-servers/lrlab-mcp"
+            ["beeper-matrix-mcp"]="mcp-servers/beeper-matrix-mcp"
+            ["beeper-fast-mcp"]="mcp-servers/beeper-fast-mcp"
+            ["garza-ears"]="services/garza-ears"
+            ["jessica-bot"]="services/jessica-bot"
+            ["email-craft"]="services/email-craft"
+          )
+          echo "path=${APP_PATHS[${{ matrix.app }}]}" >> $GITHUB_OUTPUT
+      
+      - name: Deploy ${{ matrix.app }}
+        run: |
+          cd ${{ steps.path.outputs.path }}
+          flyctl deploy --remote-only
+      
+      - name: Notify on success
+        if: success()
+        run: |
+          echo "✅ Deployed ${{ matrix.app }}"
+      
+      - name: Notify on failure
+        if: failure()
+        run: |
+          curl -X POST "https://api.pushcut.io/${{ secrets.PUSHCUT_API_KEY }}/notifications/GARZA%20OS%20Alert" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "title": "❌ Deploy Failed",
+              "text": "${{ matrix.app }} failed to deploy",
+              "isTimeSensitive": true
+            }'

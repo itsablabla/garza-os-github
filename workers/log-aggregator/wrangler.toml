@@ -1,0 +1,14 @@
+name = "garza-log-aggregator"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+ENVIRONMENT = "production"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "garza-logs"
+database_id = "68898f8e-5e88-4f92-90d6-8bf4b9ddb4c6"
+
+[triggers]
+crons = ["*/30 * * * *"]

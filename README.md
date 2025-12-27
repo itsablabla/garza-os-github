@@ -1,100 +1,134 @@
 # GARZA OS
 
-Personal AI operating system configuration, infrastructure, and tooling.
+Personal AI operating system - unified intelligence platform for Jaden Garza.
 
----
-
-## 🤖 CLAUDE: READ THIS FIRST
-
-| Priority | Document | Purpose |
-|----------|----------|---------|
-| 1️⃣ | [`docs/claude-preflight.md`](docs/claude-preflight.md) | **START HERE** - Decision trees, credentials, common mistakes |
-| 2️⃣ | [`docs/stack-first.md`](docs/stack-first.md) | Use existing tools before building new |
-| 3️⃣ | [`docs/session-protocol.md`](docs/session-protocol.md) | What to do at start/end of every session |
-| 4️⃣ | [`DEPLOYED.yml`](DEPLOYED.yml) | What's running where |
-
----
-
-## 📁 Structure
-
-```
-garza-os-github/
-├── docs/
-│   ├── claude-preflight.md      # 🎯 Pre-flight checklist
-│   ├── stack-first.md           # Use existing tools first
-│   ├── session-protocol.md      # Session start/end procedures
-│   ├── credentials-index.md     # Where to find secrets
-│   ├── curl-examples.md         # Tested API commands
-│   ├── error-playbook.md        # Known errors + solutions
-│   ├── fallback-diagram.md      # What to try when things fail
-│   ├── graphiti-guide.md        # Knowledge graph usage
-│   ├── secrets-consolidation.md # Secrets migration plan
-│   └── runbooks/
-│       ├── add-mcp-tool.md      # Add tool to MCP server
-│       ├── create-n8n-workflow.md
-│       ├── deploy-fly-app.md
-│       ├── add-supabase-table.md
-│       └── debug-mcp-connection.md
-├── scripts/
-│   ├── health-check.sh          # Verify all systems up
-│   ├── sync-deployed.sh         # Update DEPLOYED.yml from live
-│   └── discover-drift.sh        # Find undocumented services
-├── templates/
-│   ├── fly-mcp/                 # MCP server starter
-│   ├── n8n/                     # Workflow templates
-│   ├── cf-worker/               # Cloudflare Worker templates
-│   └── supabase/                # Database schema templates
-├── configs/                     # Configuration files
-├── stacks/                      # Docker compose stacks
-└── DEPLOYED.yml                 # Single source of truth for infra
-```
-
----
-
-## 🏗️ The Stack
-
-| Layer | Tool | Use For |
-|-------|------|---------|
-| Hosting | **Fly.io** | Containers, MCP servers, APIs |
-| Automation | **n8n Cloud** | Workflows, webhooks, cron |
-| Database | **Supabase** | Postgres, auth, secrets vault |
-| Serverless | **Cloudflare Workers** | Edge functions, cron |
-| CI/CD | **GitHub Actions** | Auto-deploy on push |
-| Knowledge | **Craft** | Docs, memory, source of truth |
-
-**Rule**: If the stack can do it, use the stack. Don't spin up new services.
-
----
-
-## 🚀 Quick Commands
+## Quick Start
 
 ```bash
-# Health check all systems
-./scripts/health-check.sh
+# Clone and setup
+git clone https://github.com/itsablabla/garza-os.git
+cd garza-os
+./scripts/setup.sh
 
-# Find drift between docs and reality
-./scripts/discover-drift.sh
-
-# After making changes
-git add -A && git commit -m "description" && git push
+# Check everything is working
+garza health
 ```
 
+## CLI Commands
+
+```bash
+garza deploy <app>      # Deploy to Fly.io (home, lrlab, ears, beeper, n8n)
+garza logs <app>        # Stream logs from an app
+garza health            # Check all service health
+garza restart <app>     # Restart an app
+garza ssh <app>         # SSH into an app
+garza status            # Show all app statuses
+garza secret list <app> # List secrets for an app
+garza sync              # Commit and push to GitHub
+```
+
+## Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `setup.sh` | Initial setup, install CLI, check deps |
+| `deploy.sh` | Deploy all or specific apps |
+| `test.sh` | Run integration tests |
+| `rotate-secrets.sh` | Rotate all API keys |
+| `costs.sh` | Show cost estimates |
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      GARZA OS                                │
+├─────────────────┬─────────────────┬─────────────────────────┤
+│   Fly.io Apps   │  CF Workers     │  Local Services         │
+├─────────────────┼─────────────────┼─────────────────────────┤
+│ garza-home-mcp  │ jessica-cron    │ UniFi Protect           │
+│ lrlab-mcp       │ garza-mcp       │ Home Assistant          │
+│ garza-ears      │ log-aggregator  │ Abode Security          │
+│ beeper-mcp      │ health-monitor  │                         │
+│ garza-n8n       │                 │                         │
+└─────────────────┴─────────────────┴─────────────────────────┘
+```
+
+## GitHub Actions
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `deploy-fly.yml` | Push to mcp-servers/ or services/ | Auto-deploy Fly apps |
+| `deploy-cloudflare.yml` | Push to workers/ | Auto-deploy CF workers |
+| `health-check.yml` | Every 15 min | Monitor all services |
+| `backup-craft.yml` | Daily 6 AM UTC | Backup Craft docs |
+| `sync-deployed.yml` | Manual | Sync DEPLOYED.yml |
+
+## Directory Structure
+
+```
+garza-os/
+├── mcp-servers/          # MCP server implementations
+│   ├── garza-home-mcp/   # Home automation + Beeper
+│   ├── lrlab-mcp/        # Last Rock Labs tools
+│   └── beeper-matrix-mcp/
+├── services/             # Other Fly.io services
+│   ├── garza-ears/       # Voice transcription
+│   └── jessica-bot/      # Automated messaging
+├── workers/              # Cloudflare Workers
+│   └── log-aggregator/   # Centralized logging
+├── configs/              # Configuration files
+├── stacks/               # Docker stacks (Boulder home)
+├── scripts/              # CLI and automation
+├── docs/                 # Documentation
+│   ├── claude-preflight.md
+│   ├── stack-first.md
+│   └── error-playbook.md
+├── snippets/             # Reusable code patterns
+├── backups/              # Automated backups
+└── .github/workflows/    # CI/CD
+```
+
+## Environment Variables
+
+Required secrets in GitHub:
+- `FLY_API_TOKEN` - Fly.io deploy token
+- `CLOUDFLARE_API_TOKEN` - Cloudflare API token
+- `PUSHCUT_API_KEY` - Pushcut notifications
+- `CRAFT_MCP_URL` - Craft MCP endpoint (for backups)
+
+## Key Documentation
+
+- [Master Config](docs/master-config.md) - System configuration
+- [MCP Registry](docs/mcp-registry.md) - All MCP servers
+- [Tool Knowledge Base](docs/tool-knowledge-base.md) - Patterns and tips
+- [DEPLOYED.yml](DEPLOYED.yml) - Service inventory
+- [Error Playbook](docs/error-playbook.md) - Common fixes
+
+## Development
+
+```bash
+# Run tests
+./scripts/test.sh
+
+# Deploy specific app
+garza deploy home
+
+# Check costs
+./scripts/costs.sh
+
+# Rotate secrets (dry run first)
+./scripts/rotate-secrets.sh --dry-run
+```
+
+## Craft Integration
+
+Key documents:
+- Master Config: 14219
+- Identity Map: 6996
+- Jada Soul: 14522
+- App Index: 16391
+- API/Passwords: 7061
+
 ---
 
-## 📍 Key Endpoints
-
-| Service | URL |
-|---------|-----|
-| Garza Home MCP | https://garza-home-mcp.fly.dev |
-| CF MCP | https://mcp-cf.garzahive.com |
-| n8n Cloud | https://jadengarza.app.n8n.cloud |
-| LRLab MCP | https://lrlab-mcp.fly.dev |
-
----
-
-## 📋 After Building
-
-1. Update `DEPLOYED.yml` if you deployed anything
-2. Commit + push to GitHub
-3. Add to `error-playbook.md` if you solved new errors
-4. Add to `templates/` if you wrote reusable code
+Built with 💜 by Jaden + Jada

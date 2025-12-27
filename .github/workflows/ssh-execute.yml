@@ -34,10 +34,8 @@ jobs:
       - name: Load host config
         id: host_config
         run: |
-          # Parse hosts.yml to get connection details
           echo "Loading config for ${{ inputs.host }}..."
           
-          # For now, hardcode common hosts (will parse YAML in future)
           case "${{ inputs.host }}" in
             garzahive)
               echo "host=64.227.106.134" >> $GITHUB_OUTPUT
@@ -86,7 +84,7 @@ jobs:
           OUTPUT=$(ssh -o StrictHostKeyChecking=no \
                       -o ConnectTimeout=30 \
                       ${{ steps.host_config.outputs.user }}@${{ steps.host_config.outputs.host }} \
-                      "${{ inputs.command }}" 2>&1)
+                      "${{ inputs.command }}" 2>&1) || true
           
           EXIT_CODE=$?
           
@@ -94,25 +92,61 @@ jobs:
           echo "---"
           echo "Exit code: $EXIT_CODE"
           
-          # Save output for later steps
-          echo "output<<EOF" >> $GITHUB_OUTPUT
-          echo "$OUTPUT" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # Save output for later steps (escape for multiline)
+          {
+            echo "output<<EOF"
+            echo "$OUTPUT"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+          
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
           
           exit $EXIT_CODE
+      
+      - name: Post Results to Callback
+        if: always()
+        run: |
+          # Escape output for JSON
+          OUTPUT="${{ steps.execute.outputs.output }}"
+          ESCAPED_OUTPUT=$(echo "$OUTPUT" | jq -Rs .)
+          
+          curl -s -X POST "https://workflow-results.jadengarza.workers.dev/result" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"run_id\": \"${{ github.run_id }}\",
+              \"workflow\": \"ssh-execute\",
+              \"host\": \"${{ inputs.host }}\",
+              \"command\": \"${{ inputs.command }}\",
+              \"output\": $ESCAPED_OUTPUT,
+              \"status\": \"${{ job.status }}\",
+              \"exit_code\": ${{ steps.execute.outputs.exit_code || 1 }}
+            }" || true
+          
+          echo "✅ Results posted to callback worker"
+      
+      - name: Alert on Failure
+        if: failure()
+        env:
+          PUSHCUT_KEY: ${{ secrets.PUSHCUT_KEY }}
+        run: |
+          if [ -n "$PUSHCUT_KEY" ]; then
+            curl -s -X POST "https://api.pushcut.io/$PUSHCUT_KEY/notifications/SSH%20Failed" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"title\": \"SSH Failed: ${{ inputs.host }}\",
+                \"text\": \"Command: ${{ inputs.command }}\",
+                \"isTimeSensitive\": true
+              }" || true
+            echo "🔔 Pushcut alert sent"
+          else
+            echo "⚠️ PUSHCUT_KEY not set, skipping alert"
+          fi
       
       - name: Log Result
         if: always()
         run: |
-          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          
           if [ "${{ job.status }}" == "success" ]; then
             echo "✅ SUCCESS: Command executed on ${{ inputs.host }}"
-            STATUS="completed"
           else
             echo "❌ FAILED: Command failed on ${{ inputs.host }}"
-            STATUS="failed"
           fi
-          
-          # Log to operations.json (will implement state update via API)
-          echo "Would log: {host: ${{ inputs.host }}, command: ${{ inputs.command }}, status: $STATUS, timestamp: $TIMESTAMP}"

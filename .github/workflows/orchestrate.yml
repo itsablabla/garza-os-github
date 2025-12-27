@@ -1,0 +1,174 @@
+name: Workflow Orchestrator
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 'Operation to perform'
+        required: true
+        type: choice
+        options:
+          - deploy-all-mcps
+          - deploy-all-workers
+          - full-system-deploy
+          - restart-all-services
+          - emergency-rollback
+      target:
+        description: 'Target (optional, for filtered operations)'
+        required: false
+        type: string
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install Dependencies
+        run: |
+          pip install pyyaml requests
+      
+      - name: Execute Operation
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 << 'PYEOF'
+          import json
+          import yaml
+          import requests
+          import time
+          import os
+          
+          operation = "${{ inputs.operation }}"
+          target = "${{ inputs.target }}"
+          
+          # GitHub API setup
+          repo = "${{ github.repository }}"
+          token = os.environ['GITHUB_TOKEN']
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28'
+          }
+          
+          def trigger_workflow(workflow_file, inputs):
+              """Trigger a workflow and return run ID"""
+              url = f'https://api.github.com/repos/{repo}/actions/workflows/{workflow_file}/dispatches'
+              data = {
+                  'ref': 'main',
+                  'inputs': inputs
+              }
+              
+              resp = requests.post(url, headers=headers, json=data)
+              
+              if resp.status_code == 204:
+                  print(f"✅ Triggered {workflow_file}")
+                  return True
+              else:
+                  print(f"❌ Failed to trigger {workflow_file}: {resp.status_code}")
+                  return False
+          
+          def wait_for_workflows(count, timeout=300):
+              """Wait for workflows to complete"""
+              print(f"⏳ Waiting for {count} workflows to complete...")
+              time.sleep(10)  # Give GitHub time to start workflows
+              print("✅ Workflows dispatched (monitoring not yet implemented)")
+          
+          # Load services config
+          with open('infra/services.yml', 'r') as f:
+              services = yaml.safe_load(f)
+          
+          print(f"🎯 Executing operation: {operation}")
+          
+          if operation == "deploy-all-mcps":
+              # Deploy all MCP servers
+              count = 0
+              for name in services.get('mcp_servers', {}).keys():
+                  if trigger_workflow('deploy-fly-app.yml', {
+                      'app_name': name,
+                      'skip_health_check': 'false'
+                  }):
+                      count += 1
+                      time.sleep(2)  # Stagger deployments
+              
+              wait_for_workflows(count)
+              print(f"✅ Triggered {count} MCP deployments")
+          
+          elif operation == "deploy-all-workers":
+              # Deploy all Workers
+              count = 0
+              for name in services.get('workers', {}).keys():
+                  if trigger_workflow('deploy-worker.yml', {
+                      'worker_name': name,
+                      'environment': 'production'
+                  }):
+                      count += 1
+                      time.sleep(2)
+              
+              wait_for_workflows(count)
+              print(f"✅ Triggered {count} Worker deployments")
+          
+          elif operation == "full-system-deploy":
+              # Deploy everything
+              print("🚀 Full system deployment initiated")
+              
+              # First: Deploy MCPs
+              mcp_count = 0
+              for name in services.get('mcp_servers', {}).keys():
+                  if trigger_workflow('deploy-fly-app.yml', {'app_name': name}):
+                      mcp_count += 1
+                      time.sleep(2)
+              
+              print(f"📦 Triggered {mcp_count} MCP deployments")
+              
+              # Wait for MCPs to complete
+              time.sleep(60)
+              
+              # Then: Deploy Workers
+              worker_count = 0
+              for name in services.get('workers', {}).keys():
+                  if trigger_workflow('deploy-worker.yml', {'worker_name': name}):
+                      worker_count += 1
+                      time.sleep(2)
+              
+              print(f"📦 Triggered {worker_count} Worker deployments")
+              print(f"✅ Full deployment: {mcp_count} MCPs + {worker_count} Workers")
+          
+          elif operation == "restart-all-services":
+              # Restart services via SSH
+              hosts = ['garzahive', 'n8n']
+              
+              for host in hosts:
+                  trigger_workflow('ssh-execute.yml', {
+                      'host': host,
+                      'command': 'docker restart $(docker ps -q)'
+                  })
+                  time.sleep(2)
+              
+              print(f"✅ Triggered restarts on {len(hosts)} hosts")
+          
+          elif operation == "emergency-rollback":
+              print("🚨 Emergency rollback not yet implemented")
+              print("📝 Manual rollback required via Fly.io CLI")
+          
+          else:
+              print(f"❌ Unknown operation: {operation}")
+              exit(1)
+          
+          PYEOF
+      
+      - name: Summary
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Orchestration completed: ${{ inputs.operation }}"
+          else
+            echo "❌ Orchestration failed: ${{ inputs.operation }}"
+          fi

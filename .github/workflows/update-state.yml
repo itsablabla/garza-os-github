@@ -1,0 +1,152 @@
+name: Update State Files
+
+on:
+  workflow_dispatch:
+    inputs:
+      file:
+        description: 'State file to update (deployments, operations, health)'
+        required: true
+        type: choice
+        options:
+          - deployments
+          - operations
+          - health
+      app_name:
+        description: 'App/service name (for deployments)'
+        required: false
+        type: string
+      status:
+        description: 'New status'
+        required: false
+        type: string
+      operation_type:
+        description: 'Operation type (for operations log)'
+        required: false
+        type: string
+      custom_json:
+        description: 'Custom JSON to merge (advanced)'
+        required: false
+        type: string
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Update State File
+        run: |
+          python3 << 'PYEOF'
+          import json
+          from datetime import datetime, timezone
+          
+          # Load inputs
+          file_type = "${{ inputs.file }}"
+          app_name = "${{ inputs.app_name }}"
+          status = "${{ inputs.status }}"
+          op_type = "${{ inputs.operation_type }}"
+          custom = """${{ inputs.custom_json }}"""
+          
+          timestamp = datetime.now(timezone.utc).isoformat()
+          
+          # Determine file path
+          if file_type == "deployments":
+              filepath = "infra/state/deployments.json"
+          elif file_type == "operations":
+              filepath = "infra/state/operations.json"
+          elif file_type == "health":
+              filepath = "infra/state/health.json"
+          else:
+              raise ValueError(f"Unknown file type: {file_type}")
+          
+          # Load current state
+          try:
+              with open(filepath, 'r') as f:
+                  state = json.load(f)
+          except FileNotFoundError:
+              state = {"version": "1.0.0", "last_updated": timestamp}
+          
+          # Update based on file type
+          if file_type == "deployments" and app_name:
+              # Find the app in the appropriate category
+              updated = False
+              for category in ["fly_apps", "cloudflare_workers", "vps_servers", "local_servers"]:
+                  if category in state and app_name in state[category]:
+                      state[category][app_name]["last_deploy"] = timestamp
+                      if status:
+                          state[category][app_name]["status"] = status
+                      updated = True
+                      print(f"✅ Updated {app_name} in {category}")
+                      break
+              
+              if not updated:
+                  print(f"⚠️ App {app_name} not found in state, adding to fly_apps")
+                  if "fly_apps" not in state:
+                      state["fly_apps"] = {}
+                  state["fly_apps"][app_name] = {
+                      "status": status or "active",
+                      "last_deploy": timestamp
+                  }
+          
+          elif file_type == "operations":
+              # Add to history
+              if "history" not in state:
+                  state["history"] = []
+              
+              operation = {
+                  "id": f"op_{int(datetime.now().timestamp())}",
+                  "type": op_type or "unknown",
+                  "timestamp": timestamp,
+                  "status": status or "completed",
+                  "app_name": app_name if app_name else None
+              }
+              
+              state["history"].append(operation)
+              print(f"✅ Added operation to history: {operation['id']}")
+          
+          # Merge custom JSON if provided
+          if custom and custom.strip():
+              try:
+                  custom_data = json.loads(custom)
+                  state.update(custom_data)
+                  print(f"✅ Merged custom data")
+              except json.JSONDecodeError as e:
+                  print(f"⚠️ Invalid custom JSON: {e}")
+          
+          # Update timestamp
+          state["last_updated"] = timestamp
+          
+          # Write back
+          with open(filepath, 'w') as f:
+              json.dump(state, f, indent=2)
+          
+          print(f"\n✅ Updated {filepath}")
+          PYEOF
+      
+      - name: Commit Changes
+        run: |
+          git config user.name "GARZA OS Bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add infra/state/
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            COMMIT_MSG="Update state: ${{ inputs.file }}"
+            if [ -n "${{ inputs.app_name }}" ]; then
+              COMMIT_MSG="$COMMIT_MSG - ${{ inputs.app_name }}"
+            fi
+            
+            git commit -m "$COMMIT_MSG"
+            git push
+            
+            echo "✅ Changes committed and pushed"
+          fi

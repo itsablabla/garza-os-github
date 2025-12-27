@@ -1,0 +1,118 @@
+name: SSH Execute Command
+
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        description: 'Target host (garzahive, mac, n8n, boulder, octelium)'
+        required: true
+        type: choice
+        options:
+          - garzahive
+          - mac
+          - n8n
+          - boulder
+          - octelium
+      command:
+        description: 'Command to execute'
+        required: true
+        type: string
+      timeout:
+        description: 'Timeout in seconds'
+        required: false
+        default: '300'
+        type: string
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Load host config
+        id: host_config
+        run: |
+          # Parse hosts.yml to get connection details
+          echo "Loading config for ${{ inputs.host }}..."
+          
+          # For now, hardcode common hosts (will parse YAML in future)
+          case "${{ inputs.host }}" in
+            garzahive)
+              echo "host=64.227.106.134" >> $GITHUB_OUTPUT
+              echo "user=root" >> $GITHUB_OUTPUT
+              echo "key_name=SSH_KEY_GARZAHIVE" >> $GITHUB_OUTPUT
+              ;;
+            mac)
+              echo "host=ssh.garzahive.com" >> $GITHUB_OUTPUT
+              echo "user=customer" >> $GITHUB_OUTPUT
+              echo "key_name=SSH_KEY_MAC" >> $GITHUB_OUTPUT
+              ;;
+            n8n)
+              echo "host=167.172.147.240" >> $GITHUB_OUTPUT
+              echo "user=root" >> $GITHUB_OUTPUT
+              echo "key_name=SSH_KEY_N8N" >> $GITHUB_OUTPUT
+              ;;
+            boulder)
+              echo "host=boulder-ssh.garzahive.com" >> $GITHUB_OUTPUT
+              echo "user=jadengarza" >> $GITHUB_OUTPUT
+              echo "key_name=SSH_KEY_MAC" >> $GITHUB_OUTPUT
+              ;;
+            octelium)
+              echo "host=68.183.108.79" >> $GITHUB_OUTPUT
+              echo "user=root" >> $GITHUB_OUTPUT
+              echo "key_name=SSH_KEY_OCTELIUM" >> $GITHUB_OUTPUT
+              ;;
+          esac
+      
+      - name: Setup SSH
+        env:
+          SSH_KEY: ${{ secrets[steps.host_config.outputs.key_name] }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ steps.host_config.outputs.host }} >> ~/.ssh/known_hosts 2>/dev/null || true
+      
+      - name: Execute Command
+        id: execute
+        timeout-minutes: 5
+        run: |
+          echo "🔧 Executing on ${{ inputs.host }}: ${{ inputs.command }}"
+          echo "---"
+          
+          # Execute and capture output
+          OUTPUT=$(ssh -o StrictHostKeyChecking=no \
+                      -o ConnectTimeout=30 \
+                      ${{ steps.host_config.outputs.user }}@${{ steps.host_config.outputs.host }} \
+                      "${{ inputs.command }}" 2>&1)
+          
+          EXIT_CODE=$?
+          
+          echo "$OUTPUT"
+          echo "---"
+          echo "Exit code: $EXIT_CODE"
+          
+          # Save output for later steps
+          echo "output<<EOF" >> $GITHUB_OUTPUT
+          echo "$OUTPUT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          exit $EXIT_CODE
+      
+      - name: Log Result
+        if: always()
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ SUCCESS: Command executed on ${{ inputs.host }}"
+            STATUS="completed"
+          else
+            echo "❌ FAILED: Command failed on ${{ inputs.host }}"
+            STATUS="failed"
+          fi
+          
+          # Log to operations.json (will implement state update via API)
+          echo "Would log: {host: ${{ inputs.host }}, command: ${{ inputs.command }}, status: $STATUS, timestamp: $TIMESTAMP}"

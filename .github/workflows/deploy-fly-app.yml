@@ -1,0 +1,99 @@
+name: Deploy Fly App
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'Fly app name (e.g., garza-home-mcp)'
+        required: true
+        type: string
+      dockerfile_path:
+        description: 'Path to Dockerfile (optional, defaults to app root)'
+        required: false
+        type: string
+      region:
+        description: 'Fly region'
+        required: false
+        default: 'dfw'
+        type: string
+      skip_health_check:
+        description: 'Skip post-deployment health check'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@master
+      
+      - name: Deploy to Fly.io
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          echo "🚀 Deploying ${{ inputs.app_name }} to Fly.io..."
+          
+          # Determine app directory
+          if [ -d "mcp-servers/${{ inputs.app_name }}" ]; then
+            APP_DIR="mcp-servers/${{ inputs.app_name }}"
+          elif [ -d "services/${{ inputs.app_name }}" ]; then
+            APP_DIR="services/${{ inputs.app_name }}"
+          elif [ -d "workers/${{ inputs.app_name }}" ]; then
+            APP_DIR="workers/${{ inputs.app_name }}"
+          else
+            echo "❌ Could not find app directory"
+            exit 1
+          fi
+          
+          cd "$APP_DIR"
+          
+          # Deploy
+          flyctl deploy --app ${{ inputs.app_name }} --region ${{ inputs.region }} --ha=false
+          
+          echo "✅ Deployment complete"
+      
+      - name: Health Check
+        if: ${{ !inputs.skip_health_check }}
+        run: |
+          echo "🏥 Running health check..."
+          sleep 10
+          
+          HEALTH_URL="https://${{ inputs.app_name }}.fly.dev/health"
+          
+          for i in {1..5}; do
+            if curl -sf "$HEALTH_URL" > /dev/null; then
+              echo "✅ Health check passed"
+              exit 0
+            fi
+            echo "⏳ Attempt $i/5 failed, retrying..."
+            sleep 5
+          done
+          
+          echo "❌ Health check failed after 5 attempts"
+          exit 1
+      
+      - name: Update State
+        if: success()
+        run: |
+          echo "📝 Updating deployment state..."
+          
+          # Update deployments.json with new timestamp
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          
+          # This will be done via separate workflow or API call
+          echo "Deployed ${{ inputs.app_name }} at $TIMESTAMP"
+      
+      - name: Notify
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ SUCCESS: ${{ inputs.app_name }} deployed"
+          else
+            echo "❌ FAILED: ${{ inputs.app_name }} deployment failed"
+          fi

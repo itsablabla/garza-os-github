@@ -1,0 +1,94 @@
+name: Deploy Cloudflare Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker_name:
+        description: 'Worker name (e.g., voicenotes-webhook)'
+        required: true
+        type: string
+      worker_path:
+        description: 'Path to worker code (optional, defaults to workers/{name})'
+        required: false
+        type: string
+      environment:
+        description: 'Environment'
+        required: false
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install Wrangler
+        run: npm install -g wrangler
+      
+      - name: Deploy Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "🚀 Deploying ${{ inputs.worker_name }} to Cloudflare Workers..."
+          
+          # Determine worker directory
+          if [ -n "${{ inputs.worker_path }}" ]; then
+            WORKER_DIR="${{ inputs.worker_path }}"
+          elif [ -d "workers/${{ inputs.worker_name }}" ]; then
+            WORKER_DIR="workers/${{ inputs.worker_name }}"
+          elif [ -d "cloudflare/${{ inputs.worker_name }}" ]; then
+            WORKER_DIR="cloudflare/${{ inputs.worker_name }}"
+          else
+            echo "❌ Could not find worker directory"
+            exit 1
+          fi
+          
+          cd "$WORKER_DIR"
+          
+          # Install dependencies if package.json exists
+          if [ -f "package.json" ]; then
+            echo "📦 Installing dependencies..."
+            npm install
+          fi
+          
+          # Deploy
+          if [ "${{ inputs.environment }}" == "production" ]; then
+            wrangler deploy
+          else
+            wrangler deploy --env staging
+          fi
+          
+          echo "✅ Deployment complete"
+      
+      - name: Verify Deployment
+        run: |
+          echo "🔍 Verifying deployment..."
+          sleep 5
+          
+          # Construct worker URL (assuming *.workers.dev or custom domain)
+          WORKER_URL="https://${{ inputs.worker_name }}.jadengarza.workers.dev"
+          
+          if curl -sf "$WORKER_URL" > /dev/null 2>&1; then
+            echo "✅ Worker is responding"
+          else
+            echo "⚠️ Worker URL may not be accessible (this is OK for some workers)"
+          fi
+      
+      - name: Update State
+        if: success()
+        run: |
+          echo "📝 Updating deployment state..."
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "Deployed ${{ inputs.worker_name }} at $TIMESTAMP"

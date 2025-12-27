@@ -2,15 +2,10 @@ name = "voicenotes-webhook"
 main = "worker.js"
 compatibility_date = "2024-01-01"
 
-# Custom domain
-routes = [
-  { pattern = "voicenotes-webhook.jadengarza.workers.dev", custom_domain = true }
-]
-
 # KV Namespace binding
 [[kv_namespaces]]
 binding = "NOTES"
-id = "your-kv-namespace-id"  # Get from: wrangler kv:namespace list
+id = "b1da2788747e4fb5b65eee62538f6b18"
 
 # Secrets (set via: wrangler secret put VOICENOTES_API_KEY)
 # - VOICENOTES_API_KEY: API key from voicenotes.com

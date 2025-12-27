@@ -64,3 +64,21 @@ All notable changes to GARZA OS infrastructure.
 - **Major** (X.0.0): Breaking changes to structure or patterns
 - **Minor** (0.X.0): New templates, scripts, or docs
 - **Patch** (0.0.X): Fixes and small updates
+
+## [0.5.0] - 2025-12-27
+
+### Added
+- **docs/claude-preflight.md** - Pre-flight checklist to read BEFORE starting any task
+- **docs/credentials-index.md** - Quick lookup for all API keys with vault names
+- **docs/curl-examples.md** - Tested, copy-paste ready curl commands
+
+### Changed
+- README.md rewritten to point to preflight doc first
+- Emphasized proactive guardrails over reactive documentation
+
+### Purpose
+Prevents wasted tool calls by providing:
+- Decision tree for server/tool selection
+- Credential locations without hunting
+- Common mistakes to avoid
+- Tested commands instead of guessing syntax

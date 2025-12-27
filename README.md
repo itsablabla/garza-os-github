@@ -1,107 +1,74 @@
 # GARZA OS
 
-Infrastructure, templates, and automation for the GARZA OS ecosystem.
+Jaden's unified AI infrastructure. MCP servers, configs, automation.
 
 ---
 
-## 🤖 CLAUDE: READ THIS FIRST
+## 🚨 CLAUDE: READ THIS FIRST
 
-Before building anything, check these resources:
-
-| Need | Check |
-|------|-------|
-| Building new MCP/service | `templates/` folder |
-| Tool failing with errors | `docs/error-playbook.md` |
-| Tool routing questions | `docs/mcp-routing.md` |
-| Visual fallback flows | `docs/fallback-diagram.md` |
-| Deploying to Fly.io | `scripts/deploy-fly.sh` |
-| Adding custom domain | `scripts/add-domain.sh` |
-| What's deployed where | `DEPLOYED.yml` |
-| Code snippets | `templates/snippets/INDEX.md` |
+| Doc | Purpose |
+|-----|---------|
+| **[docs/claude-preflight.md](docs/claude-preflight.md)** | Pre-flight checklist - READ BEFORE STARTING |
+| [docs/credentials-index.md](docs/credentials-index.md) | Where to find API keys |
+| [docs/curl-examples.md](docs/curl-examples.md) | Tested copy-paste commands |
+| [docs/error-playbook.md](docs/error-playbook.md) | Error → Fix mappings |
+| [docs/fallback-diagram.md](docs/fallback-diagram.md) | Tool cascade decision trees |
+| [DEPLOYED.yml](DEPLOYED.yml) | What's running where |
+| [templates/snippets/INDEX.md](templates/snippets/INDEX.md) | Reusable API patterns |
 
 ---
 
-## 📁 Structure
+## Structure
 
 ```
-├── DEPLOYED.yml          # 🎯 Single source of truth - all running services
-├── CHANGELOG.md          # Version history
-├── templates/
-│   ├── snippets/         # Reusable code patterns (with INDEX.md)
-│   ├── fly-node-mcp/     # MCP server template
-│   ├── fly-python-mcp/   # Python MCP template
-│   └── cloudflare-worker/# Worker template
-├── scripts/
-│   ├── deploy-fly.sh     # Automated Fly deployment
-│   ├── add-domain.sh     # DNS + cert setup
-│   ├── exec-fallback.sh  # Command with auto-fallback
-│   ├── health-check.sh   # Manual health checks
-│   └── generate-snippet-index.sh
-├── docs/
-│   ├── error-playbook.md # Error → Fix guide
-│   ├── fallback-diagram.md # Visual decision trees
-│   ├── fallback-patterns.md# Text-based cascades
-│   ├── mcp-routing.md    # Server capabilities
-│   └── mcp-registry.md   # Full MCP documentation
-├── workers/              # Cloudflare Workers source
-├── stacks/               # Docker Compose stacks
-├── configs/              # Configuration files
-├── prompts/              # AI prompts and personas
-└── .github/workflows/    # CI/CD automation
+garza-os/
+├── docs/                    # Documentation
+│   ├── claude-preflight.md  # ⭐ START HERE
+│   ├── credentials-index.md # API key lookup
+│   ├── curl-examples.md     # Tested commands
+│   ├── error-playbook.md    # Error solutions
+│   └── fallback-diagram.md  # Decision trees
+├── mcp-servers/             # MCP server source code
+├── services/                # Fly.io services
+├── workers/                 # Cloudflare Workers
+├── templates/               # Starters & snippets
+│   ├── fly-mcp/             # Fly.io MCP template
+│   ├── cf-worker/           # CF Worker template
+│   └── snippets/            # API code patterns
+├── scripts/                 # Deployment helpers
+├── configs/                 # System configs
+├── DEPLOYED.yml             # Deployment manifest
+└── CHANGELOG.md             # Version history
 ```
 
 ---
 
-## 🚀 Quick Start
+## Quick Commands
 
-### Deploy new MCP to Fly.io
 ```bash
-cp -r templates/fly-node-mcp my-new-mcp
-cd my-new-mcp
-# Edit server.js with your tools
-../scripts/deploy-fly.sh my-new-mcp
-```
+# After making changes
+cd /Users/customer/garza-os-github
+git add -A && git commit -m "description" && git push
 
-### Add custom domain
-```bash
-./scripts/add-domain.sh api my-app-name
-# Creates api.garzahive.com → my-app-name.fly.dev
-```
+# Search for existing code
+grep -r "keyword" .
 
-### Check what's deployed
-```bash
+# Check what's deployed
 cat DEPLOYED.yml
 ```
 
 ---
 
-## 🔧 GitHub Actions
+## Key Endpoints
 
-| Workflow | Trigger | Purpose |
-|----------|---------|---------|
-| `sync-deployed.yml` | Every 6h / Manual | Health check all services |
-| `deploy-fly.yml` | Push to workers/ | Auto-deploy Fly apps |
-| `deploy-cloudflare.yml` | Push to workers/ | Auto-deploy CF Workers |
-| `health-check.yml` | Manual | On-demand health check |
-
----
-
-## 📊 Health Status
-
-Check the [Actions tab](../../actions) for latest health check results.
-
-Last automated check timestamp is in `DEPLOYED.yml` under `metadata.last_health_check`.
+| Service | URL |
+|---------|-----|
+| Garza Home MCP | https://garza-home-mcp.fly.dev/sse |
+| n8n Cloud | https://garzasync.app.n8n.cloud |
+| CF Zone (garzahive.com) | 9c70206ce57d506d1d4e9397f6bb8ebc |
 
 ---
 
-## 🏷️ Versioning
+## Version
 
-```bash
-# View current version
-git describe --tags
-
-# Rollback to previous version
-git checkout v0.3.0
-```
-
-See `CHANGELOG.md` for version history.
+Current: v0.4.0 - See [CHANGELOG.md](CHANGELOG.md)

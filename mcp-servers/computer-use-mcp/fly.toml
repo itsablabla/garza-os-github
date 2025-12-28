@@ -1,4 +1,4 @@
-app = 'garza-computer-use'
+app = 'computer-use-mcp'
 primary_region = 'dfw'
 
 [build]

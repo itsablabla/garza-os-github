@@ -42,7 +42,3 @@ primary_region = "dfw"
 [mounts]
   source = "garza_workspace"
   destination = "/workspace"
-
-# Restart policy
-[restart]
-  policy = "always"

@@ -1,0 +1,84 @@
+name: Auto-Heal Infrastructure
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'  # Every 15 minutes
+  workflow_dispatch:
+
+jobs:
+  health-check-and-heal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check MCP Endpoints
+        id: health
+        run: |
+          echo "## Health Check Results" >> $GITHUB_STEP_SUMMARY
+          
+          declare -A ENDPOINTS
+          ENDPOINTS["garza-home-mcp"]="https://garza-home-mcp.fly.dev/health"
+          ENDPOINTS["lastrock-mcp"]="https://lastrock-mcp.garzahive.com/health"
+          ENDPOINTS["beeper-mcp"]="https://beeper-mcp.garzahive.com/v0/mcp"
+          ENDPOINTS["n8n"]="https://garzasync.app.n8n.cloud/healthz"
+          
+          FAILED=""
+          for name in "${!ENDPOINTS[@]}"; do
+            url="${ENDPOINTS[$name]}"
+            status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url" 2>/dev/null || echo "000")
+            
+            # 405 is OK for beeper-mcp (method not allowed but server responding)
+            if [[ "$status" == "200" || "$status" == "405" ]]; then
+              echo "✅ $name: $status" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "❌ $name: $status" >> $GITHUB_STEP_SUMMARY
+              FAILED="$FAILED $name"
+            fi
+          done
+          
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+
+      - name: Restart Failed Fly Apps
+        if: contains(steps.health.outputs.failed, 'mcp')
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          # Install flyctl
+          curl -L https://fly.io/install.sh | sh
+          export PATH="$HOME/.fly/bin:$PATH"
+          
+          FAILED="${{ steps.health.outputs.failed }}"
+          
+          if [[ "$FAILED" == *"garza-home-mcp"* ]]; then
+            echo "Restarting garza-home-mcp..."
+            flyctl apps restart garza-home-mcp --yes || true
+          fi
+          
+          if [[ "$FAILED" == *"lastrock-mcp"* ]]; then
+            echo "Restarting last-rock-dev..."
+            flyctl apps restart last-rock-dev --yes || true
+          fi
+
+      - name: Send Alert if Still Failing
+        if: failure() || steps.health.outputs.failed != ''
+        run: |
+          FAILED="${{ steps.health.outputs.failed }}"
+          if [[ -n "$FAILED" ]]; then
+            curl -X POST "https://api.pushcut.io/${{ secrets.PUSHCUT_KEY }}/notifications/GARZA%20Alert" \
+              -H "Content-Type: application/json" \
+              -d "{\"title\": \"🚨 Infrastructure Down\", \"text\": \"Failed services:$FAILED\"}" || true
+          fi
+
+      - name: Check n8n Workflow Failures
+        env:
+          N8N_API_KEY: ${{ secrets.N8N_API_KEY }}
+        run: |
+          # Get recent failed executions
+          FAILURES=$(curl -s -H "X-N8N-API-KEY: $N8N_API_KEY" \
+            "https://garzasync.app.n8n.cloud/api/v1/executions?status=error&limit=5" \
+            | jq -r '.data[] | "\(.workflowId): \(.stoppedAt)"' 2>/dev/null || echo "")
+          
+          if [[ -n "$FAILURES" ]]; then
+            echo "## Recent n8n Failures" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "$FAILURES" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi

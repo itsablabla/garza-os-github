@@ -1,0 +1,113 @@
+name: Daily Digest
+
+on:
+  schedule:
+    - cron: '0 14 * * *'  # 7 AM Mountain Time
+  workflow_dispatch:
+
+jobs:
+  generate-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect Infrastructure Status
+        id: infra
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          echo "## 📊 Daily Infrastructure Digest" >> $GITHUB_STEP_SUMMARY
+          echo "_Generated: $(date -u '+%Y-%m-%d %H:%M UTC')_" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Install flyctl
+          curl -sL https://fly.io/install.sh | sh 2>/dev/null
+          export PATH="$HOME/.fly/bin:$PATH"
+
+          echo "### Fly.io Applications" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          flyctl apps list --json 2>/dev/null | jq -r '.[] | "\(.Name): \(.Status)"' >> $GITHUB_STEP_SUMMARY || echo "Failed to fetch"
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Check MCP Health
+        id: mcp
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### MCP Server Status" >> $GITHUB_STEP_SUMMARY
+          echo "| Server | Status | Latency |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|---------|" >> $GITHUB_STEP_SUMMARY
+
+          check_endpoint() {
+            local name=$1
+            local url=$2
+            local start=$(date +%s%3N)
+            local status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url" 2>/dev/null || echo "000")
+            local end=$(date +%s%3N)
+            local latency=$((end - start))
+            
+            if [[ "$status" == "200" || "$status" == "405" ]]; then
+              echo "| $name | ✅ $status | ${latency}ms |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| $name | ❌ $status | ${latency}ms |" >> $GITHUB_STEP_SUMMARY
+            fi
+          }
+
+          check_endpoint "Garza Home MCP" "https://garza-home-mcp.fly.dev/health"
+          check_endpoint "Last Rock Dev" "https://lastrock-mcp.garzahive.com/health"
+          check_endpoint "Beeper MCP" "https://beeper-mcp.garzahive.com/v0/mcp"
+          check_endpoint "Craft MCP" "https://mcp.craft.do/links/93JO4v9tdkb/mcp"
+          check_endpoint "n8n" "https://garzasync.app.n8n.cloud/healthz"
+
+      - name: Check n8n Workflow Stats
+        env:
+          N8N_API_KEY: ${{ secrets.N8N_API_KEY }}
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### n8n Workflow Summary" >> $GITHUB_STEP_SUMMARY
+          
+          # Get workflow count
+          WORKFLOWS=$(curl -s -H "X-N8N-API-KEY: $N8N_API_KEY" \
+            "https://garzasync.app.n8n.cloud/api/v1/workflows" 2>/dev/null)
+          
+          TOTAL=$(echo "$WORKFLOWS" | jq '.data | length' 2>/dev/null || echo "?")
+          ACTIVE=$(echo "$WORKFLOWS" | jq '[.data[] | select(.active==true)] | length' 2>/dev/null || echo "?")
+          
+          echo "- Total Workflows: $TOTAL" >> $GITHUB_STEP_SUMMARY
+          echo "- Active: $ACTIVE" >> $GITHUB_STEP_SUMMARY
+          
+          # Get recent failures (last 24h)
+          FAILURES=$(curl -s -H "X-N8N-API-KEY: $N8N_API_KEY" \
+            "https://garzasync.app.n8n.cloud/api/v1/executions?status=error&limit=10" 2>/dev/null | \
+            jq '.data | length' 2>/dev/null || echo "?")
+          
+          echo "- Recent Failures: $FAILURES" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check GitHub Actions Stats
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### GitHub Actions (Last 24h)" >> $GITHUB_STEP_SUMMARY
+          
+          # Get workflow runs from last 24 hours
+          RUNS=$(gh api repos/${{ github.repository }}/actions/runs --jq '.workflow_runs | length')
+          FAILURES=$(gh api repos/${{ github.repository }}/actions/runs --jq '[.workflow_runs[] | select(.conclusion=="failure")] | length')
+          
+          echo "- Total Runs: $RUNS" >> $GITHUB_STEP_SUMMARY
+          echo "- Failed: $FAILURES" >> $GITHUB_STEP_SUMMARY
+
+      - name: Security Reminders
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔐 Security Checklist" >> $GITHUB_STEP_SUMMARY
+          echo "- [ ] Rotate API keys > 90 days old" >> $GITHUB_STEP_SUMMARY
+          echo "- [ ] Check Cloudflare WAF logs" >> $GITHUB_STEP_SUMMARY
+          echo "- [ ] Review fail2ban bans on bastion" >> $GITHUB_STEP_SUMMARY
+          echo "- [ ] Verify 2FA enabled on all accounts" >> $GITHUB_STEP_SUMMARY
+
+      - name: Send Digest Notification
+        if: always()
+        run: |
+          curl -X POST "https://api.pushcut.io/${{ secrets.PUSHCUT_KEY }}/notifications/Daily%20Digest" \
+            -H "Content-Type: application/json" \
+            -d '{"title": "📊 Daily Digest Ready", "text": "Check GitHub Actions for full report"}' || true

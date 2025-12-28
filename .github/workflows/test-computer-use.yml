@@ -1,0 +1,220 @@
+name: Test Computer Use MCP
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'mcp-servers/computer-use-mcp/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Wait for deployment
+        run: sleep 15
+      
+      - name: Health Check
+        id: health
+        run: |
+          RESPONSE=$(curl -s https://computer-use-mcp.fly.dev/health)
+          echo "Response: $RESPONSE"
+          
+          VERSION=$(echo "$RESPONSE" | jq -r '.version')
+          STATUS=$(echo "$RESPONSE" | jq -r '.status')
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          
+          if [ "$STATUS" != "ok" ]; then
+            echo "❌ Health check failed"
+            exit 1
+          fi
+          echo "✅ Health check passed - Version: $VERSION"
+      
+      - name: Test MCP Initialize
+        run: |
+          RESPONSE=$(curl -s -X POST https://computer-use-mcp.fly.dev/message \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"github-test","version":"1.0"}}}')
+          
+          echo "Response: $RESPONSE"
+          
+          PROTOCOL=$(echo "$RESPONSE" | jq -r '.result.protocolVersion')
+          if [ "$PROTOCOL" != "2024-11-05" ]; then
+            echo "❌ MCP Initialize failed"
+            exit 1
+          fi
+          echo "✅ MCP Initialize passed"
+      
+      - name: Test Tools List
+        run: |
+          RESPONSE=$(curl -s -X POST https://computer-use-mcp.fly.dev/message \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')
+          
+          TOOL_COUNT=$(echo "$RESPONSE" | jq '.result.tools | length')
+          echo "Found $TOOL_COUNT tools"
+          
+          if [ "$TOOL_COUNT" -lt 5 ]; then
+            echo "❌ Expected at least 5 tools"
+            exit 1
+          fi
+          
+          echo "✅ Tools list passed - $TOOL_COUNT tools available"
+          echo "$RESPONSE" | jq -r '.result.tools[].name'
+      
+      - name: Test Navigate
+        run: |
+          RESPONSE=$(curl -s -X POST https://computer-use-mcp.fly.dev/message \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://example.com"}}}')
+          
+          TITLE=$(echo "$RESPONSE" | jq -r '.result.content[0].text' | jq -r '.title')
+          
+          if [ "$TITLE" != "Example Domain" ]; then
+            echo "❌ Navigate failed - got title: $TITLE"
+            exit 1
+          fi
+          echo "✅ Navigate passed - Title: $TITLE"
+      
+      - name: Test Screenshot
+        run: |
+          RESPONSE=$(curl -s -X POST https://computer-use-mcp.fly.dev/message \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"screenshot","arguments":{}}}')
+          
+          IMAGE_TYPE=$(echo "$RESPONSE" | jq -r '.result.content[0].type')
+          IMAGE_LENGTH=$(echo "$RESPONSE" | jq -r '.result.content[0].data | length')
+          
+          if [ "$IMAGE_TYPE" != "image" ]; then
+            echo "❌ Screenshot failed - type: $IMAGE_TYPE"
+            exit 1
+          fi
+          
+          if [ "$IMAGE_LENGTH" -lt 1000 ]; then
+            echo "❌ Screenshot too small: $IMAGE_LENGTH bytes"
+            exit 1
+          fi
+          
+          echo "✅ Screenshot passed - ${IMAGE_LENGTH} bytes"
+      
+      - name: Test Get Elements
+        run: |
+          RESPONSE=$(curl -s -X POST https://computer-use-mcp.fly.dev/message \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_elements","arguments":{"selector":"a"}}}')
+          
+          ELEMENT_COUNT=$(echo "$RESPONSE" | jq -r '.result.content[0].text' | jq '.elements | length')
+          
+          if [ "$ELEMENT_COUNT" -lt 1 ]; then
+            echo "❌ Get elements failed"
+            exit 1
+          fi
+          echo "✅ Get elements passed - Found $ELEMENT_COUNT elements"
+      
+      - name: Test Detect Forms (v4.0 feature)
+        run: |
+          # Navigate to form page first
+          curl -s -X POST https://computer-use-mcp.fly.dev/message \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://httpbin.org/forms/post"}}}' > /dev/null
+          
+          sleep 2
+          
+          RESPONSE=$(curl -s -X POST https://computer-use-mcp.fly.dev/message \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"detect_forms","arguments":{}}}')
+          
+          FORM_COUNT=$(echo "$RESPONSE" | jq -r '.result.content[0].text' | jq '.forms | length')
+          
+          if [ "$FORM_COUNT" -lt 1 ]; then
+            echo "❌ Detect forms failed"
+            exit 1
+          fi
+          echo "✅ Detect forms passed (v4.0 feature) - Found $FORM_COUNT forms"
+      
+      - name: Test Type Text
+        run: |
+          RESPONSE=$(curl -s -X POST https://computer-use-mcp.fly.dev/message \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"type_text","arguments":{"text":"test@github.com"}}}')
+          
+          TYPED=$(echo "$RESPONSE" | jq -r '.result.content[0].text' | jq -r '.typed')
+          
+          if [ "$TYPED" != "test@github.com" ]; then
+            echo "❌ Type text failed"
+            exit 1
+          fi
+          echo "✅ Type text passed"
+      
+      - name: Test Wait
+        run: |
+          RESPONSE=$(curl -s -X POST https://computer-use-mcp.fly.dev/message \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"wait","arguments":{"ms":100}}}')
+          
+          WAITED=$(echo "$RESPONSE" | jq -r '.result.content[0].text' | jq -r '.waited')
+          
+          if [ "$WAITED" != "100" ]; then
+            echo "❌ Wait failed"
+            exit 1
+          fi
+          echo "✅ Wait passed"
+      
+      - name: Test Scroll
+        run: |
+          RESPONSE=$(curl -s -X POST https://computer-use-mcp.fly.dev/message \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"scroll","arguments":{"direction":"down","amount":100}}}')
+          
+          SCROLLED=$(echo "$RESPONSE" | jq -r '.result.content[0].text' | jq -r '.scrolled')
+          
+          if [ "$SCROLLED" != "down" ]; then
+            echo "❌ Scroll failed"
+            exit 1
+          fi
+          echo "✅ Scroll passed"
+      
+      - name: Test Summary
+        run: |
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "   COMPUTER USE MCP v${{ steps.health.outputs.version }} - ALL TESTS PASSED ✅"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
+          echo "Tests completed:"
+          echo "  ✅ Health Check"
+          echo "  ✅ MCP Initialize"
+          echo "  ✅ Tools List"
+          echo "  ✅ Navigate"
+          echo "  ✅ Screenshot"
+          echo "  ✅ Get Elements"
+          echo "  ✅ Detect Forms (v4.0)"
+          echo "  ✅ Type Text"
+          echo "  ✅ Wait"
+          echo "  ✅ Scroll"
+          echo ""
+
+      - name: Notify Success
+        if: success()
+        run: |
+          curl -s -X POST "https://api.pushcut.io/${{ secrets.PUSHCUT_KEY }}/notifications/Test%20Passed" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "title": "✅ Computer Use MCP Tests Passed",
+              "text": "Version ${{ steps.health.outputs.version }} - All 10 tests passed"
+            }' || true
+
+      - name: Notify Failure
+        if: failure()
+        run: |
+          curl -s -X POST "https://api.pushcut.io/${{ secrets.PUSHCUT_KEY }}/notifications/Test%20Failed" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "title": "❌ Computer Use MCP Tests Failed",
+              "text": "Check GitHub Actions for details",
+              "isTimeSensitive": true
+            }' || true

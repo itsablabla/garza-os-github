@@ -1,0 +1,78 @@
+name: Security Scan
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 6 AM UTC
+  workflow_dispatch:
+  push:
+    paths:
+      - '**.env*'
+      - '**/secrets*'
+      - '**.key'
+
+jobs:
+  scan-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for secret scanning
+
+      - name: Install trufflehog
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Scan for secrets
+        run: |
+          trufflehog git file://. --only-verified --json > secrets.json 2>&1 || true
+          
+          if [ -s secrets.json ]; then
+            echo "## 🚨 Secrets Found" >> $GITHUB_STEP_SUMMARY
+            cat secrets.json | jq -r '.SourceMetadata.Data.Git.file + ": " + .DetectorName' >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+            exit 1
+          else
+            echo "## ✅ No secrets detected" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  check-exposed-endpoints:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check MCP endpoints are proxied
+        run: |
+          echo "## Endpoint Protection Status" >> $GITHUB_STEP_SUMMARY
+          
+          DOMAINS="lastrock-mcp.garzahive.com lrlab-mcp.garzahive.com home-mcp.garzahive.com garza-home-mcp.fly.dev"
+          
+          for domain in $DOMAINS; do
+            # Check if resolves to Cloudflare IPs (104.x or 172.x)
+            ip=$(dig +short $domain | head -1)
+            if [[ "$ip" =~ ^104\. ]] || [[ "$ip" =~ ^172\. ]]; then
+              echo "✅ $domain → Cloudflare protected" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "⚠️ $domain → Direct: $ip" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+  check-ssh-security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check SSH bastion
+        run: |
+          echo "## SSH Security" >> $GITHUB_STEP_SUMMARY
+          
+          # Check if password auth is disabled on bastion
+          # This is a passive check - just verify connectivity
+          timeout 5 nc -zv 143.198.190.20 22 2>&1 && \
+            echo "✅ SSH Bastion (143.198.190.20) responding" >> $GITHUB_STEP_SUMMARY || \
+            echo "❌ SSH Bastion not responding" >> $GITHUB_STEP_SUMMARY
+
+  notify-on-failure:
+    needs: [scan-secrets, check-exposed-endpoints]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send alert
+        run: |
+          curl -X POST "https://api.pushcut.io/${{ secrets.PUSHCUT_KEY }}/notifications/Security%20Alert" \
+            -H "Content-Type: application/json" \
+            -d '{"title": "🔐 Security Scan Failed", "text": "Check GitHub Actions for details"}' || true

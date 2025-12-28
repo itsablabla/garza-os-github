@@ -1,0 +1,76 @@
+name: Token Rotation Reminder
+
+on:
+  schedule:
+    - cron: '0 14 * * 0'  # Every Sunday at 7 AM Mountain
+  workflow_dispatch:
+
+jobs:
+  check-tokens:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Token Ages
+        run: |
+          echo "## 🔑 Token Rotation Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Tokens to Monitor" >> $GITHUB_STEP_SUMMARY
+          echo "| Token | Location | Rotation Period | Action |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|----------|-----------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| FLY_API_TOKEN | GitHub Secrets | 90 days | [Rotate](https://fly.io/dashboard/personal/tokens) |" >> $GITHUB_STEP_SUMMARY
+          echo "| N8N_API_KEY | GitHub Secrets | 90 days | n8n Settings |" >> $GITHUB_STEP_SUMMARY
+          echo "| ANTHROPIC_API_KEY | Multiple | 180 days | [Console](https://console.anthropic.com) |" >> $GITHUB_STEP_SUMMARY
+          echo "| PUSHCUT_KEY | GitHub Secrets | Never | - |" >> $GITHUB_STEP_SUMMARY
+          echo "| DO_PAT | Craft 7061 | 90 days | [DigitalOcean](https://cloud.digitalocean.com/account/api/tokens) |" >> $GITHUB_STEP_SUMMARY
+          echo "| GITHUB_PAT | SSH key now | N/A | SSH preferred |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Test Critical Tokens
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          N8N_API_KEY: ${{ secrets.N8N_API_KEY }}
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Token Validity" >> $GITHUB_STEP_SUMMARY
+          
+          # Test Fly.io token
+          FLY_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $FLY_API_TOKEN" \
+            "https://api.fly.io/v1/apps" 2>/dev/null || echo "000")
+          
+          if [[ "$FLY_STATUS" == "200" ]]; then
+            echo "✅ Fly.io token: Valid" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Fly.io token: Invalid ($FLY_STATUS)" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Test n8n token
+          N8N_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "X-N8N-API-KEY: $N8N_API_KEY" \
+            "https://garzasync.app.n8n.cloud/api/v1/workflows?limit=1" 2>/dev/null || echo "000")
+          
+          if [[ "$N8N_STATUS" == "200" ]]; then
+            echo "✅ n8n token: Valid" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ n8n token: Invalid ($N8N_STATUS)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Rotation Instructions
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 Rotation Checklist" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "When rotating tokens:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Generate new token from provider" >> $GITHUB_STEP_SUMMARY
+          echo "2. Update GitHub Secrets: Settings → Secrets → Actions" >> $GITHUB_STEP_SUMMARY
+          echo "3. Update Fly.io apps: \`flyctl secrets set TOKEN=xxx -a app-name\`" >> $GITHUB_STEP_SUMMARY
+          echo "4. Update Cloudflare Workers: \`wrangler secret put TOKEN\`" >> $GITHUB_STEP_SUMMARY
+          echo "5. Test with manual workflow run" >> $GITHUB_STEP_SUMMARY
+          echo "6. Delete old token from provider" >> $GITHUB_STEP_SUMMARY
+
+      - name: Alert if Tokens Invalid
+        if: failure()
+        run: |
+          curl -X POST "https://api.pushcut.io/${{ secrets.PUSHCUT_KEY }}/notifications/Token%20Alert" \
+            -H "Content-Type: application/json" \
+            -d '{"title": "🔑 Token Rotation Needed", "text": "One or more API tokens are invalid or expiring"}' || true

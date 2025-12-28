@@ -1,0 +1,50 @@
+# UniFi Doorbell Ring Notification
+# Sends notification with camera snapshot when doorbell rings
+blueprint:
+  name: UniFi Doorbell Notification
+  description: Send push notification with snapshot when doorbell rings
+  domain: automation
+  input:
+    doorbell_sensor:
+      name: Doorbell Sensor
+      description: The UniFi doorbell ring sensor
+      selector:
+        entity:
+          domain: binary_sensor
+    camera_entity:
+      name: Camera
+      description: The doorbell camera for snapshot
+      selector:
+        entity:
+          domain: camera
+    notify_service:
+      name: Notification Service
+      description: The notification service to use (e.g., notify.mobile_app_iphone)
+      selector:
+        text:
+    notification_title:
+      name: Title
+      description: Notification title
+      default: "Doorbell"
+      selector:
+        text:
+    notification_message:
+      name: Message
+      description: Notification message
+      default: "Someone is at the door"
+      selector:
+        text:
+
+trigger:
+  - platform: state
+    entity_id: !input doorbell_sensor
+    to: "on"
+
+action:
+  - service: !input notify_service
+    data:
+      title: !input notification_title
+      message: !input notification_message
+      data:
+        entity_id: !input camera_entity
+        image: "/api/camera_proxy/{{ camera_entity }}"

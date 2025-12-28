@@ -1,0 +1,89 @@
+name: Cost Tracking
+
+on:
+  schedule:
+    - cron: '0 12 1 * *'  # First of each month at noon UTC
+  workflow_dispatch:
+
+jobs:
+  track-costs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fly.io Costs
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          echo "## 💰 Monthly Cost Report" >> $GITHUB_STEP_SUMMARY
+          echo "_Period: $(date -d 'last month' '+%B %Y')_" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          curl -sL https://fly.io/install.sh | sh 2>/dev/null
+          export PATH="$HOME/.fly/bin:$PATH"
+
+          echo "### Fly.io Applications" >> $GITHUB_STEP_SUMMARY
+          echo "| App | Status | Machines |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|----------|" >> $GITHUB_STEP_SUMMARY
+
+          flyctl apps list --json 2>/dev/null | jq -r '.[] | "| \(.Name) | \(.Status) | \(.MachineCount // 0) |"' >> $GITHUB_STEP_SUMMARY || echo "| Error fetching | - | - |"
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Estimated Fly.io:** ~\$50-100/month" >> $GITHUB_STEP_SUMMARY
+
+      - name: DigitalOcean Estimate
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### DigitalOcean Droplets" >> $GITHUB_STEP_SUMMARY
+          echo "| Droplet | Monthly |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| garzahive-01 (2GB) | \$12 |" >> $GITHUB_STEP_SUMMARY
+          echo "| ssh-bastion (1GB) | \$6 |" >> $GITHUB_STEP_SUMMARY
+          echo "| octelium-secure (2GB) | \$12 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Nomad Servers (13x) | ~\$156 |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**DO Subtotal:** ~\$186/month" >> $GITHUB_STEP_SUMMARY
+
+      - name: Free Tier Services
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Free Tier Services" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Usage | Limit |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Cloudflare Workers | < 100k/day | 100k/day |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cloudflare D1 | < 5GB | 5GB |" >> $GITHUB_STEP_SUMMARY
+          echo "| GitHub Actions | < 2000 min/mo | 2000 min |" >> $GITHUB_STEP_SUMMARY
+          echo "| Supabase | < 500MB | 500MB |" >> $GITHUB_STEP_SUMMARY
+          echo "| n8n Cloud | Pro Plan | \$24/mo |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Cost Summary
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📈 Total Estimated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Category | Monthly |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Fly.io | \$50-100 |" >> $GITHUB_STEP_SUMMARY
+          echo "| DigitalOcean | \$186 |" >> $GITHUB_STEP_SUMMARY
+          echo "| n8n Cloud | \$24 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cloudflare Pro | \$20 |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Total** | **\$280-330** |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Savings Opportunities" >> $GITHUB_STEP_SUMMARY
+          echo "- Consolidate MCP servers (12→4): Save ~\$30/mo" >> $GITHUB_STEP_SUMMARY
+          echo "- Move dormant Fly apps to suspended: Save ~\$20/mo" >> $GITHUB_STEP_SUMMARY
+          echo "- Right-size Nomad droplets: Audit needed" >> $GITHUB_STEP_SUMMARY
+
+      - name: Update Cost Tracking Doc
+        run: |
+          cat > /tmp/cost-update.json << 'EOF'
+          {
+            "date": "${{ github.run_id }}",
+            "fly_io": "50-100",
+            "digitalocean": "186",
+            "n8n": "24",
+            "cloudflare": "20",
+            "total": "280-330"
+          }
+          EOF
+          echo "Cost data captured - sync to Craft manually if needed"

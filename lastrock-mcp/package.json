@@ -1,0 +1,49 @@
+{
+  "name": "lastrock-mcp",
+  "version": "1.0.0",
+  "description": "GARZA OS Last Rock Dev MCP - Infrastructure orchestration, GitHub, Fly.io, n8n, Scout APM, SSH/telnet",
+  "main": "build/index.js",
+  "bin": {
+    "lastrock-mcp": "./build/index.js"
+  },
+  "scripts": {
+    "build": "tsc && chmod +x build/index.js",
+    "prepare": "npm run build",
+    "watch": "tsc --watch",
+    "inspector": "npx @modelcontextprotocol/inspector dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "infrastructure",
+    "orchestration",
+    "github",
+    "fly.io",
+    "n8n",
+    "scout",
+    "ssh",
+    "telnet",
+    "claude",
+    "anthropic",
+    "model-context-protocol"
+  ],
+  "author": "Jaden Garza <jadengarza@pm.me>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/itsablabla/lastrock-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/itsablabla/lastrock-mcp/issues"
+  },
+  "homepage": "https://github.com/itsablabla/lastrock-mcp#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

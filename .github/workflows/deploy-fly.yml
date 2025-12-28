@@ -14,6 +14,7 @@ on:
         type: choice
         options:
           - all-changed
+          - computer-use-mcp
           - garza-home-mcp
           - last-rock-dev
           - lrlab-mcp
@@ -45,6 +46,7 @@ jobs:
             APPS=()
             
             declare -A APP_PATHS=(
+              ["computer-use-mcp"]="mcp-servers/computer-use-mcp"
               ["garza-home-mcp"]="mcp-servers/garza-home-mcp"
               ["last-rock-dev"]="mcp-servers/last-rock-dev"
               ["lrlab-mcp"]="mcp-servers/lrlab-mcp"
@@ -89,6 +91,7 @@ jobs:
         id: path
         run: |
           declare -A APP_PATHS=(
+            ["computer-use-mcp"]="mcp-servers/computer-use-mcp"
             ["garza-home-mcp"]="mcp-servers/garza-home-mcp"
             ["last-rock-dev"]="mcp-servers/last-rock-dev"
             ["lrlab-mcp"]="mcp-servers/lrlab-mcp"
@@ -104,7 +107,6 @@ jobs:
         id: current
         run: |
           cd ${{ steps.path.outputs.path }}
-          # Get current release version before deploy
           CURRENT_VERSION=$(flyctl releases --json 2>/dev/null | jq -r '.[0].Version // "none"') || CURRENT_VERSION="none"
           echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
           echo "📦 Current version: $CURRENT_VERSION"
@@ -113,19 +115,14 @@ jobs:
         id: deploy
         run: |
           cd ${{ steps.path.outputs.path }}
-          flyctl deploy --remote-only
+          flyctl deploy --remote-only --ha=false
       
       - name: Health check after deploy
         id: health
         if: success()
         run: |
-          # Wait for deploy to stabilize
           sleep 10
-          
-          # Get app URL and check health
           APP_URL="https://${{ matrix.app }}.fly.dev"
-          
-          # Try health endpoint
           HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/health" --max-time 10) || HTTP_STATUS="000"
           
           if [ "$HTTP_STATUS" == "200" ]; then
@@ -145,39 +142,7 @@ jobs:
           if [ "$PREV_VERSION" != "none" ] && [ -n "$PREV_VERSION" ]; then
             echo "🔄 Rolling back to version $PREV_VERSION..."
             flyctl releases rollback "$PREV_VERSION" --yes || echo "Rollback failed"
-            
-            # Post to callback
-            curl -s -X POST "https://workflow-results.jadengarza.workers.dev/result" \
-              -H "Content-Type: application/json" \
-              -d "{
-                \"run_id\": \"${{ github.run_id }}\",
-                \"workflow\": \"deploy-fly-rollback\",
-                \"host\": \"${{ matrix.app }}\",
-                \"command\": \"rollback to $PREV_VERSION\",
-                \"output\": \"Auto-rollback triggered\",
-                \"status\": \"rollback\"
-              }" || true
-          else
-            echo "❌ No previous version to rollback to"
           fi
-      
-      - name: Post deploy result
-        if: always()
-        run: |
-          curl -s -X POST "https://workflow-results.jadengarza.workers.dev/result" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"run_id\": \"${{ github.run_id }}\",
-              \"workflow\": \"deploy-fly\",
-              \"host\": \"${{ matrix.app }}\",
-              \"command\": \"flyctl deploy\",
-              \"status\": \"${{ job.status }}\"
-            }" || true
-      
-      - name: Notify on success
-        if: success() && steps.health.outputs.healthy != 'false'
-        run: |
-          echo "✅ Deployed ${{ matrix.app }}"
       
       - name: Notify on failure
         if: failure() || steps.health.outputs.healthy == 'false'

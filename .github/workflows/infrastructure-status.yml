@@ -1,0 +1,148 @@
+name: Infrastructure Status Dashboard
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # Every 30 minutes
+  workflow_dispatch:
+  push:
+    paths:
+      - 'DEPLOYED.yml'
+
+jobs:
+  update-status:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Check All Services
+        id: status
+        run: |
+          # Initialize status file
+          echo "# Infrastructure Status" > STATUS.md
+          echo "" >> STATUS.md
+          echo "Last Updated: $(date -u '+%Y-%m-%d %H:%M UTC')" >> STATUS.md
+          echo "" >> STATUS.md
+
+          # MCP Servers
+          echo "## 🖥️ MCP Servers" >> STATUS.md
+          echo "| Server | Status | Latency |" >> STATUS.md
+          echo "|--------|--------|---------|" >> STATUS.md
+
+          check_mcp() {
+            local name=$1
+            local url=$2
+            local start=$(date +%s%3N)
+            local status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url" 2>/dev/null || echo "000")
+            local end=$(date +%s%3N)
+            local latency=$((end - start))
+            
+            if [[ "$status" == "200" || "$status" == "405" ]]; then
+              echo "| $name | 🟢 UP | ${latency}ms |" >> STATUS.md
+            else
+              echo "| $name | 🔴 DOWN ($status) | - |" >> STATUS.md
+            fi
+          }
+
+          check_mcp "Garza Home MCP" "https://garza-home-mcp.fly.dev/health"
+          check_mcp "Last Rock Dev" "https://lastrock-mcp.garzahive.com/health"
+          check_mcp "Beeper MCP" "https://beeper-mcp.garzahive.com/v0/mcp"
+          check_mcp "Craft MCP" "https://mcp.craft.do/links/93JO4v9tdkb/mcp"
+
+          # Fly.io Apps
+          echo "" >> STATUS.md
+          echo "## ✈️ Fly.io Applications" >> STATUS.md
+          echo "| App | Status |" >> STATUS.md
+          echo "|-----|--------|" >> STATUS.md
+
+          APPS=(
+            "garza-home-mcp|https://garza-home-mcp.fly.dev/health"
+            "last-rock-dev|https://lastrock-mcp.garzahive.com/health"
+            "garza-beeper-intel|https://garza-beeper-intel.fly.dev"
+            "garza-element-web|https://garza-element-web.fly.dev"
+            "garza-sentinel|https://garza-sentinel.fly.dev"
+          )
+
+          for entry in "${APPS[@]}"; do
+            IFS='|' read -r name url <<< "$entry"
+            status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url" 2>/dev/null || echo "000")
+            if [[ "$status" =~ ^(200|301|302|405)$ ]]; then
+              echo "| $name | 🟢 Running |" >> STATUS.md
+            else
+              echo "| $name | 🔴 Down ($status) |" >> STATUS.md
+            fi
+          done
+
+          # Cloudflare Workers
+          echo "" >> STATUS.md
+          echo "## ⚡ Cloudflare Workers" >> STATUS.md
+          echo "| Worker | Status |" >> STATUS.md
+          echo "|--------|--------|" >> STATUS.md
+
+          WORKERS=(
+            "voicenotes-webhook|https://voicenotes-webhook.jadengarza.workers.dev"
+            "voicenotes-indexer|https://voicenotes-indexer.jadengarza.workers.dev/health"
+            "garza-log-aggregator|https://garza-log-aggregator.jadengarza.workers.dev"
+          )
+
+          for entry in "${WORKERS[@]}"; do
+            IFS='|' read -r name url <<< "$entry"
+            status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url" 2>/dev/null || echo "000")
+            if [[ "$status" =~ ^(200|404|405)$ ]]; then
+              echo "| $name | 🟢 Active |" >> STATUS.md
+            else
+              echo "| $name | 🔴 Error ($status) |" >> STATUS.md
+            fi
+          done
+
+          # External Services
+          echo "" >> STATUS.md
+          echo "## 🌐 External Services" >> STATUS.md
+          echo "| Service | Status |" >> STATUS.md
+          echo "|---------|--------|" >> STATUS.md
+
+          # n8n Cloud
+          N8N=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://garzasync.app.n8n.cloud/healthz" 2>/dev/null || echo "000")
+          if [[ "$N8N" == "200" ]]; then
+            echo "| n8n Cloud | 🟢 Healthy |" >> STATUS.md
+          else
+            echo "| n8n Cloud | 🔴 Down ($N8N) |" >> STATUS.md
+          fi
+
+          # Octelium
+          OCTELIUM=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://secure.garzahive.com" 2>/dev/null || echo "000")
+          if [[ "$OCTELIUM" =~ ^(200|401|403)$ ]]; then
+            echo "| Octelium | 🟢 Running |" >> STATUS.md
+          else
+            echo "| Octelium | 🔴 Down ($OCTELIUM) |" >> STATUS.md
+          fi
+
+          echo "" >> STATUS.md
+          echo "---" >> STATUS.md
+          echo "_Auto-generated by GitHub Actions_" >> STATUS.md
+
+      - name: Commit Status Update
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          if [ -f STATUS.md ]; then
+            git add STATUS.md
+            git diff --staged --quiet || git commit -m "📊 Update infrastructure status [skip ci]"
+            git push || echo "Push failed - may need pull first"
+          fi
+
+      - name: Alert on Failures
+        if: contains(steps.status.outputs.*, 'DOWN')
+        run: |
+          curl -X POST "https://api.pushcut.io/${{ secrets.PUSHCUT_KEY }}/notifications/Status%20Alert" \
+            -H "Content-Type: application/json" \
+            -d '{"title": "🔴 Service Down", "text": "Check STATUS.md for details"}' || true

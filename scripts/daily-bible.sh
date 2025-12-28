@@ -1,7 +1,7 @@
 #!/bin/bash
 BEEPER_TOKEN="3a48068b-e6df-4d9c-b39b-0e41979edaa7"
 CHAT_ID="!DkOgxmTdAIVSzEFMXO:beeper.com"
-CLAUDE_API_KEY="sk-ant-api03-vs5P650PihFLaWLq6NLG7h0uyC4LEsww7pvGPl2RBAO9o_hAChpBi2uiPIu5XMiO5nO5hGT8aEL6VlUAupV5hw-bL3rwQAA"
+CLAUDE_API_KEY="{{ANTHROPIC_API_KEY}}"
 
 VERSE_JSON=$(curl -s "https://bible.garzahive.com/votd")
 REFERENCE=$(echo "$VERSE_JSON" | jq -r '.reference')

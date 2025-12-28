@@ -1,0 +1,48 @@
+# Fly.io configuration for GARZA Desktop Commander
+app = "garza-desktop-commander"
+primary_region = "dfw"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # Environment variables
+  PYTHONUNBUFFERED = "1"
+
+[http_service]
+  internal_port = 6000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "10s"
+    grace_period = "5s"
+    method = "GET"
+    path = "/"
+    protocol = "http"
+
+# Desktop Commander MCP port
+[[services]]
+  internal_port = 6001
+  protocol = "tcp"
+  
+  [[services.ports]]
+    port = 6001
+
+# VM configuration
+[vm]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512
+
+# Persistent volume for workspace
+[mounts]
+  source = "garza_workspace"
+  destination = "/workspace"
+
+# Restart policy
+[restart]
+  policy = "always"

@@ -1,6 +1,6 @@
 FROM ubuntu:24.04
 
-# Prevent interactive prompts during installation
+# Prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
@@ -16,41 +16,31 @@ RUN apt-get update && apt-get install -y \
     wget \
     unzip \
     ca-certificates \
-    gnupg \
-    lsb-release \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Desktop Commander
-# Note: Adjust version as needed
-RUN npm install -g @anthropic-ai/desktop-commander
-
-# Install flyctl for local operations
+# Install flyctl
 RUN curl -L https://fly.io/install.sh | sh
 ENV PATH="/root/.fly/bin:${PATH}"
 
-# Create workspace directory
+# Create workspace
 RUN mkdir -p /workspace
 WORKDIR /workspace
 
-# Clone garza-os-github repo (we'll mount this via volume in production)
-# For now, create placeholder
+# Git config
 RUN git config --global user.email "garza-dc@garzahive.com" && \
     git config --global user.name "GARZA Desktop Commander"
 
-# Create health check script
-COPY healthcheck.sh /usr/local/bin/healthcheck.sh
-RUN chmod +x /usr/local/bin/healthcheck.sh
+# Create a simple MCP server (placeholder until we set up Desktop Commander correctly)
+RUN mkdir -p /app
+COPY start.sh /app/start.sh
+COPY healthcheck.sh /app/healthcheck.sh
+RUN chmod +x /app/start.sh /app/healthcheck.sh
 
-# Create startup script
-COPY start.sh /usr/local/bin/start.sh
-RUN chmod +x /usr/local/bin/start.sh
-
-# Expose health check port
-EXPOSE 6000
+# Expose ports
+EXPOSE 6000 6001
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD /usr/local/bin/healthcheck.sh
+    CMD /app/healthcheck.sh
 
-# Run Desktop Commander in server mode
-CMD ["/usr/local/bin/start.sh"]
+CMD ["/app/start.sh"]

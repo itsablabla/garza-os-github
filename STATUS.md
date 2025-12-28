@@ -1,13 +1,13 @@
 # Infrastructure Status
 
-Last Updated: 2025-12-28 20:30 UTC
+Last Updated: 2025-12-28 21:25 UTC
 
 ## 🖥️ MCP Servers
 | Server | Status | Latency |
 |--------|--------|---------|
-| Garza Home MCP | 🟢 UP | 108ms |
-| Last Rock Dev | 🟢 UP | 109ms |
-| Beeper MCP | 🟢 UP | 587ms |
+| Garza Home MCP | 🟢 UP | 382ms |
+| Last Rock Dev | 🟢 UP | 331ms |
+| Beeper MCP | 🟢 UP | 450ms |
 | Craft MCP | 🔴 DOWN (401) | - |
 
 ## ✈️ Fly.io Applications

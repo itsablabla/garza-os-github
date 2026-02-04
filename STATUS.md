@@ -1,6 +1,6 @@
 # Infrastructure Status
 
-Last Updated: 2026-02-04 20:50 UTC
+Last Updated: 2026-02-04 21:41 UTC
 
 ## 🖥️ MCP Servers
 | Server | Status | Latency |
@@ -22,7 +22,7 @@ Last Updated: 2026-02-04 20:50 UTC
 ## ⚡ Cloudflare Workers
 | Worker | Status |
 |--------|--------|
-| voicenotes-webhook | 🟢 Active |
+| voicenotes-webhook | 🔴 Error (000000) |
 | voicenotes-indexer | 🟢 Active |
 | garza-log-aggregator | 🔴 Error (401) |
 

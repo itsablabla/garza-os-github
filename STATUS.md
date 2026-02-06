@@ -1,6 +1,6 @@
 # Infrastructure Status
 
-Last Updated: 2026-02-06 16:06 UTC
+Last Updated: 2026-02-06 17:22 UTC
 
 ## 🖥️ MCP Servers
 | Server | Status | Latency |
@@ -23,7 +23,7 @@ Last Updated: 2026-02-06 16:06 UTC
 | Worker | Status |
 |--------|--------|
 | voicenotes-webhook | 🟢 Active |
-| voicenotes-indexer | 🔴 Error (000000) |
+| voicenotes-indexer | 🟢 Active |
 | garza-log-aggregator | 🔴 Error (401) |
 
 ## 🌐 External Services

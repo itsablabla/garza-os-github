@@ -7,6 +7,10 @@
     "start": "node --import tsx/esm src/index.ts",
     "dev": "node --import tsx/esm --watch src/index.ts"
   },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.5.0",
     "hono": "^4.6.0",

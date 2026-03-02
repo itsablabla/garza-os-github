@@ -1,6 +1,6 @@
 /// <reference types="node" />
 /**
- * GARZA OS Unified MCP Router v5.0
+ * GARZA OS Unified MCP Router v5.1
  * One app — three MCP servers:
  *   POST /personal  → garza-tools stack (communication, productivity, home, vaults, ai, web, beeper)
  *   POST /dev       → last-rock-labs stack (infrastructure, automation, analytics, finance)
@@ -85,6 +85,7 @@ const DEEPGRAM_KEY     = process.env.DEEPGRAM_API_KEY || "";
 const SHOPIFY_KEY      = process.env.SHOPIFY_API_KEY  || process.env.SHOPIFY_STORE_CREDENTIALS || "";
 const SHOPIFY_STORE    = process.env.SHOPIFY_STORE_URL || "nomad-internet.myshopify.com";
 const SIMPLEFIN_URL    = process.env.SIMPLEFIN_ACCESS_URL || "";
+const VOICENOTES_KEY   = process.env.VOICENOTES_API_KEY   || "";
 
 // ─── Self-management: in-memory tool registry ─────────────────────────────────
 interface ToolDef {
@@ -303,6 +304,83 @@ const ROUTER_MGMT_TOOLS: ToolDef[] = [
   },
 ];
 
+// ─── VOICENOTES TOOLS (6 tools) ─────────────────────────────────────────────────
+const VOICENOTES_TOOLS: ToolDef[] = [
+  {
+    name: "voicenotes.list",
+    description: "List your most recent VoiceNotes recordings. Returns title, duration, tags, creation date, and recording_id for each note. Supports filtering by tags and date.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Max notes to return (default: 20, max: 40 per page)" },
+        since: { type: "string", description: "Only return notes updated after this ISO timestamp (e.g. 2026-01-01T00:00:00Z)" },
+        tags: { type: "array", items: { type: "string" }, description: "Filter by tags (e.g. [\"work\", \"ideas\"])" },
+        tag_filter_mode: { type: "string", enum: ["include", "exclude"], description: "include = only notes with these tags; exclude = notes without them (default: include)" },
+        page: { type: "number", description: "Page number for pagination (default: 1)" }
+      }
+    }
+  },
+  {
+    name: "voicenotes.get",
+    description: "Get the full transcript, AI summary, action items, and todos for a specific VoiceNote by its recording_id. Returns all AI-generated content (creations).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        recording_id: { type: "string", description: "The recording_id of the note (from voicenotes.list)" }
+      },
+      required: ["recording_id"]
+    }
+  },
+  {
+    name: "voicenotes.search",
+    description: "Search your VoiceNotes by keyword across titles and transcripts. Returns matching notes with snippets. Fetches all pages and filters client-side.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keyword or phrase to search for" },
+        limit: { type: "number", description: "Max results to return (default: 10)" },
+        since: { type: "string", description: "Only search notes updated after this ISO timestamp" }
+      },
+      required: ["query"]
+    }
+  },
+  {
+    name: "voicenotes.get_action_items",
+    description: "Extract all action items and todos from your recent VoiceNotes. Aggregates AI-generated action_items and todo creations across multiple notes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Number of recent notes to scan (default: 20)" },
+        since: { type: "string", description: "Only scan notes updated after this ISO timestamp" },
+        tags: { type: "array", items: { type: "string" }, description: "Filter by tags" }
+      }
+    }
+  },
+  {
+    name: "voicenotes.get_summaries",
+    description: "Get AI-generated summaries for your recent VoiceNotes. Returns a digest of all notes with their titles, durations, and summary content.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Number of recent notes to summarize (default: 10)" },
+        since: { type: "string", description: "Only include notes updated after this ISO timestamp" },
+        tags: { type: "array", items: { type: "string" }, description: "Filter by tags" }
+      }
+    }
+  },
+  {
+    name: "voicenotes.get_audio_url",
+    description: "Get a temporary pre-signed download URL for a VoiceNote audio file. URL expires in ~12 minutes. Use recording_id from voicenotes.list.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        recording_id: { type: "string", description: "The recording_id of the note" }
+      },
+      required: ["recording_id"]
+    }
+  },
+];
+
 // ─── REGISTRY / DISCOVERY TOOLS ───────────────────────────────────────────────
 const REGISTRY_TOOLS: ToolDef[] = [
   {
@@ -401,6 +479,9 @@ const PERSONAL_TOOLS: ToolDef[] = [
   { name: "web.scraping.scrape",        description: "Scrape a URL and return its content as clean markdown.", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
   { name: "web.scraping.search",        description: "Search the web and return structured results.", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
   { name: "web.browser.navigate",       description: "Navigate a headless browser to a URL and return the page content.", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
+
+  // VOICENOTES
+  ...VOICENOTES_TOOLS,
 
   // REGISTRY / DISCOVERY
   ...REGISTRY_TOOLS,
@@ -691,13 +772,14 @@ async function executeTool(
 
     if (toolName === "router.deploy.status") {
       return {
-        version: "5.0.0",
+        version: "5.1.0",
         uptime_seconds: process.uptime(),
         servers: {
           personal: { tools: PERSONAL_TOOLS.length + RUNTIME_PERSONAL_TOOLS.length, runtime_added: RUNTIME_PERSONAL_TOOLS.length },
           dev:      { tools: DEV_TOOLS.length + RUNTIME_DEV_TOOLS.length, runtime_added: RUNTIME_DEV_TOOLS.length },
           nomad:    { tools: NOMAD_TOOLS.length + RUNTIME_NOMAD_TOOLS.length, runtime_added: RUNTIME_NOMAD_TOOLS.length },
         },
+        new_in_v5_1: ["voicenotes.list", "voicenotes.get", "voicenotes.search", "voicenotes.get_action_items", "voicenotes.get_summaries", "voicenotes.get_audio_url"],
         new_in_v5: ["vaults.secrets.set", "beeper.chat.get_history", "beeper.messages.forward", "beeper.voice.auto_transcribe", "beeper.notion.log_action_items", "router.tools.bulk_add", "router.tools.history", "router.tools.rollback", "router.chain", "router.health.credential_check", "registry.discover", "registry.search_tools", "search.everything", "analytics.traces.log", "ai.memory.search_with_context", "automation.webhook.register"]
       };
     }
@@ -715,6 +797,7 @@ async function executeTool(
         UNIFI_TOKEN: !!UNIFI_TOKEN, BW_MCP_API_KEY: !!BW_TOKEN,
         TELEGRAM_BOT_TOKEN: !!TELEGRAM_TOKEN, DEEPGRAM_API_KEY: !!DEEPGRAM_KEY,
         SHOPIFY_API_KEY: !!SHOPIFY_KEY, SIMPLEFIN_ACCESS_URL: !!SIMPLEFIN_URL,
+        VOICENOTES_API_KEY: !!VOICENOTES_KEY,
       };
       const loaded = Object.entries(creds).filter(([,v]) => v).map(([k]) => k);
       const missing = Object.entries(creds).filter(([,v]) => !v).map(([k]) => k);
@@ -1115,7 +1198,178 @@ async function executeTool(
     }
   }
 
-  // ── COMMUNICATION ─────────────────────────────────────────────────────────
+   // ── VOICENOTES ─────────────────────────────────────────────────────────
+  if (category === "voicenotes") {
+    const VN_BASE = "https://api.voicenotes.com/api/integrations/obsidian-sync";
+    const VN_HEADERS = { "Authorization": `Bearer ${VOICENOTES_KEY}`, "X-API-KEY": VOICENOTES_KEY };
+
+    if (!VOICENOTES_KEY) {
+      return { error: "VOICENOTES_API_KEY not configured. Add it to Doppler garza/prd as VOICENOTES_API_KEY. Find it at voicenotes.com → Profile → Integrations & Automations → Obsidian." };
+    }
+
+    // Helper: fetch all pages up to a limit
+    const fetchVNPages = async (since?: string, tags?: string[], tagMode?: string, maxNotes = 200): Promise<Record<string, unknown>[]> => {
+      const allNotes: Record<string, unknown>[] = [];
+      let page = 1;
+      while (allNotes.length < maxNotes) {
+        const body: Record<string, unknown> = {
+          obsidian_deleted_recording_ids: [],
+          last_synced_note_updated_at: since || null,
+        };
+        if (tags && tags.length > 0) {
+          body.filter_tags = tags;
+          body.tag_filter_mode = tagMode || "include";
+        }
+        const r = await fetch(`${VN_BASE}/recordings?page=${page}`, {
+          method: "POST",
+          headers: { ...VN_HEADERS, "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        if (!r.ok) break;
+        const data = await r.json() as Record<string, unknown>;
+        const notes = (data.data as Record<string, unknown>[]) || [];
+        allNotes.push(...notes);
+        if (!data.links || !(data.links as Record<string, unknown>).next || notes.length === 0) break;
+        page++;
+      }
+      return allNotes;
+    };
+
+    if (toolName === "voicenotes.list") {
+      const limit = (args.limit as number) || 20;
+      const page = (args.page as number) || 1;
+      const body: Record<string, unknown> = {
+        obsidian_deleted_recording_ids: [],
+        last_synced_note_updated_at: (args.since as string) || null,
+      };
+      if (args.tags && (args.tags as string[]).length > 0) {
+        body.filter_tags = args.tags;
+        body.tag_filter_mode = (args.tag_filter_mode as string) || "include";
+      }
+      const r = await fetch(`${VN_BASE}/recordings?page=${page}`, {
+        method: "POST",
+        headers: { ...VN_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      if (!r.ok) return { error: `VoiceNotes API error: ${r.status}` };
+      const data = await r.json() as Record<string, unknown>;
+      const notes = ((data.data as Record<string, unknown>[]) || []).slice(0, limit);
+      return {
+        count: notes.length,
+        page,
+        has_more: !!(data.links && (data.links as Record<string, unknown>).next),
+        notes: notes.map((n) => ({
+          recording_id: n.recording_id,
+          title: n.title,
+          duration_seconds: Math.round(((n.duration as number) > 1000 ? (n.duration as number) / 1000 : (n.duration as number))),
+          tags: ((n.tags as Record<string, unknown>[]) || []).map((t) => t.name),
+          has_transcript: !!(n.transcript),
+          has_summary: ((n.creations as Record<string, unknown>[]) || []).some((c) => c.type === "summary"),
+          has_action_items: ((n.creations as Record<string, unknown>[]) || []).some((c) => c.type === "action_items"),
+          created_at: n.created_at,
+          updated_at: n.updated_at,
+        }))
+      };
+    }
+
+    if (toolName === "voicenotes.get") {
+      // We need to find this note — fetch recent pages and locate by recording_id
+      const notes = await fetchVNPages(undefined, undefined, undefined, 200);
+      const note = notes.find((n) => n.recording_id === args.recording_id);
+      if (!note) return { error: `Note with recording_id '${args.recording_id}' not found in recent 200 notes.` };
+      const dur = (note.duration as number);
+      return {
+        recording_id: note.recording_id,
+        title: note.title,
+        duration_seconds: Math.round(dur > 1000 ? dur / 1000 : dur),
+        tags: ((note.tags as Record<string, unknown>[]) || []).map((t) => t.name),
+        transcript: note.transcript,
+        creations: ((note.creations as Record<string, unknown>[]) || []).map((c) => ({
+          type: c.type,
+          markdown_content: c.markdown_content,
+        })),
+        created_at: note.created_at,
+        updated_at: note.updated_at,
+      };
+    }
+
+    if (toolName === "voicenotes.search") {
+      const query = ((args.query as string) || "").toLowerCase();
+      const limit = (args.limit as number) || 10;
+      const notes = await fetchVNPages(args.since as string, undefined, undefined, 400);
+      const matches = notes.filter((n) => {
+        const title = ((n.title as string) || "").toLowerCase();
+        const transcript = ((n.transcript as string) || "").toLowerCase();
+        return title.includes(query) || transcript.includes(query);
+      }).slice(0, limit);
+      return {
+        query: args.query,
+        matches: matches.length,
+        results: matches.map((n) => {
+          const transcript = (n.transcript as string) || "";
+          const idx = transcript.toLowerCase().indexOf(query);
+          const snippet = idx >= 0 ? transcript.slice(Math.max(0, idx - 80), idx + 120) : transcript.slice(0, 200);
+          return {
+            recording_id: n.recording_id,
+            title: n.title,
+            snippet: snippet.trim(),
+            tags: ((n.tags as Record<string, unknown>[]) || []).map((t) => t.name),
+            created_at: n.created_at,
+          };
+        })
+      };
+    }
+
+    if (toolName === "voicenotes.get_action_items") {
+      const limit = (args.limit as number) || 20;
+      const notes = await fetchVNPages(args.since as string, args.tags as string[], "include", limit);
+      const actionItems: Record<string, unknown>[] = [];
+      for (const n of notes.slice(0, limit)) {
+        const creations = (n.creations as Record<string, unknown>[]) || [];
+        for (const c of creations) {
+          if (c.type === "action_items" || c.type === "todo") {
+            actionItems.push({
+              note_title: n.title,
+              recording_id: n.recording_id,
+              type: c.type,
+              content: c.markdown_content,
+              created_at: n.created_at,
+            });
+          }
+        }
+      }
+      return { notes_scanned: Math.min(notes.length, limit), action_items_found: actionItems.length, action_items: actionItems };
+    }
+
+    if (toolName === "voicenotes.get_summaries") {
+      const limit = (args.limit as number) || 10;
+      const notes = await fetchVNPages(args.since as string, args.tags as string[], "include", limit);
+      return {
+        count: Math.min(notes.length, limit),
+        summaries: notes.slice(0, limit).map((n) => {
+          const dur = (n.duration as number);
+          const summaryCreation = ((n.creations as Record<string, unknown>[]) || []).find((c) => c.type === "summary");
+          return {
+            recording_id: n.recording_id,
+            title: n.title,
+            duration_seconds: Math.round(dur > 1000 ? dur / 1000 : dur),
+            tags: ((n.tags as Record<string, unknown>[]) || []).map((t) => t.name),
+            summary: summaryCreation ? summaryCreation.markdown_content : (n.transcript ? (n.transcript as string).slice(0, 300) + "..." : "No summary available"),
+            created_at: n.created_at,
+          };
+        })
+      };
+    }
+
+    if (toolName === "voicenotes.get_audio_url") {
+      const r = await fetch(`${VN_BASE}/recordings/${args.recording_id}/signed-url`, { headers: VN_HEADERS });
+      if (!r.ok) return { error: `VoiceNotes API error: ${r.status} — signed URL may not be available for this recording.`, recording_id: args.recording_id };
+      const data = await r.json() as Record<string, unknown>;
+      return { recording_id: args.recording_id, audio_url: data.url, expires_in: "~12 minutes" };
+    }
+  }
+
+  // ── COMMUNICATION ─────────────────────────────────────────────────────
   if (category === "communication") {
     if (toolName === "communication.slack.list_channels") {
       if (!SLACK_TOKEN) return { error: "SLACK_BOT_TOKEN not configured. Add it to Doppler garza/prd as SLACK_BOT_TOKEN.", ok: false };

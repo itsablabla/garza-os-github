@@ -656,7 +656,7 @@ async function executeTool(
       // Use the network name as query to satisfy Zod min-length validation
       const result = await callBeeper("tools/call", {
         name: "search_chats",
-        arguments: { query: accountPrefix, limit: args.limit || 50, scope: "all" }
+        arguments: { query: accountPrefix, limit: args.limit || 50 }
       }) as Record<string, unknown>;
       // Filter by network
       const chats = (result as Record<string, unknown[]>).chats || [];
@@ -671,7 +671,7 @@ async function executeTool(
     if (toolName === "beeper.network.get_slack_channels") {
       const result = await callBeeper("tools/call", {
         name: "search_chats",
-        arguments: { query: args.workspace || "", limit: 100, scope: "all" }
+        arguments: { query: args.workspace || "", limit: 100 }
       }) as Record<string, unknown>;
       const chats = (result as Record<string, unknown[]>).chats || [];
       const slackChats = chats.filter((c: unknown) => {

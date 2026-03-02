@@ -1,6 +1,6 @@
 /// <reference types="node" />
 /**
- * GARZA OS Unified MCP Router v5.1
+ * GARZA OS Unified MCP Router v5.2
  * One app — three MCP servers:
  *   POST /personal  → garza-tools stack (communication, productivity, home, vaults, ai, web, beeper)
  *   POST /dev       → last-rock-labs stack (infrastructure, automation, analytics, finance)
@@ -86,6 +86,108 @@ const SHOPIFY_KEY      = process.env.SHOPIFY_API_KEY  || process.env.SHOPIFY_STO
 const SHOPIFY_STORE    = process.env.SHOPIFY_STORE_URL || "nomad-internet.myshopify.com";
 const SIMPLEFIN_URL    = process.env.SIMPLEFIN_ACCESS_URL || "";
 const VOICENOTES_KEY   = process.env.VOICENOTES_API_KEY   || "";
+
+// ─── Analytics: in-memory usage ring buffer (last 10k events) ─────────────────
+interface UsageEvent {
+  event_id: string;
+  timestamp: string;
+  server: string;
+  tool_name: string;
+  status: "success" | "failure";
+  execution_time_ms: number;
+  input_keys: string[];
+  output_size_bytes: number;
+  error_message?: string;
+  mcp_router_version: string;
+}
+
+const USAGE_RING: UsageEvent[] = [];
+const USAGE_RING_MAX = 10000;
+
+function recordUsage(event: UsageEvent): void {
+  USAGE_RING.push(event);
+  if (USAGE_RING.length > USAGE_RING_MAX) USAGE_RING.shift();
+}
+
+// ─── Bitwarden MCP session manager ────────────────────────────────────────────
+interface BwSession {
+  sessionId: string;
+  createdAt: number;
+}
+
+let _bwSession: BwSession | null = null;
+
+async function getBwSession(): Promise<string> {
+  // Reuse session if < 20 minutes old
+  if (_bwSession && (Date.now() - _bwSession.createdAt) < 20 * 60 * 1000) {
+    return _bwSession.sessionId;
+  }
+  // Initialize new session
+  const r = await fetch(`${BW_URL}/mcp`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${BW_TOKEN}`,
+      "Content-Type": "application/json",
+      "Accept": "application/json, text/event-stream"
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+      protocolVersion: "2024-11-05",
+      capabilities: { tools: {} },
+      clientInfo: { name: "garza-mcp-router", version: "5.2" }
+    }})
+  });
+  const sessionId = r.headers.get("Mcp-Session-Id") || "";
+  if (!sessionId) throw new Error("BW MCP: failed to get session ID");
+  // Send initialized notification
+  await fetch(`${BW_URL}/mcp`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${BW_TOKEN}`,
+      "Content-Type": "application/json",
+      "Accept": "application/json, text/event-stream",
+      "Mcp-Session-Id": sessionId
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })
+  });
+  _bwSession = { sessionId, createdAt: Date.now() };
+  return sessionId;
+}
+
+async function callBw(toolName: string, toolArgs: Record<string, unknown>): Promise<unknown> {
+  if (!BW_TOKEN) throw new Error("BW_MCP_API_KEY not configured. Add it to Doppler garza/prd.");
+  const sessionId = await getBwSession();
+  const r = await fetch(`${BW_URL}/mcp`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${BW_TOKEN}`,
+      "Content-Type": "application/json",
+      "Accept": "application/json, text/event-stream",
+      "Mcp-Session-Id": sessionId
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: Date.now(), method: "tools/call", params: { name: toolName, arguments: toolArgs } })
+  });
+  const text = await r.text();
+  // Parse SSE response
+  for (const line of text.split("\n")) {
+    if (line.startsWith("data: ")) {
+      const parsed = JSON.parse(line.slice(6));
+      if (parsed.error) {
+        // Session expired — clear and retry once
+        if (parsed.error.message?.includes("not initialized") || parsed.error.message?.includes("session")) {
+          _bwSession = null;
+          return callBw(toolName, toolArgs);
+        }
+        throw new Error(parsed.error.message);
+      }
+      const content = parsed.result?.content;
+      if (Array.isArray(content) && content[0]?.text) {
+        try { return JSON.parse(content[0].text); } catch { return content[0].text; }
+      }
+      return parsed.result;
+    }
+  }
+  throw new Error(`BW MCP returned no data: ${text.slice(0, 200)}`);
+}
 
 // ─── Self-management: in-memory tool registry ─────────────────────────────────
 interface ToolDef {
@@ -257,6 +359,41 @@ const ROUTER_MGMT_TOOLS: ToolDef[] = [
     name: "router.deploy.trigger",
     description: "Trigger a redeployment of the MCP router on Vercel to pick up code changes pushed to GitHub.",
     inputSchema: { type: "object", properties: { reason: { type: "string" } } }
+  },
+  {
+    name: "analytics.usage.get_stats",
+    description: "Query tool usage statistics. Group by tool_name, server, or category. Metrics: call_count, failure_rate, avg_execution_time. Returns data from the in-memory ring buffer (last 10k events since last deploy).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        time_period: { type: "string", enum: ["last_hour", "last_6h", "last_24h", "last_7d", "all"], description: "Time window to query (default: all)" },
+        group_by: { type: "string", enum: ["tool_name", "server", "category"], description: "Dimension to group results by (default: tool_name)" },
+        metric: { type: "string", enum: ["call_count", "failure_rate", "avg_execution_time", "all"], description: "Metric to return (default: all)" },
+        limit: { type: "number", description: "Max rows to return (default: 30)" },
+        server: { type: "string", enum: ["personal", "dev", "nomad", "all"], description: "Filter by server (default: all)" }
+      }
+    }
+  },
+  {
+    name: "analytics.usage.get_unused",
+    description: "Return all tools that have zero recorded calls since the last deploy. Useful for identifying dead weight tools to prune or improve.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        server: { type: "string", enum: ["personal", "dev", "nomad", "all"] }
+      }
+    }
+  },
+  {
+    name: "analytics.usage.get_top",
+    description: "Return the top N most-called tools, optionally filtered by server. Quick leaderboard view.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Number of top tools to return (default: 10)" },
+        server: { type: "string", enum: ["personal", "dev", "nomad", "all"] }
+      }
+    }
   },
   {
     name: "router.deploy.status",
@@ -437,8 +574,15 @@ const PERSONAL_TOOLS: ToolDef[] = [
   { name: "vaults.secrets.list",    description: "List all secret names in a Doppler project/config. Use to discover what credentials are available.", inputSchema: { type: "object", properties: { project: { type: "string" }, config: { type: "string" } }, required: ["project", "config"] } },
   { name: "vaults.secrets.get",     description: "Retrieve a specific secret value from Doppler by name. Returns the decrypted value.", inputSchema: { type: "object", properties: { project: { type: "string" }, config: { type: "string" }, name: { type: "string" } }, required: ["project", "config", "name"] } },
   { name: "vaults.secrets.set",     description: "Write or update a secret in Doppler. Use to store new credentials or rotate existing ones without manual dashboard access.", inputSchema: { type: "object", properties: { project: { type: "string" }, config: { type: "string" }, name: { type: "string" }, value: { type: "string" } }, required: ["project", "config", "name", "value"] } },
-  { name: "vaults.passwords.search",description: "Search Bitwarden vault for passwords, logins, or secure notes by keyword.", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
-  { name: "vaults.passwords.get",   description: "Retrieve a specific Bitwarden vault item by ID.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+  { name: "vaults.passwords.search",   description: "Search Bitwarden vault for passwords, logins, API keys, or secure notes by keyword.", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+  { name: "vaults.passwords.get",      description: "Get a Bitwarden vault item. Use field param to extract just password/username/totp/uri.", inputSchema: { type: "object", properties: { id: { type: "string", description: "Item ID or name" }, field: { type: "string", enum: ["item","password","username","uri","totp","notes"] } }, required: ["id"] } },
+  { name: "vaults.passwords.create",   description: "Create a new Bitwarden vault item (login, secure note, card, or identity).", inputSchema: { type: "object", properties: { name: { type: "string" }, type: { type: "number", enum: [1,2,3,4], description: "1=Login 2=SecureNote 3=Card 4=Identity" }, login: { type: "object", description: "{username, password, uris, totp}" }, notes: { type: "string" }, folderId: { type: "string" } }, required: ["name","type"] } },
+  { name: "vaults.passwords.update",   description: "Update an existing Bitwarden vault item by ID.", inputSchema: { type: "object", properties: { id: { type: "string" }, login: { type: "object" }, notes: { type: "string" }, name: { type: "string" } }, required: ["id"] } },
+  { name: "vaults.passwords.delete",   description: "Delete a Bitwarden vault item by ID.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+  { name: "vaults.passwords.list_folders", description: "List all Bitwarden vault folders.", inputSchema: { type: "object", properties: {} } },
+  { name: "vaults.passwords.generate", description: "Generate a secure password or passphrase using Bitwarden.", inputSchema: { type: "object", properties: { length: { type: "number" }, passphrase: { type: "boolean" }, words: { type: "number" } } } },
+  { name: "vaults.passwords.sync",     description: "Force sync Bitwarden vault with the server to get latest items.", inputSchema: { type: "object", properties: {} } },
+  { name: "vaults.passwords.server_stats", description: "Get Bitwarden MCP server stats including audit log summary and health.", inputSchema: { type: "object", properties: {} } },
 
   // BEEPER (full suite)
   ...BEEPER_TOOLS,
@@ -498,8 +642,13 @@ const DEV_TOOLS: ToolDef[] = [
   { name: "vaults.secrets.list",    description: "List all secret names in a Doppler project/config.", inputSchema: { type: "object", properties: { project: { type: "string" }, config: { type: "string" } }, required: ["project", "config"] } },
   { name: "vaults.secrets.get",     description: "Retrieve a specific secret value from Doppler by name.", inputSchema: { type: "object", properties: { project: { type: "string" }, config: { type: "string" }, name: { type: "string" } }, required: ["project", "config", "name"] } },
   { name: "vaults.secrets.set",     description: "Write or update a secret in Doppler.", inputSchema: { type: "object", properties: { project: { type: "string" }, config: { type: "string" }, name: { type: "string" }, value: { type: "string" } }, required: ["project", "config", "name", "value"] } },
-  { name: "vaults.passwords.search",description: "Search Bitwarden vault for passwords or secure notes.", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
-  { name: "vaults.passwords.get",   description: "Retrieve a Bitwarden vault item by ID.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+  { name: "vaults.passwords.search",   description: "Search Bitwarden vault for passwords, logins, API keys, or secure notes by keyword.", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+  { name: "vaults.passwords.get",      description: "Get a Bitwarden vault item. Use field param to extract just password/username/totp/uri.", inputSchema: { type: "object", properties: { id: { type: "string" }, field: { type: "string", enum: ["item","password","username","uri","totp","notes"] } }, required: ["id"] } },
+  { name: "vaults.passwords.create",   description: "Create a new Bitwarden vault item.", inputSchema: { type: "object", properties: { name: { type: "string" }, type: { type: "number", enum: [1,2,3,4] }, login: { type: "object" }, notes: { type: "string" } }, required: ["name","type"] } },
+  { name: "vaults.passwords.update",   description: "Update an existing Bitwarden vault item by ID.", inputSchema: { type: "object", properties: { id: { type: "string" }, login: { type: "object" }, notes: { type: "string" }, name: { type: "string" } }, required: ["id"] } },
+  { name: "vaults.passwords.delete",   description: "Delete a Bitwarden vault item by ID.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+  { name: "vaults.passwords.generate", description: "Generate a secure password or passphrase using Bitwarden.", inputSchema: { type: "object", properties: { length: { type: "number" }, passphrase: { type: "boolean" } } } },
+  { name: "vaults.passwords.sync",     description: "Force sync Bitwarden vault with the server.", inputSchema: { type: "object", properties: {} } },
 
   // INFRASTRUCTURE / CODE
   { name: "infrastructure.code.list_repos",       description: "List GitHub repositories for the authenticated user or org.", inputSchema: { type: "object", properties: { org: { type: "string" } } } },
@@ -554,8 +703,13 @@ const NOMAD_TOOLS: ToolDef[] = [
   { name: "vaults.secrets.list",    description: "List all secret names in a Doppler project/config.", inputSchema: { type: "object", properties: { project: { type: "string" }, config: { type: "string" } }, required: ["project", "config"] } },
   { name: "vaults.secrets.get",     description: "Retrieve a specific secret value from Doppler by name.", inputSchema: { type: "object", properties: { project: { type: "string" }, config: { type: "string" }, name: { type: "string" } }, required: ["project", "config", "name"] } },
   { name: "vaults.secrets.set",     description: "Write or update a secret in Doppler.", inputSchema: { type: "object", properties: { project: { type: "string" }, config: { type: "string" }, name: { type: "string" }, value: { type: "string" } }, required: ["project", "config", "name", "value"] } },
-  { name: "vaults.passwords.search",description: "Search Bitwarden vault for passwords or secure notes.", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
-  { name: "vaults.passwords.get",   description: "Retrieve a Bitwarden vault item by ID.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+  { name: "vaults.passwords.search",   description: "Search Bitwarden vault for passwords, logins, API keys, or secure notes by keyword.", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+  { name: "vaults.passwords.get",      description: "Get a Bitwarden vault item. Use field param to extract just password/username/totp/uri.", inputSchema: { type: "object", properties: { id: { type: "string" }, field: { type: "string", enum: ["item","password","username","uri","totp","notes"] } }, required: ["id"] } },
+  { name: "vaults.passwords.create",   description: "Create a new Bitwarden vault item.", inputSchema: { type: "object", properties: { name: { type: "string" }, type: { type: "number", enum: [1,2,3,4] }, login: { type: "object" }, notes: { type: "string" } }, required: ["name","type"] } },
+  { name: "vaults.passwords.update",   description: "Update an existing Bitwarden vault item by ID.", inputSchema: { type: "object", properties: { id: { type: "string" }, login: { type: "object" }, notes: { type: "string" }, name: { type: "string" } }, required: ["id"] } },
+  { name: "vaults.passwords.delete",   description: "Delete a Bitwarden vault item by ID.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+  { name: "vaults.passwords.generate", description: "Generate a secure password or passphrase using Bitwarden.", inputSchema: { type: "object", properties: { length: { type: "number" }, passphrase: { type: "boolean" } } } },
+  { name: "vaults.passwords.sync",     description: "Force sync Bitwarden vault with the server.", inputSchema: { type: "object", properties: {} } },
 
   // FINANCE
   { name: "finance.payments.list_charges",        description: "List recent Stripe charges.", inputSchema: { type: "object", properties: { limit: { type: "number" }, customer: { type: "string" } } } },
@@ -659,6 +813,75 @@ async function executeTool(
       body: JSON.stringify(args)
     });
     return r.json();
+  }
+
+  // ── ANALYTICS USAGE ──────────────────────────────────────────────────────
+  if (category === "analytics" && toolName.startsWith("analytics.usage")) {
+    const timePeriod = (args.time_period as string) || "all";
+    const groupBy = (args.group_by as string) || "tool_name";
+    const metric = (args.metric as string) || "all";
+    const limit = (args.limit as number) || 30;
+    const filterServer = (args.server as string) || "all";
+
+    // Filter by time
+    const now = Date.now();
+    const cutoffs: Record<string, number> = {
+      last_hour: 60 * 60 * 1000,
+      last_6h: 6 * 60 * 60 * 1000,
+      last_24h: 24 * 60 * 60 * 1000,
+      last_7d: 7 * 24 * 60 * 60 * 1000,
+      all: Infinity
+    };
+    const cutoff = cutoffs[timePeriod] || Infinity;
+    let events = USAGE_RING.filter(e => (now - new Date(e.timestamp).getTime()) <= cutoff);
+    if (filterServer !== "all") events = events.filter(e => e.server === filterServer);
+
+    if (toolName === "analytics.usage.get_top") {
+      const counts: Record<string, number> = {};
+      for (const e of events) counts[e.tool_name] = (counts[e.tool_name] || 0) + 1;
+      const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, limit);
+      return { total_events: events.length, top_tools: sorted.map(([name, count]) => ({ tool: name, calls: count })) };
+    }
+
+    if (toolName === "analytics.usage.get_unused") {
+      const usedTools = new Set(events.map(e => e.tool_name));
+      const allToolsForServer = server === "personal" ? [...PERSONAL_TOOLS, ...RUNTIME_PERSONAL_TOOLS]
+        : server === "dev" ? [...DEV_TOOLS, ...RUNTIME_DEV_TOOLS]
+        : [...NOMAD_TOOLS, ...RUNTIME_NOMAD_TOOLS];
+      const unused = allToolsForServer.filter(t => !usedTools.has(t.name));
+      return {
+        server, total_tools: allToolsForServer.length,
+        unused_count: unused.length,
+        unused_pct: Math.round(unused.length / allToolsForServer.length * 100),
+        unused_tools: unused.map(t => ({ name: t.name, category: t.name.split(".")[0] }))
+      };
+    }
+
+    // analytics.usage.get_stats
+    const grouped: Record<string, { calls: number; failures: number; total_ms: number }> = {};
+    for (const e of events) {
+      const key = groupBy === "server" ? e.server
+        : groupBy === "category" ? e.tool_name.split(".")[0]
+        : e.tool_name;
+      if (!grouped[key]) grouped[key] = { calls: 0, failures: 0, total_ms: 0 };
+      grouped[key].calls++;
+      if (e.status === "failure") grouped[key].failures++;
+      grouped[key].total_ms += e.execution_time_ms;
+    }
+    const rows = Object.entries(grouped)
+      .map(([key, s]) => ({
+        [groupBy]: key,
+        call_count: s.calls,
+        failure_rate: s.calls > 0 ? Math.round(s.failures / s.calls * 100) / 100 : 0,
+        avg_execution_time_ms: s.calls > 0 ? Math.round(s.total_ms / s.calls) : 0
+      }))
+      .sort((a, b) => b.call_count - a.call_count)
+      .slice(0, limit);
+    return {
+      time_period: timePeriod, group_by: groupBy, server: filterServer,
+      total_events: events.length, total_groups: Object.keys(grouped).length,
+      rows
+    };
   }
 
   // ── ROUTER SELF-MANAGEMENT ────────────────────────────────────────────────
@@ -992,18 +1215,31 @@ async function executeTool(
       return { status: "set", name: args.name, project: args.project, config: args.config };
     }
     if (toolName === "vaults.passwords.search") {
-      const r = await fetch(`${BW_URL}/api/search?q=${encodeURIComponent(args.query as string)}`, {
-        headers: { Authorization: `Bearer ${BW_TOKEN}` }
-      });
-      if (!r.ok) return { error: `Bitwarden returned ${r.status}`, query: args.query };
-      return r.json();
+      return callBw("vault_items", { action: "list", search: args.query });
     }
     if (toolName === "vaults.passwords.get") {
-      const r = await fetch(`${BW_URL}/api/item/${args.id}`, {
-        headers: { Authorization: `Bearer ${BW_TOKEN}` }
-      });
-      if (!r.ok) return { error: `Bitwarden returned ${r.status}`, id: args.id };
-      return r.json();
+      return callBw("vault_items", { action: "get", id: args.id, field: args.field || "item" });
+    }
+    if (toolName === "vaults.passwords.create") {
+      return callBw("vault_items", { action: "create", name: args.name, type: args.type, login: args.login, notes: args.notes, folderId: args.folderId });
+    }
+    if (toolName === "vaults.passwords.update") {
+      return callBw("vault_items", { action: "update", id: args.id, login: args.login, notes: args.notes, name: args.name });
+    }
+    if (toolName === "vaults.passwords.delete") {
+      return callBw("vault_items", { action: "delete", id: args.id });
+    }
+    if (toolName === "vaults.passwords.list_folders") {
+      return callBw("vault_folders", { action: "list" });
+    }
+    if (toolName === "vaults.passwords.generate") {
+      return callBw("generate", { length: args.length || 20, passphrase: args.passphrase || false, words: args.words || 4 });
+    }
+    if (toolName === "vaults.passwords.sync") {
+      return callBw("sync", {});
+    }
+    if (toolName === "vaults.passwords.server_stats") {
+      return callBw("server_stats", {});
     }
   }
 
@@ -1861,14 +2097,45 @@ function makeMcpHandler(serverName: "personal" | "dev" | "nomad", baseTools: Too
 
     if (method === "tools/call") {
       const { name, arguments: args } = params as { name: string; arguments: Record<string, unknown> };
+      const t0 = Date.now();
+      let usageStatus: "success" | "failure" = "success";
+      let usageError: string | undefined;
+      let outputSize = 0;
       try {
         const result = await executeTool(name, args || {}, serverName, allTools);
+        const text = JSON.stringify(result, null, 2);
+        outputSize = text.length;
+        recordUsage({
+          event_id: `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+          timestamp: new Date().toISOString(),
+          server: serverName,
+          tool_name: name,
+          status: "success",
+          execution_time_ms: Date.now() - t0,
+          input_keys: Object.keys(args || {}),
+          output_size_bytes: outputSize,
+          mcp_router_version: "5.2"
+        });
         return c.json({
           jsonrpc: "2.0", id,
-          result: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] }
+          result: { content: [{ type: "text", text }] }
         });
       } catch (err) {
-        return c.json({ jsonrpc: "2.0", id, error: { code: -32000, message: String(err) } });
+        usageStatus = "failure";
+        usageError = String(err);
+        recordUsage({
+          event_id: `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+          timestamp: new Date().toISOString(),
+          server: serverName,
+          tool_name: name,
+          status: "failure",
+          execution_time_ms: Date.now() - t0,
+          input_keys: Object.keys(args || {}),
+          output_size_bytes: 0,
+          error_message: usageError,
+          mcp_router_version: "5.2"
+        });
+        return c.json({ jsonrpc: "2.0", id, error: { code: -32000, message: usageError } });
       }
     }
 
@@ -1923,7 +2190,93 @@ app.get("/", (c) => c.json({
   ]
 }));
 
-app.get("/health", (c) => c.json({ status: "ok", uptime: process.uptime(), version: "5.0.0" }));
+app.get("/health", (c) => c.json({ status: "ok", uptime: process.uptime(), version: "5.2.0" }));
+
+// ─── Analytics dashboard data endpoint ───────────────────────────────────────
+app.get("/analytics", (c) => {
+  const now = Date.now();
+  const hourAgo = now - 60 * 60 * 1000;
+  const dayAgo  = now - 24 * 60 * 60 * 1000;
+
+  const recentEvents = USAGE_RING.filter(e => new Date(e.timestamp).getTime() > dayAgo);
+
+  // Per-tool stats
+  const toolStats: Record<string, { calls: number; failures: number; total_ms: number; last_called: string }> = {};
+  for (const e of USAGE_RING) {
+    if (!toolStats[e.tool_name]) toolStats[e.tool_name] = { calls: 0, failures: 0, total_ms: 0, last_called: e.timestamp };
+    toolStats[e.tool_name].calls++;
+    if (e.status === "failure") toolStats[e.tool_name].failures++;
+    toolStats[e.tool_name].total_ms += e.execution_time_ms;
+    if (e.timestamp > toolStats[e.tool_name].last_called) toolStats[e.tool_name].last_called = e.timestamp;
+  }
+
+  // Per-server stats
+  const serverStats: Record<string, { calls: number; failures: number }> = {};
+  for (const e of USAGE_RING) {
+    if (!serverStats[e.server]) serverStats[e.server] = { calls: 0, failures: 0 };
+    serverStats[e.server].calls++;
+    if (e.status === "failure") serverStats[e.server].failures++;
+  }
+
+  // Hourly buckets for last 24h (24 buckets)
+  const hourlyBuckets: Record<string, { calls: number; failures: number }> = {};
+  for (let i = 23; i >= 0; i--) {
+    const bucketStart = new Date(now - i * 60 * 60 * 1000);
+    const key = bucketStart.toISOString().slice(0, 13) + ":00";
+    hourlyBuckets[key] = { calls: 0, failures: 0 };
+  }
+  for (const e of recentEvents) {
+    const key = e.timestamp.slice(0, 13) + ":00";
+    if (hourlyBuckets[key]) {
+      hourlyBuckets[key].calls++;
+      if (e.status === "failure") hourlyBuckets[key].failures++;
+    }
+  }
+
+  // Top tools
+  const topTools = Object.entries(toolStats)
+    .sort((a, b) => b[1].calls - a[1].calls)
+    .slice(0, 20)
+    .map(([name, s]) => ({
+      name, calls: s.calls,
+      failure_rate: s.calls > 0 ? Math.round(s.failures / s.calls * 100) : 0,
+      avg_ms: s.calls > 0 ? Math.round(s.total_ms / s.calls) : 0,
+      last_called: s.last_called
+    }));
+
+  // Category breakdown
+  const catStats: Record<string, number> = {};
+  for (const e of USAGE_RING) {
+    const cat = e.tool_name.split(".")[0];
+    catStats[cat] = (catStats[cat] || 0) + 1;
+  }
+
+  return c.json({
+    generated_at: new Date().toISOString(),
+    version: "5.2.0",
+    summary: {
+      total_events: USAGE_RING.length,
+      events_last_24h: recentEvents.length,
+      events_last_hour: USAGE_RING.filter(e => new Date(e.timestamp).getTime() > hourAgo).length,
+      unique_tools_called: Object.keys(toolStats).length,
+      total_tools_available: PERSONAL_TOOLS.length + DEV_TOOLS.length + NOMAD_TOOLS.length,
+      overall_failure_rate: USAGE_RING.length > 0
+        ? Math.round(USAGE_RING.filter(e => e.status === "failure").length / USAGE_RING.length * 100)
+        : 0
+    },
+    server_breakdown: serverStats,
+    category_breakdown: catStats,
+    hourly_activity: Object.entries(hourlyBuckets).map(([hour, s]) => ({ hour, ...s })),
+    top_tools: topTools,
+    all_tool_stats: Object.entries(toolStats).map(([name, s]) => ({
+      name, server: name.split(".")[0],
+      calls: s.calls, failures: s.failures,
+      failure_rate: s.calls > 0 ? Math.round(s.failures / s.calls * 100) : 0,
+      avg_ms: s.calls > 0 ? Math.round(s.total_ms / s.calls) : 0,
+      last_called: s.last_called
+    }))
+  });
+});
 
 const servers = [
   { path: "/personal", tools: PERSONAL_TOOLS, name: "personal" as const },

@@ -4,6 +4,7 @@
   "description": "GARZA OS Unified MCP Router — three servers, one app",
   "type": "module",
   "scripts": {
+    "build": "echo 'No compile step — tsx runs TypeScript directly at runtime'",
     "start": "node --import tsx/esm src/index.ts",
     "dev": "node --import tsx/esm --watch src/index.ts"
   },

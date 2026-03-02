@@ -1103,12 +1103,18 @@ for (const { path, tools, name } of servers) {
   app.post(`${path}/mcp`, withAuth);
 }
 
-serve({ fetch: app.fetch, port: PORT }, () => {
-  console.log(`\n🚀 GARZA OS Unified MCP Router v4.0 running on port ${PORT}`);
-  console.log(`\n  Servers:`);
-  console.log(`    /personal  → ${PERSONAL_TOOLS.length} tools (${[...new Set(PERSONAL_TOOLS.map(t => t.name.split(".")[0]))].join(", ")})`);
-  console.log(`    /dev       → ${DEV_TOOLS.length} tools (${[...new Set(DEV_TOOLS.map(t => t.name.split(".")[0]))].join(", ")})`);
-  console.log(`    /nomad     → ${NOMAD_TOOLS.length} tools (${[...new Set(NOMAD_TOOLS.map(t => t.name.split(".")[0]))].join(", ")})`);
-  console.log(`\n  Total: ${PERSONAL_TOOLS.length + DEV_TOOLS.length + NOMAD_TOOLS.length} tools across 3 servers`);
-  console.log(`  NEW: 22 Beeper tools + 8 self-management tools + full backend execution\n`);
-});
+// Export for Vercel serverless
+export default app;
+
+// Start server when running directly (Railway, local, Fly.io)
+if (process.env.VERCEL !== '1') {
+  serve({ fetch: app.fetch, port: PORT }, () => {
+    console.log(`\n🚀 GARZA OS Unified MCP Router v4.0 running on port ${PORT}`);
+    console.log(`\n  Servers:`);
+    console.log(`    /personal  → ${PERSONAL_TOOLS.length} tools (${[...new Set(PERSONAL_TOOLS.map(t => t.name.split(".")[0]))].join(", ")})`);
+    console.log(`    /dev       → ${DEV_TOOLS.length} tools (${[...new Set(DEV_TOOLS.map(t => t.name.split(".")[0]))].join(", ")})`);
+    console.log(`    /nomad     → ${NOMAD_TOOLS.length} tools (${[...new Set(NOMAD_TOOLS.map(t => t.name.split(".")[0]))].join(", ")})`);
+    console.log(`\n  Total: ${PERSONAL_TOOLS.length + DEV_TOOLS.length + NOMAD_TOOLS.length} tools across 3 servers`);
+    console.log(`  NEW: 22 Beeper tools + 8 self-management tools + full backend execution\n`);
+  });
+}

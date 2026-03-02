@@ -961,7 +961,7 @@ async function executeTool(
       // Get the original message first, then send it to the target chat
       const messages = await callBeeper("tools/call", {
         name: "search_messages",
-        arguments: { chatIDs: [args.fromChatID], limit: 50 }
+        arguments: { chatIDs: [args.fromChatID], limit: 20 }
       }) as Record<string, unknown>;
       const msgList = (messages as Record<string, unknown[]>).messages || [];
       const original = (msgList as Record<string, unknown>[]).find(m => m.id === args.messageID);

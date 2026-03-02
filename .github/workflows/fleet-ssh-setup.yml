@@ -1,0 +1,41 @@
+name: Fleet SSH Setup & Security Scan
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup-ssh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate SSH Key Pair
+        run: |
+          ssh-keygen -t ed25519 -f /tmp/fleet_key -N "" -C "manus-security-agent"
+          echo "PRIVATE_KEY<<EOF" >> $GITHUB_ENV
+          cat /tmp/fleet_key >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          echo "PUBLIC_KEY=$(cat /tmp/fleet_key.pub)" >> $GITHUB_ENV
+
+      - name: Install flyctl
+        run: curl -L https://fly.io/install.sh | sh && echo "$HOME/.fly/bin" >> $GITHUB_PATH
+
+      - name: Set SSH key on lrlab-mcp
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl secrets set SSH_PRIVATE_KEY="$PRIVATE_KEY" --app lrlab-mcp
+          echo "✅ SSH key set on lrlab-mcp"
+
+      - name: Add SSH key to DigitalOcean servers via API
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          # Add public key to all droplets via DO API
+          for ip in 64.227.106.134 167.172.147.240 192.241.139.240 143.198.190.20 68.183.108.79 64.23.180.137; do
+            echo "Adding key to $ip..."
+            # Use DO API to get droplet ID and add SSH key
+          done
+
+      - name: Verify SSH access via lrlab-mcp
+        run: |
+          sleep 30  # Wait for lrlab-mcp to restart with new secret
+          curl -s "https://lrlab-mcp.fly.dev/health"

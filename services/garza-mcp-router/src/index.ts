@@ -53,8 +53,8 @@ const HA_URL          = process.env.HA_URL          || "http://homeassistant.loc
 const HA_TOKEN        = process.env.HA_TOKEN        || process.env.HOME_ASSISTANT_TOKEN || "";
 const UNIFI_URL       = process.env.UNIFI_URL       || "https://unifi.ui.com";
 const UNIFI_TOKEN     = process.env.UNIFI_TOKEN     || process.env.UNIFI_API_KEY || "";
-const SLACK_TOKEN     = process.env.SLACK_BOT_TOKEN || "";
-const NOTION_TOKEN    = process.env.NOTION_API_KEY  || process.env.NOTION_TOKEN || "";
+const SLACK_TOKEN     = process.env.SLACK_BOT_TOKEN || process.env.SLACK_TOKEN || "";
+const NOTION_TOKEN    = process.env.NOTION_API_KEY || process.env.NOTION_TOKEN || process.env.NOTION_INTEGRATION_TOKEN || "";
 const DROPBOX_TOKEN   = process.env.DROPBOX_ACCESS_TOKEN || "";
 const AIRTABLE_KEY    = process.env.AIRTABLE_API_KEY_1 || "";
 const DB_URL          = process.env.DATABASE_URL    || "";
@@ -602,18 +602,30 @@ async function executeTool(
       return { chat_id: args.chatID, summary: summary?.content, raw_messages: messages };
     }
 
-    if (toolName === "beeper.messages.transcribe_voice") {
+     if (toolName === "beeper.messages.transcribe_voice") {
       // Find voice/audio messages in the chat
+      const chatID = args.chatID as string;
+      if (!chatID || chatID.trim() === "") {
+        return { error: "chatID is required. Use beeper.chat.search_chats to find the chat ID first." };
+      }
       const messages = await callBeeper("tools/call", {
         name: "search_messages",
-        arguments: { chatIDs: [args.chatID], mediaTypes: ["audio"], limit: args.limit || 5 }
+        arguments: { chatIDs: [chatID], mediaTypes: ["audio", "voice"], limit: args.limit || 5 }
       }) as Record<string, unknown>;
-
+      // Extract attachment URLs for transcription
+      const msgList = (messages as Record<string, unknown[]>).messages || [];
+      const voiceMemos = (msgList as Record<string, unknown>[]).map((m) => ({
+        id: m.id,
+        timestamp: m.timestamp,
+        sender: m.sender,
+        attachments: m.attachments,
+        transcription_hint: "Pass the attachment URL to manus-speech-to-text for transcription"
+      }));
       return {
-        chat_id: args.chatID,
-        voice_messages: messages,
-        note: "Voice memo transcription requires downloading the audio file from Beeper and processing with Whisper. The message data above contains the audio attachment details.",
-        transcription_hint: "Use the attachment URL from the message data with manus-speech-to-text for transcription."
+        chat_id: chatID,
+        voice_memo_count: voiceMemos.length,
+        voice_memos: voiceMemos,
+        raw: messages
       };
     }
 
@@ -640,9 +652,10 @@ async function executeTool(
         slack: "slackgo", linkedin: "linkedin", matrix: "hungryserv"
       };
       const accountPrefix = networkMap[args.network as string] || (args.network as string);
+      // Use a space as query since empty string fails Zod validation
       const result = await callBeeper("tools/call", {
         name: "search_chats",
-        arguments: { query: "", limit: args.limit || 50, scope: "all" }
+        arguments: { query: " ", limit: args.limit || 50, scope: "all" }
       }) as Record<string, unknown>;
       // Filter by network
       const chats = (result as Record<string, unknown[]>).chats || [];
@@ -671,7 +684,8 @@ async function executeTool(
   // ── COMMUNICATION ─────────────────────────────────────────────────────────
   if (category === "communication") {
     if (toolName === "communication.slack.list_channels") {
-      const r = await fetch("https://slack.com/api/conversations.list?limit=200", {
+      if (!SLACK_TOKEN) return { error: "SLACK_BOT_TOKEN not configured. Add it to Doppler garza/prd as SLACK_BOT_TOKEN.", ok: false };
+      const r = await fetch("https://slack.com/api/conversations.list?limit=200&types=public_channel,private_channel", {
         headers: { Authorization: `Bearer ${SLACK_TOKEN}` }
       });
       const data = await r.json() as Record<string, unknown>;
@@ -696,6 +710,7 @@ async function executeTool(
   // ── PRODUCTIVITY ──────────────────────────────────────────────────────────
   if (category === "productivity") {
     if (toolName === "productivity.knowledge.search_notion") {
+      if (!NOTION_TOKEN) return { error: "NOTION_API_KEY not configured. Add it to Doppler garza/prd as NOTION_API_KEY.", results: [] };
       const r = await fetch("https://api.notion.com/v1/search", {
         method: "POST",
         headers: { Authorization: `Bearer ${NOTION_TOKEN}`, "Notion-Version": "2022-06-28", "Content-Type": "application/json" },

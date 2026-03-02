@@ -1550,12 +1550,15 @@ async function executeTool(
   // ── INFRASTRUCTURE ────────────────────────────────────────────────────────
   if (category === "infrastructure") {
     if (toolName === "infrastructure.code.list_repos") {
+      if (!GITHUB_TOKEN) return { error: "GITHUB_TOKEN not configured. Add it to Doppler garza/prd as GITHUB_TOKEN.", repos: [] };
       const url = args.org
         ? `https://api.github.com/orgs/${args.org}/repos?per_page=50`
         : "https://api.github.com/user/repos?per_page=50";
       const r = await fetch(url, { headers: { Authorization: `Bearer ${GITHUB_TOKEN}`, "User-Agent": "garza-mcp-router" } });
-      const repos = await r.json() as unknown[];
-      return { count: repos.length, repos: (repos as Record<string, unknown>[]).map(r => ({ name: r.name, full_name: r.full_name, private: r.private, updated_at: r.updated_at })) };
+      if (!r.ok) return { error: `GitHub API ${r.status}`, repos: [] };
+      const data = await r.json();
+      const repos = Array.isArray(data) ? data as Record<string, unknown>[] : [];
+      return { count: repos.length, repos: repos.map(r => ({ name: r.name, full_name: r.full_name, private: r.private, updated_at: r.updated_at })), raw_response_type: Array.isArray(data) ? "array" : typeof data };
     }
     if (toolName === "infrastructure.code.create_pr") {
       const r = await fetch(`https://api.github.com/repos/${args.repo}/pulls`, {

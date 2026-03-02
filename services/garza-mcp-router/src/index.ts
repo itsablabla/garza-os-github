@@ -608,9 +608,10 @@ async function executeTool(
       if (!chatID || chatID.trim() === "") {
         return { error: "chatID is required. Use beeper.chat.search_chats to find the chat ID first." };
       }
+      // Fetch all messages (no mediaTypes filter — Beeper doesn't support audio enum)
       const messages = await callBeeper("tools/call", {
         name: "search_messages",
-        arguments: { chatIDs: [chatID], mediaTypes: ["audio", "voice"], limit: args.limit || 5 }
+        arguments: { chatIDs: [chatID], limit: args.limit || 20 }
       }) as Record<string, unknown>;
       // Extract attachment URLs for transcription
       const msgList = (messages as Record<string, unknown[]>).messages || [];
@@ -652,10 +653,10 @@ async function executeTool(
         slack: "slackgo", linkedin: "linkedin", matrix: "hungryserv"
       };
       const accountPrefix = networkMap[args.network as string] || (args.network as string);
-      // Use a space as query since empty string fails Zod validation
+      // Use the network name as query to satisfy Zod min-length validation
       const result = await callBeeper("tools/call", {
         name: "search_chats",
-        arguments: { query: " ", limit: args.limit || 50, scope: "all" }
+        arguments: { query: accountPrefix, limit: args.limit || 50, scope: "all" }
       }) as Record<string, unknown>;
       // Filter by network
       const chats = (result as Record<string, unknown[]>).chats || [];

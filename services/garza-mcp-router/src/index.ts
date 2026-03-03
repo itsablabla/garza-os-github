@@ -1996,10 +1996,37 @@ async function executeTool(
     }
     if (toolName === "finance.banking.get_transactions") {
       if (!SIMPLEFIN_URL) return { error: "SIMPLEFIN_ACCESS_URL not configured." };
-      const r = await fetch(`${SIMPLEFIN_URL}/accounts`, {
-        headers: { "Content-Type": "application/json" }
-      });
-      return r.json();
+      // Node.js 18+ fetch() does not allow credentials embedded in URLs.
+      // Parse the URL and pass credentials via Authorization header instead.
+      let sfUrl = SIMPLEFIN_URL;
+      let sfAuth = "";
+      try {
+        const parsed = new URL(SIMPLEFIN_URL);
+        if (parsed.username && parsed.password) {
+          sfAuth = Buffer.from(`${parsed.username}:${parsed.password}`).toString("base64");
+          parsed.username = "";
+          parsed.password = "";
+          sfUrl = parsed.toString();
+        }
+      } catch { /* use original URL */ }
+      const sfHeaders: Record<string, string> = { "Content-Type": "application/json" };
+      if (sfAuth) sfHeaders["Authorization"] = `Basic ${sfAuth}`;
+      const accountId = args.account_id as string | undefined;
+      const sfEndpoint = accountId ? `${sfUrl}/accounts?account=${accountId}` : `${sfUrl}/accounts`;
+      const r = await fetch(sfEndpoint, { headers: sfHeaders });
+      const data = await r.json() as Record<string, unknown>;
+      const accounts = (data.accounts as Record<string, unknown>[]) || [];
+      return {
+        account_count: accounts.length,
+        accounts: accounts.map((a) => ({
+          id: a.id,
+          name: a.name,
+          currency: a.currency,
+          balance: a["balance"],
+          available_balance: a["available-balance"],
+          balance_date: a["balance-date"],
+        }))
+      };
     }
   }
 
@@ -2030,12 +2057,20 @@ async function executeTool(
       return r.json();
     }
     if (toolName === "ecommerce.shipping.list_shipments") {
+      if (!SHIPSTATION_KEY) return { error: "SHIPSTATION_API_KEY not configured. Add it to Doppler garza/prd." };
+      // ShipStation Basic Auth requires both API Key and Secret Key: base64(key:secret)
+      const SHIPSTATION_SECRET = process.env.SHIPSTATION_SECRET_KEY || "";
+      const ssAuth = Buffer.from(`${SHIPSTATION_KEY}:${SHIPSTATION_SECRET}`).toString("base64");
       const url = args.order_id
         ? `https://ssapi.shipstation.com/shipments?orderNumber=${args.order_id}`
         : "https://ssapi.shipstation.com/shipments?pageSize=25";
       const r = await fetch(url, {
-        headers: { Authorization: `Basic ${Buffer.from(`${SHIPSTATION_KEY}:`).toString("base64")}` }
+        headers: { Authorization: `Basic ${ssAuth}` }
       });
+      if (!r.ok) {
+        const errText = await r.text();
+        return { error: `ShipStation API returned ${r.status}`, detail: errText.slice(0, 200) };
+      }
       return r.json();
     }
   }

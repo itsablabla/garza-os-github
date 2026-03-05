@@ -2086,37 +2086,40 @@ async function executeTool(
     const GAQL_TOKEN = process.env.GAQL_TOKEN || "";
     if (!GAQL_TOKEN) return { error: "GAQL_TOKEN not configured. Add it to Doppler garza/prd." };
     const GAQL_BASE = "https://api.gaql.app/api/gpt";
-    const headers = { "Authorization": `Basic ${GAQL_TOKEN}`, "Content-Type": "application/json" };
+    const gaqlHeaders = { "Content-Type": "application/json", "User-Agent": "garza-mcp-router/5.3" };
 
     if (toolName === "ads.google.get_accounts") {
-      const r = await fetch(`${GAQL_BASE}/google-ads/get-accounts?gptToken=${GAQL_TOKEN}`, { headers });
+      const r = await fetch(`${GAQL_BASE}/google-ads/get-accounts?gptToken=${GAQL_TOKEN}`, { headers: gaqlHeaders });
       if (!r.ok) return { error: `GAQL API error ${r.status}`, detail: await r.text() };
       return r.json();
     }
     if (toolName === "ads.google.execute_query") {
       if (!args.customer_id || !args.query) return { error: "customer_id and query are required." };
-      const r = await fetch(`${GAQL_BASE}/google-ads/query`, {
+      const custId = parseInt(String(args.customer_id).replace(/-/g, ""));
+      const r = await fetch(`${GAQL_BASE}/google-ads/execute-query?gptToken=${GAQL_TOKEN}`, {
         method: "POST",
-        headers,
-        body: JSON.stringify({ gptToken: GAQL_TOKEN, customerId: args.customer_id, query: args.query })
+        headers: gaqlHeaders,
+        body: JSON.stringify({ query: args.query, customerId: custId, loginCustomerId: custId, reportAggregation: "Auto" })
       });
       if (!r.ok) return { error: `GAQL API error ${r.status}`, detail: await r.text() };
       return r.json();
     }
     if (toolName === "ads.google.get_campaigns") {
       if (!args.customer_id) return { error: "customer_id is required." };
+      const custId = parseInt(String(args.customer_id).replace(/-/g, ""));
       const dateRange = (args.date_range as string) || "LAST_30_DAYS";
       const query = `SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type, campaign_budget.amount_micros, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM campaign WHERE segments.date DURING ${dateRange} ORDER BY metrics.impressions DESC`;
-      const r = await fetch(`${GAQL_BASE}/google-ads/query`, {
+      const r = await fetch(`${GAQL_BASE}/google-ads/execute-query?gptToken=${GAQL_TOKEN}`, {
         method: "POST",
-        headers,
-        body: JSON.stringify({ gptToken: GAQL_TOKEN, customerId: args.customer_id, query })
+        headers: gaqlHeaders,
+        body: JSON.stringify({ query, customerId: custId, loginCustomerId: custId, reportAggregation: "Auto" })
       });
       if (!r.ok) return { error: `GAQL API error ${r.status}`, detail: await r.text() };
       return r.json();
     }
     if (toolName === "ads.google.get_performance") {
       if (!args.customer_id) return { error: "customer_id is required." };
+      const custId = parseInt(String(args.customer_id).replace(/-/g, ""));
       const dateRange = (args.date_range as string) || "LAST_30_DAYS";
       const level = (args.level as string) || "campaign";
       const queryMap: Record<string, string> = {
@@ -2126,10 +2129,10 @@ async function executeTool(
         ad: `SELECT campaign.name, ad_group.name, ad_group_ad.ad.id, ad_group_ad.status, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM ad_group_ad WHERE segments.date DURING ${dateRange} ORDER BY metrics.cost_micros DESC`
       };
       const query = queryMap[level] || queryMap.campaign;
-      const r = await fetch(`${GAQL_BASE}/google-ads/query`, {
+      const r = await fetch(`${GAQL_BASE}/google-ads/execute-query?gptToken=${GAQL_TOKEN}`, {
         method: "POST",
-        headers,
-        body: JSON.stringify({ gptToken: GAQL_TOKEN, customerId: args.customer_id, query })
+        headers: gaqlHeaders,
+        body: JSON.stringify({ query, customerId: custId, loginCustomerId: custId, reportAggregation: "Auto" })
       });
       if (!r.ok) return { error: `GAQL API error ${r.status}`, detail: await r.text() };
       return r.json();

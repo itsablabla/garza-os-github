@@ -546,6 +546,61 @@ const REGISTRY_TOOLS: ToolDef[] = [
   },
 ];
 
+// ─── MCPX SERVER REGISTRY TOOLS ───────────────────────────────────────────────
+// These tools allow any AI agent to dynamically add, remove, list, and check
+// MCP servers on the MCPX gateway — no human intervention required.
+const MCPX_REGISTRY_TOOLS: ToolDef[] = [
+  {
+    name: "mcpx.registry.add_server",
+    description: "Register a new MCP server on the MCPX gateway so all agents can use it. Provide the server name, URL, transport type, and an optional API key header. The gateway will validate the server (TCP connect + MCP handshake + tools/list) before registering. Use this when you need a capability not currently available on MCPX.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Unique lowercase snake_case name for the server (e.g. 'my_crm_server'). Must not conflict with existing server names." },
+        url: { type: "string", description: "Full URL to the server's MCP endpoint (e.g. 'https://my-server.railway.app/mcp')." },
+        type: { type: "string", enum: ["streamable-http", "sse"], description: "MCP transport protocol. Use 'streamable-http' for modern servers, 'sse' for legacy." },
+        api_key_header: { type: "string", description: "Optional. If the server requires an API key, provide it as 'Header-Name: value' (e.g. 'x-api-key: sk-xxxx')." },
+        description: { type: "string", description: "Human-readable description of what this server does and what tools it provides." }
+      },
+      required: ["name", "url", "type", "description"]
+    }
+  },
+  {
+    name: "mcpx.registry.remove_server",
+    description: "Remove a previously registered MCP server from the MCPX gateway. Only removes servers added via mcpx.registry.add_server. Built-in servers cannot be removed this way.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The exact name of the server to remove (as returned by mcpx.registry.list_servers)." },
+        reason: { type: "string", description: "Optional reason for removal — logged for audit purposes." }
+      },
+      required: ["name"]
+    }
+  },
+  {
+    name: "mcpx.registry.list_servers",
+    description: "List all MCP servers currently registered on the MCPX gateway. Returns name, URL, transport type, connection state, tool count, and call statistics. Use this to discover what capabilities are already available before adding a new server.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        filter: { type: "string", description: "Optional keyword to filter servers by name or URL." },
+        include_tools: { type: "boolean", description: "If true, include the list of tool names for each server (default: false)." },
+        status_filter: { type: "string", enum: ["all", "connected", "disconnected", "error"], description: "Filter by connection status (default: all)." }
+      }
+    }
+  },
+  {
+    name: "mcpx.registry.get_server_status",
+    description: "Check the live health and connection status of one or more MCP servers on the MCPX gateway. Returns connection state, latency, last call time, and total call count.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        names: { type: "array", items: { type: "string" }, description: "Array of server names to check. If empty or omitted, returns status for all servers." }
+      }
+    }
+  },
+];
+
 // ─── UNIFIED SEARCH TOOL ──────────────────────────────────────────────────────
 const SEARCH_TOOLS: ToolDef[] = [
   {
@@ -630,6 +685,9 @@ const PERSONAL_TOOLS: ToolDef[] = [
   // REGISTRY / DISCOVERY
   ...REGISTRY_TOOLS,
 
+  // MCPX SERVER REGISTRY
+  ...MCPX_REGISTRY_TOOLS,
+
   // UNIFIED SEARCH
   ...SEARCH_TOOLS,
 
@@ -690,6 +748,9 @@ const DEV_TOOLS: ToolDef[] = [
 
   // REGISTRY
   ...REGISTRY_TOOLS,
+
+  // MCPX SERVER REGISTRY
+  ...MCPX_REGISTRY_TOOLS,
 
   // UNIFIED SEARCH
   ...SEARCH_TOOLS,
@@ -758,6 +819,9 @@ const NOMAD_TOOLS: ToolDef[] = [
 
   // REGISTRY
   ...REGISTRY_TOOLS,
+
+  // MCPX SERVER REGISTRY
+  ...MCPX_REGISTRY_TOOLS,
 
   // UNIFIED SEARCH
   ...SEARCH_TOOLS,
@@ -1146,6 +1210,61 @@ async function executeTool(
         }
       }
       return { query, matches: matches.length, results: matches };
+    }
+  }
+
+  // ── MCPX REGISTRY ────────────────────────────────────────────────────────────
+  if (category === "mcpx") {
+    const MCPX_BASE = process.env.MCPX_URL || "https://mcpx-production-e218.up.railway.app";
+    if (toolName === "mcpx.registry.add_server") {
+      const { name: srvName, url: srvUrl, type: srvType = "streamable-http", headers: srvHeaders = {}, description: srvDesc = "" } = args as Record<string, unknown>;
+      const payload: Record<string, unknown> = { name: srvName, url: srvUrl, type: srvType };
+      if (Object.keys(srvHeaders as object).length) payload.headers = srvHeaders;
+      if (srvDesc) payload.description = srvDesc;
+      const r = await fetch(`${MCPX_BASE}/target-server`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const result = await r.json().catch(() => ({ status: r.status }));
+      return { success: r.ok, status: r.status, server: srvName, url: srvUrl, result };
+    }
+    if (toolName === "mcpx.registry.remove_server") {
+      const { name: srvName } = args as Record<string, string>;
+      const r = await fetch(`${MCPX_BASE}/target-server/${encodeURIComponent(srvName)}`, { method: "DELETE" });
+      return { success: r.ok, status: r.status, removed: srvName };
+    }
+    if (toolName === "mcpx.registry.list_servers") {
+      const { filter, status: filterStatus } = args as Record<string, string>;
+      const r = await fetch(`${MCPX_BASE}/system-state`);
+      const d = await r.json();
+      let servers: Array<Record<string, unknown>> = (d.targetServers || []).map((s: Record<string, unknown>) => ({
+        name: s.name,
+        url: s.url,
+        status: (s.state as Record<string, unknown>)?.type || "unknown",
+        tool_count: (s.tools as unknown[])?.length || 0
+      }));
+      if (filter) servers = servers.filter(s => String(s.name).includes(filter));
+      if (filterStatus) servers = servers.filter(s => s.status === filterStatus);
+      const connected = servers.filter(s => s.status === "connected").length;
+      return { total: servers.length, connected, servers };
+    }
+    if (toolName === "mcpx.registry.get_server_status") {
+      const { name: srvName } = args as Record<string, string>;
+      const r = await fetch(`${MCPX_BASE}/system-state`);
+      const d = await r.json();
+      const srv = (d.targetServers || []).find((s: Record<string, unknown>) => s.name === srvName);
+      if (!srv) return { error: `Server '${srvName}' not found`, available_servers: (d.targetServers || []).map((s: Record<string, unknown>) => s.name) };
+      const state = srv.state as Record<string, unknown>;
+      return {
+        name: srv.name,
+        url: srv.url,
+        status: state?.type || "unknown",
+        tool_count: (srv.tools as unknown[])?.length || 0,
+        tools: (srv.tools as Array<Record<string, unknown>> || []).map(t => t.name),
+        call_count: (srv.usage as Record<string, unknown>)?.callCount || 0,
+        error: state?.error ? (state.error as Record<string, unknown>).message : null
+      };
     }
   }
 

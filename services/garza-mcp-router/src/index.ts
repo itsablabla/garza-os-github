@@ -2411,3 +2411,4 @@ if (process.env.VERCEL !== '1') {
     console.log(`  NEW in v5.0: 16 new tools + Shopify wired + Telegram wired + tool versioning\n`);
   });
 }
+// v5.3 - Google Ads GAQL integration Wed Mar  4 23:41:49 EST 2026

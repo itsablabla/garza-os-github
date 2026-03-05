@@ -1,6 +1,6 @@
 /// <reference types="node" />
 /**
- * GARZA OS Unified MCP Router v5.2
+ * GARZA OS Unified MCP Router v5.3
  * One app — three MCP servers:
  *   POST /personal  → garza-tools stack (communication, productivity, home, vaults, ai, web, beeper)
  *   POST /dev       → last-rock-labs stack (infrastructure, automation, analytics, finance)
@@ -742,6 +742,12 @@ const NOMAD_TOOLS: ToolDef[] = [
   { name: "automation.agents.run_composio",       description: "Execute a Composio action across 137+ integrations.", inputSchema: { type: "object", properties: { action: { type: "string" }, params: { type: "object" } }, required: ["action"] } },
   { name: "automation.tasks.list_taskr",          description: "List tasks in Taskr.", inputSchema: { type: "object", properties: {} } },
   { name: "automation.tasks.create_taskr",        description: "Create a new task in Taskr.", inputSchema: { type: "object", properties: { title: { type: "string" }, description: { type: "string" } }, required: ["title"] } },
+
+  // MARKETING / GOOGLE ADS
+  { name: "ads.google.get_accounts",     description: "List all Google Ads accounts linked to the Nomad GAQL token.", inputSchema: { type: "object", properties: {} } },
+  { name: "ads.google.execute_query",   description: "Execute a GAQL query against a Nomad Google Ads account. Returns campaign, ad group, keyword, or performance data.", inputSchema: { type: "object", properties: { customer_id: { type: "string", description: "Google Ads customer ID (digits only, e.g. 6200354515)" }, query: { type: "string", description: "GAQL query string" } }, required: ["customer_id", "query"] } },
+  { name: "ads.google.get_campaigns",   description: "List all campaigns for a Nomad Google Ads account with status and budget.", inputSchema: { type: "object", properties: { customer_id: { type: "string" }, date_range: { type: "string", description: "e.g. LAST_30_DAYS, LAST_7_DAYS, THIS_MONTH" } }, required: ["customer_id"] } },
+  { name: "ads.google.get_performance", description: "Get ad performance metrics (impressions, clicks, cost, conversions) for a Nomad account.", inputSchema: { type: "object", properties: { customer_id: { type: "string" }, date_range: { type: "string" }, level: { type: "string", enum: ["campaign", "ad_group", "keyword", "ad"], description: "Aggregation level" } }, required: ["customer_id"] } },
 
   // ANALYTICS
   { name: "analytics.web.get_stats",              description: "Get website traffic stats from Plausible Analytics.", inputSchema: { type: "object", properties: { site_id: { type: "string" }, period: { type: "string" } }, required: ["site_id"] } },
@@ -2071,6 +2077,61 @@ async function executeTool(
         const errText = await r.text();
         return { error: `ShipStation API returned ${r.status}`, detail: errText.slice(0, 200) };
       }
+      return r.json();
+    }
+  }
+
+  // ── GOOGLE ADS / MARKETING ─────────────────────────────────────────────────
+  if (category === "ads") {
+    const GAQL_TOKEN = process.env.GAQL_TOKEN || "";
+    if (!GAQL_TOKEN) return { error: "GAQL_TOKEN not configured. Add it to Doppler garza/prd." };
+    const GAQL_BASE = "https://api.gaql.app/api/gpt";
+    const headers = { "Authorization": `Basic ${GAQL_TOKEN}`, "Content-Type": "application/json" };
+
+    if (toolName === "ads.google.get_accounts") {
+      const r = await fetch(`${GAQL_BASE}/google-ads/get-accounts?gptToken=${GAQL_TOKEN}`, { headers });
+      if (!r.ok) return { error: `GAQL API error ${r.status}`, detail: await r.text() };
+      return r.json();
+    }
+    if (toolName === "ads.google.execute_query") {
+      if (!args.customer_id || !args.query) return { error: "customer_id and query are required." };
+      const r = await fetch(`${GAQL_BASE}/google-ads/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ gptToken: GAQL_TOKEN, customerId: args.customer_id, query: args.query })
+      });
+      if (!r.ok) return { error: `GAQL API error ${r.status}`, detail: await r.text() };
+      return r.json();
+    }
+    if (toolName === "ads.google.get_campaigns") {
+      if (!args.customer_id) return { error: "customer_id is required." };
+      const dateRange = (args.date_range as string) || "LAST_30_DAYS";
+      const query = `SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type, campaign_budget.amount_micros, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM campaign WHERE segments.date DURING ${dateRange} ORDER BY metrics.impressions DESC`;
+      const r = await fetch(`${GAQL_BASE}/google-ads/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ gptToken: GAQL_TOKEN, customerId: args.customer_id, query })
+      });
+      if (!r.ok) return { error: `GAQL API error ${r.status}`, detail: await r.text() };
+      return r.json();
+    }
+    if (toolName === "ads.google.get_performance") {
+      if (!args.customer_id) return { error: "customer_id is required." };
+      const dateRange = (args.date_range as string) || "LAST_30_DAYS";
+      const level = (args.level as string) || "campaign";
+      const queryMap: Record<string, string> = {
+        campaign: `SELECT campaign.name, campaign.status, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions, metrics.ctr, metrics.average_cpc FROM campaign WHERE segments.date DURING ${dateRange} ORDER BY metrics.cost_micros DESC`,
+        ad_group: `SELECT campaign.name, ad_group.name, ad_group.status, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM ad_group WHERE segments.date DURING ${dateRange} ORDER BY metrics.cost_micros DESC`,
+        keyword: `SELECT campaign.name, ad_group.name, ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM keyword_view WHERE segments.date DURING ${dateRange} ORDER BY metrics.cost_micros DESC`,
+        ad: `SELECT campaign.name, ad_group.name, ad_group_ad.ad.id, ad_group_ad.status, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM ad_group_ad WHERE segments.date DURING ${dateRange} ORDER BY metrics.cost_micros DESC`
+      };
+      const query = queryMap[level] || queryMap.campaign;
+      const r = await fetch(`${GAQL_BASE}/google-ads/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ gptToken: GAQL_TOKEN, customerId: args.customer_id, query })
+      });
+      if (!r.ok) return { error: `GAQL API error ${r.status}`, detail: await r.text() };
       return r.json();
     }
   }

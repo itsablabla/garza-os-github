@@ -1,6 +1,6 @@
 /// <reference types="node" />
 /**
- * GARZA OS Unified MCP Router v5.3
+ * GARZA OS Unified MCP Router v5.2
  * One app — three MCP servers:
  *   POST /personal  → garza-tools stack (communication, productivity, home, vaults, ai, web, beeper)
  *   POST /dev       → last-rock-labs stack (infrastructure, automation, analytics, finance)
@@ -599,6 +599,20 @@ const MCPX_REGISTRY_TOOLS: ToolDef[] = [
       }
     }
   },
+  {
+    name: "mcpx.registry.discover_server",
+    description: "Probe any URL to automatically determine if it's a valid MCP server, what transport it uses, what tools it exposes, and whether it's already registered on MCPX. Use this before calling mcpx.registry.add_server to validate a server and avoid duplicates. Returns: is_mcp_server, transport_type, tool_count, tool_names, already_registered, suggested_name.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Full URL to probe (e.g. 'https://my-server.railway.app/mcp'). Will try both /mcp and root path if needed." },
+        api_key_header: { type: "string", description: "Optional API key header if the server requires auth (e.g. 'x-api-key: sk-xxxx')." },
+        auto_register: { type: "boolean", description: "If true and the server is valid and not already registered, automatically register it on MCPX. Default: false." },
+        suggested_name: { type: "string", description: "Optional name to use if auto_register is true." }
+      },
+      required: ["url"]
+    }
+  },
 ];
 
 // ─── UNIFIED SEARCH TOOL ──────────────────────────────────────────────────────
@@ -803,12 +817,6 @@ const NOMAD_TOOLS: ToolDef[] = [
   { name: "automation.agents.run_composio",       description: "Execute a Composio action across 137+ integrations.", inputSchema: { type: "object", properties: { action: { type: "string" }, params: { type: "object" } }, required: ["action"] } },
   { name: "automation.tasks.list_taskr",          description: "List tasks in Taskr.", inputSchema: { type: "object", properties: {} } },
   { name: "automation.tasks.create_taskr",        description: "Create a new task in Taskr.", inputSchema: { type: "object", properties: { title: { type: "string" }, description: { type: "string" } }, required: ["title"] } },
-
-  // MARKETING / GOOGLE ADS
-  { name: "ads.google.get_accounts",     description: "List all Google Ads accounts linked to the Nomad GAQL token.", inputSchema: { type: "object", properties: {} } },
-  { name: "ads.google.execute_query",   description: "Execute a GAQL query against a Nomad Google Ads account. Returns campaign, ad group, keyword, or performance data.", inputSchema: { type: "object", properties: { customer_id: { type: "string", description: "Google Ads customer ID (digits only, e.g. 6200354515)" }, query: { type: "string", description: "GAQL query string" } }, required: ["customer_id", "query"] } },
-  { name: "ads.google.get_campaigns",   description: "List all campaigns for a Nomad Google Ads account with status and budget.", inputSchema: { type: "object", properties: { customer_id: { type: "string" }, date_range: { type: "string", description: "e.g. LAST_30_DAYS, LAST_7_DAYS, THIS_MONTH" } }, required: ["customer_id"] } },
-  { name: "ads.google.get_performance", description: "Get ad performance metrics (impressions, clicks, cost, conversions) for a Nomad account.", inputSchema: { type: "object", properties: { customer_id: { type: "string" }, date_range: { type: "string" }, level: { type: "string", enum: ["campaign", "ad_group", "keyword", "ad"], description: "Aggregation level" } }, required: ["customer_id"] } },
 
   // ANALYTICS
   { name: "analytics.web.get_stats",              description: "Get website traffic stats from Plausible Analytics.", inputSchema: { type: "object", properties: { site_id: { type: "string" }, period: { type: "string" } }, required: ["site_id"] } },
@@ -1266,6 +1274,83 @@ async function executeTool(
         error: state?.error ? (state.error as Record<string, unknown>).message : null
       };
     }
+  }
+
+  if (toolName === "mcpx.registry.discover_server") {
+    const { url: probeUrl, api_key_header, auto_register, suggested_name } = args as Record<string, string | boolean>;
+    const headers: Record<string, string> = { "Content-Type": "application/json", "Accept": "application/json, text/event-stream" };
+    if (api_key_header && typeof api_key_header === "string") {
+      const [hName, ...hVal] = api_key_header.split(":");
+      if (hName && hVal.length) headers[hName.trim()] = hVal.join(":").trim();
+    }
+    // Try MCP initialize handshake on the given URL (and /mcp suffix if needed)
+    const urlsToTry = [String(probeUrl), String(probeUrl).replace(/\/$/, "") + "/mcp"];
+    let mcpResult: Record<string, unknown> = { is_mcp_server: false, url_tried: probeUrl };
+    for (const tryUrl of urlsToTry) {
+      try {
+        const initResp = await fetch(tryUrl, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "garza-discovery", version: "1.0" } } }),
+          signal: AbortSignal.timeout(8000)
+        });
+        if (initResp.ok) {
+          const text = await initResp.text();
+          const jsonLine = text.split("\n").find(l => l.startsWith("data: ") || l.startsWith("{"));
+          const parsed = jsonLine ? JSON.parse(jsonLine.startsWith("data: ") ? jsonLine.slice(6) : jsonLine) : null;
+          if (parsed?.result?.serverInfo || parsed?.result?.capabilities) {
+            // Valid MCP server — now get tools list
+            const toolsResp = await fetch(tryUrl, {
+              method: "POST",
+              headers,
+              body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+              signal: AbortSignal.timeout(8000)
+            });
+            let toolNames: string[] = [];
+            if (toolsResp.ok) {
+              const tText = await toolsResp.text();
+              const tLine = tText.split("\n").find(l => l.startsWith("data: ") || l.startsWith("{"));
+              const tParsed = tLine ? JSON.parse(tLine.startsWith("data: ") ? tLine.slice(6) : tLine) : null;
+              toolNames = (tParsed?.result?.tools || []).map((t: Record<string, string>) => t.name);
+            }
+            // Check if already registered on MCPX
+            const stateResp = await fetch(`${MCPX_BASE}/system-state`);
+            const stateData = await stateResp.json();
+            const existing = (stateData.targetServers || []).find((s: Record<string, unknown>) => s.url === tryUrl || String(s.url).includes(new URL(tryUrl).hostname));
+            const serverInfo = parsed.result.serverInfo as Record<string, string> || {};
+            const autoName = suggested_name || serverInfo.name?.toLowerCase().replace(/[^a-z0-9_]/g, "_") || "discovered_server";
+            mcpResult = {
+              is_mcp_server: true,
+              url: tryUrl,
+              server_name: serverInfo.name || "unknown",
+              server_version: serverInfo.version || "unknown",
+              transport_type: "streamable-http",
+              tool_count: toolNames.length,
+              tool_names: toolNames.slice(0, 20),
+              already_registered: !!existing,
+              existing_name: existing?.name || null,
+              suggested_name: autoName,
+              ready_to_register: !existing
+            };
+            // Auto-register if requested
+            if (auto_register && !existing) {
+              const regResp = await fetch(`${MCPX_BASE}/target-server`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name: autoName, type: "streamable-http", url: tryUrl, headers: api_key_header ? headers : undefined })
+              });
+              const regData = await regResp.json();
+              mcpResult.auto_registered = regResp.ok;
+              mcpResult.registration_result = regData;
+            }
+            break;
+          }
+        }
+      } catch (e) {
+        mcpResult.probe_error = String(e);
+      }
+    }
+    return mcpResult;
   }
 
   // ── UNIFIED SEARCH ────────────────────────────────────────────────────────
@@ -2200,64 +2285,6 @@ async function executeTool(
     }
   }
 
-  // ── GOOGLE ADS / MARKETING ─────────────────────────────────────────────────
-  if (category === "ads") {
-    const GAQL_TOKEN = process.env.GAQL_TOKEN || "";
-    if (!GAQL_TOKEN) return { error: "GAQL_TOKEN not configured. Add it to Doppler garza/prd." };
-    const GAQL_BASE = "https://api.gaql.app/api/gpt";
-    const gaqlHeaders = { "Content-Type": "application/json", "User-Agent": "garza-mcp-router/5.3" };
-
-    if (toolName === "ads.google.get_accounts") {
-      const r = await fetch(`${GAQL_BASE}/google-ads/get-accounts?gptToken=${GAQL_TOKEN}`, { headers: gaqlHeaders });
-      if (!r.ok) return { error: `GAQL API error ${r.status}`, detail: await r.text() };
-      return r.json();
-    }
-    if (toolName === "ads.google.execute_query") {
-      if (!args.customer_id || !args.query) return { error: "customer_id and query are required." };
-      const custId = parseInt(String(args.customer_id).replace(/-/g, ""));
-      const r = await fetch(`${GAQL_BASE}/google-ads/execute-query?gptToken=${GAQL_TOKEN}`, {
-        method: "POST",
-        headers: gaqlHeaders,
-        body: JSON.stringify({ query: args.query, customerId: custId, loginCustomerId: custId, reportAggregation: "Auto" })
-      });
-      if (!r.ok) return { error: `GAQL API error ${r.status}`, detail: await r.text() };
-      return r.json();
-    }
-    if (toolName === "ads.google.get_campaigns") {
-      if (!args.customer_id) return { error: "customer_id is required." };
-      const custId = parseInt(String(args.customer_id).replace(/-/g, ""));
-      const dateRange = (args.date_range as string) || "LAST_30_DAYS";
-      const query = `SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type, campaign_budget.amount_micros, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM campaign WHERE segments.date DURING ${dateRange} ORDER BY metrics.impressions DESC`;
-      const r = await fetch(`${GAQL_BASE}/google-ads/execute-query?gptToken=${GAQL_TOKEN}`, {
-        method: "POST",
-        headers: gaqlHeaders,
-        body: JSON.stringify({ query, customerId: custId, loginCustomerId: custId, reportAggregation: "Auto" })
-      });
-      if (!r.ok) return { error: `GAQL API error ${r.status}`, detail: await r.text() };
-      return r.json();
-    }
-    if (toolName === "ads.google.get_performance") {
-      if (!args.customer_id) return { error: "customer_id is required." };
-      const custId = parseInt(String(args.customer_id).replace(/-/g, ""));
-      const dateRange = (args.date_range as string) || "LAST_30_DAYS";
-      const level = (args.level as string) || "campaign";
-      const queryMap: Record<string, string> = {
-        campaign: `SELECT campaign.name, campaign.status, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions, metrics.ctr, metrics.average_cpc FROM campaign WHERE segments.date DURING ${dateRange} ORDER BY metrics.cost_micros DESC`,
-        ad_group: `SELECT campaign.name, ad_group.name, ad_group.status, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM ad_group WHERE segments.date DURING ${dateRange} ORDER BY metrics.cost_micros DESC`,
-        keyword: `SELECT campaign.name, ad_group.name, ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM keyword_view WHERE segments.date DURING ${dateRange} ORDER BY metrics.cost_micros DESC`,
-        ad: `SELECT campaign.name, ad_group.name, ad_group_ad.ad.id, ad_group_ad.status, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM ad_group_ad WHERE segments.date DURING ${dateRange} ORDER BY metrics.cost_micros DESC`
-      };
-      const query = queryMap[level] || queryMap.campaign;
-      const r = await fetch(`${GAQL_BASE}/google-ads/execute-query?gptToken=${GAQL_TOKEN}`, {
-        method: "POST",
-        headers: gaqlHeaders,
-        body: JSON.stringify({ query, customerId: custId, loginCustomerId: custId, reportAggregation: "Auto" })
-      });
-      if (!r.ok) return { error: `GAQL API error ${r.status}`, detail: await r.text() };
-      return r.json();
-    }
-  }
-
   // ── DATABASE / CRM ────────────────────────────────────────────────────────
   if (category === "database") {
     if (toolName === "database.crm.list_contacts") {
@@ -2496,13 +2523,10 @@ app.get("/analytics", (c) => {
   });
 });
 
-const GOOGLE_ADS_TOOLS = NOMAD_TOOLS.filter(t => t.name.startsWith("ads.google."));
-
 const servers = [
-  { path: "/personal",    tools: PERSONAL_TOOLS,    name: "personal" as const },
-  { path: "/dev",         tools: DEV_TOOLS,         name: "dev" as const },
-  { path: "/nomad",       tools: NOMAD_TOOLS,       name: "nomad" as const },
-  { path: "/google-ads",  tools: GOOGLE_ADS_TOOLS,  name: "nomad" as const },
+  { path: "/personal", tools: PERSONAL_TOOLS, name: "personal" as const },
+  { path: "/dev",      tools: DEV_TOOLS,      name: "dev" as const },
+  { path: "/nomad",    tools: NOMAD_TOOLS,    name: "nomad" as const },
 ];
 
 for (const { path, tools, name } of servers) {
@@ -2533,4 +2557,3 @@ if (process.env.VERCEL !== '1') {
     console.log(`  NEW in v5.0: 16 new tools + Shopify wired + Telegram wired + tool versioning\n`);
   });
 }
-// v5.3 - Google Ads GAQL integration Wed Mar  4 23:41:49 EST 2026

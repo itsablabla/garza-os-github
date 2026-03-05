@@ -2377,10 +2377,13 @@ app.get("/analytics", (c) => {
   });
 });
 
+const GOOGLE_ADS_TOOLS = NOMAD_TOOLS.filter(t => t.name.startsWith("ads.google."));
+
 const servers = [
-  { path: "/personal", tools: PERSONAL_TOOLS, name: "personal" as const },
-  { path: "/dev",      tools: DEV_TOOLS,      name: "dev" as const },
-  { path: "/nomad",    tools: NOMAD_TOOLS,    name: "nomad" as const },
+  { path: "/personal",    tools: PERSONAL_TOOLS,    name: "personal" as const },
+  { path: "/dev",         tools: DEV_TOOLS,         name: "dev" as const },
+  { path: "/nomad",       tools: NOMAD_TOOLS,       name: "nomad" as const },
+  { path: "/google-ads",  tools: GOOGLE_ADS_TOOLS,  name: "nomad" as const },
 ];
 
 for (const { path, tools, name } of servers) {

@@ -102,6 +102,6 @@ Version pinning: `namespace/app-name@version`
 ## Documentation
 
 - [CLI Setup](https://inference.sh/docs/extend/cli-setup) - Complete CLI installation guide
-- [Running Apps](https://inference.sh/docs/apps/running) - How to run apps via CLI
+- [Running Apps](https://inference.sh/docs/api/running-apps) - How to run apps via CLI
 - [Creating an App](https://inference.sh/docs/extend/creating-app) - Build your own apps
 - [Deploying](https://inference.sh/docs/extend/deploying) - Deploy apps to the cloud

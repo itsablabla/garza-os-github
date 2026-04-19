@@ -19,6 +19,8 @@ infsh app list --category image
 infsh app list --category video
 infsh app list --category audio
 infsh app list --category text
+infsh app list --category chat
+infsh app list --category 3d
 infsh app list --category other
 ```
 

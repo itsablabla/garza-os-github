@@ -25,10 +25,10 @@ infsh login
 > curl -LO https://dist.inference.sh/cli/checksums.txt
 > curl -LO $(curl -fsSL https://dist.inference.sh/cli/manifest.json | grep -o '"url":"[^"]*"' | grep $(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') | head -1 | cut -d'"' -f4)
 > # Verify checksum
-> sha256sum -c checksums.txt --ignore-missing
+> if command -v sha256sum >/dev/null 2>&1; then sha256sum -c checksums.txt --ignore-missing; else shasum -a 256 -c checksums.txt; fi
 > # Extract and install
 > tar -xzf inferencesh-cli-*.tar.gz
-> install -m 755 inferencesh ~/.local/bin/infsh
+> install -m 755 inferencesh-cli-*/inferencesh ~/.local/bin/infsh
 > ln -sf ~/.local/bin/infsh ~/.local/bin/inferencesh
 > ```
 

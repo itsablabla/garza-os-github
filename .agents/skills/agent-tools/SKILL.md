@@ -28,7 +28,7 @@ infsh login
 > if command -v sha256sum >/dev/null 2>&1; then sha256sum -c checksums.txt --ignore-missing; else shasum -a 256 -c checksums.txt; fi
 > # Extract and install
 > tar -xzf inferencesh-cli-*.tar.gz
-> install -m 755 inferencesh-cli-*/inferencesh ~/.local/bin/infsh
+> install -m 755 inferencesh-cli-v* ~/.local/bin/infsh
 > ln -sf ~/.local/bin/infsh ~/.local/bin/inferencesh
 > ```
 

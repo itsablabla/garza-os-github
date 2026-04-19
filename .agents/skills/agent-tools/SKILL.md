@@ -28,7 +28,8 @@ infsh login
 > sha256sum -c checksums.txt --ignore-missing
 > # Extract and install
 > tar -xzf inferencesh-cli-*.tar.gz
-> mv inferencesh-cli-* ~/.local/bin/inferencesh
+> mv inferencesh-cli-* ~/.local/bin/infsh
+> ln -sf ~/.local/bin/infsh ~/.local/bin/inferencesh
 > ```
 
 ## Quick Examples
@@ -142,4 +143,3 @@ npx skills add inference-sh/skills@background-removal
 - [CLI Setup](https://inference.sh/docs/extend/cli-setup) - Installing the CLI
 - [Workflows vs Agents](https://inference.sh/blog/concepts/workflows-vs-agents) - When to use each
 - [Why Agent Runtimes Matter](https://inference.sh/blog/agent-runtime/why-runtimes-matter) - Runtime benefits
-

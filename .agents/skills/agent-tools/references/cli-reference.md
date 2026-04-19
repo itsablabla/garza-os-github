@@ -53,7 +53,7 @@ curl -fsSL https://cli.inference.sh | sh
 | `infsh task get <task-id> --json` | Get task as JSON |
 | `infsh task get <task-id> --save <file>` | Save task result to file |
 
-### Development
+## Development
 
 | Command | Description |
 |---------|-------------|
@@ -82,6 +82,9 @@ infsh completion zsh > "${fpath[1]}/_infsh"
 
 # Fish
 infsh completion fish > ~/.config/fish/completions/infsh.fish
+
+# PowerShell
+infsh completion powershell > infsh.ps1
 ```
 
 ## App Name Format

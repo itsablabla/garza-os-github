@@ -28,7 +28,7 @@ infsh login
 > sha256sum -c checksums.txt --ignore-missing
 > # Extract and install
 > tar -xzf inferencesh-cli-*.tar.gz
-> mv inferencesh-cli-* ~/.local/bin/infsh
+> install -m 755 inferencesh ~/.local/bin/infsh
 > ln -sf ~/.local/bin/infsh ~/.local/bin/inferencesh
 > ```
 

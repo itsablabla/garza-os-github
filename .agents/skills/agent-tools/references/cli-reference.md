@@ -23,7 +23,7 @@ curl -fsSL https://cli.inference.sh | sh
 | Command | Description |
 |---------|-------------|
 | `infsh app list` | List available apps |
-| `infsh app list --category <cat>` | Filter by category (image, video, audio, text, other) |
+| `infsh app list --category <cat>` | Filter by category (image, video, audio, text, chat, 3d, other) |
 | `infsh app search <query>` | Search apps |
 | `infsh app list --search <query>` | Search apps (flag form) |
 | `infsh app list --featured` | Show featured apps |

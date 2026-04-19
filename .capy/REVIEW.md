@@ -1,0 +1,6 @@
+- Prioritize stack-first violations: flag changes that introduce new infrastructure or bypass Fly.io, Workers, n8n, Supabase, or GitHub Actions without strong justification.
+- Check for secret leakage, hardcoded credentials, unsafe `.env` usage, or docs/code that expose operational access details.
+- Verify service contracts across routers, MCP tools, workers, dashboards, and infra manifests so interfaces stay aligned.
+- When changes affect deployment, operations, or infra, confirm repo docs/state manifests remain consistent with the implementation and audit trail expectations in `infra/`.
+- Flag unnecessary churn across unrelated monorepo areas; prefer tightly scoped edits.
+- Ignore style-only nits unless they affect clarity, maintainability, or correctness.

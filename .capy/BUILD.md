@@ -1,0 +1,5 @@
+- Treat GARZA OS as a monorepo: `mcp-servers/` for MCP implementations, `services/` for app services, `workers/` for Cloudflare Workers, `infra/` for state and manifests, `operations/` for runbooks/templates, `docs/` and `prompts/` for operating guidance.
+- Before adding code, check adjacent services plus `templates/` and `docs/stack-first.md`; reuse existing patterns and extend current services before creating a new implementation.
+- Keep decisions stack-first: prefer Fly.io, Cloudflare Workers, n8n Cloud, Supabase, and GitHub Actions over new VPSes, ad hoc schedulers, extra databases, or one-off infrastructure.
+- Never hardcode secrets or credentials. Follow the repo's existing secret-management paths and deployment conventions.
+- When touching infra state, deployment manifests, or automation config, keep related `infra/` state files, lock conventions, and service manifests coherent with the code change.

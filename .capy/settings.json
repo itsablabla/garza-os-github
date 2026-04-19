@@ -2,12 +2,13 @@
   "$schema": "https://capy.ai/settings.schema.json",
   "hooks": {
     "setup": [
-      "./scripts/setup.sh"
+      "./scripts/setup.sh",
+      "cd services/garza-dashboard && npm install"
     ],
     "terminals": [
       {
         "name": "garza-dashboard",
-        "command": "cd /home/garza-os-github/services/garza-dashboard && npm start"
+        "command": "cd services/garza-dashboard && npm start"
       }
     ],
     "previews": [

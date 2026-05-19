@@ -1,0 +1,16 @@
+name = "droid-runner"
+main = "src/index.ts"
+compatibility_date = "2025-05-01"
+account_id = "14adde85f76060c6edef6f3239d36e6a"
+
+[[durable_objects.bindings]]
+name = "DROID_CONTAINER"
+class_name = "DroidContainer"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["DroidContainer"]
+
+[[containers]]
+class_name = "DroidContainer"
+image = "./container/Dockerfile"

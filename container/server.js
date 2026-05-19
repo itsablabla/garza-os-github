@@ -18,6 +18,9 @@ async function runDroid(prompt, sessionId) {
       HOME: "/root",
       FACTORY_API_KEY,
       PATH: "/usr/local/bin:/usr/bin:/bin",
+      FACTORY_API_BASE_URL: "https://api.factory.ai",
+      FACTORY_DEPLOYMENT_ENV: "production",
+      FACTORY_ENV: "production",
     };
 
     const args = [

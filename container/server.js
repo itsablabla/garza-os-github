@@ -22,8 +22,8 @@ async function runDroid(prompt, sessionId) {
 
     const args = [
       "exec",
-      "--output", "text",
-      "--non-interactive",
+      "--output-format", "text",
+      "--auto", "high",
       prompt,
     ];
 

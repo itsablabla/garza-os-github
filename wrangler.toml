@@ -9,7 +9,7 @@ class_name = "DroidContainer"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["DroidContainer"]
+new_sqlite_classes = ["DroidContainer"]
 
 [[containers]]
 class_name = "DroidContainer"

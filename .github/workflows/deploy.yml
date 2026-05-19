@@ -17,6 +17,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Set worker secrets
+        run: |
+          echo "${{ secrets.FACTORY_API_KEY }}" | npx wrangler secret put FACTORY_API_KEY
+          echo "${{ secrets.DROID_API_KEY }}" | npx wrangler secret put DROID_API_KEY
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
       - name: Deploy to Cloudflare Workers
         run: npx wrangler deploy
         env:

@@ -288,11 +288,17 @@ export class ReplicaPoller {
 							plan = parsedPlan;
 							currentAction = "";
 							appended = true;
+							if (phase === "STARTING") phase = "PLANNING";
 						} else {
 							const narration = thinkingLine(block.text);
 							currentAction = narration;
 							lines.push(`💬 ${narration}`);
 							appended = true;
+							// Any assistant text means the agent is actively responding —
+							// transition out of STARTING so the header stops saying "🤔
+							// Starting · Ns" for trivial-prompt turns that never produce
+							// thinking or tool_use blocks.
+							if (phase === "STARTING") phase = "RUNNING";
 						}
 					}
 				}
@@ -412,10 +418,13 @@ export class ReplicaPoller {
 		// Telegram rate guard: don't edit the same message more than once per
 		// ~900ms. If we're inside the window, leave the state intact so the
 		// next alarm picks up the freshest version (including the ticker tick).
+		// Terminal edits (Done/Failed) bypass — they MUST land, since the
+		// rolling-log freeze depends on them and there's no follow-up tick.
 		const lastEditAt = (await this.state.storage.get<number>("lastEditAt")) ?? 0;
 		const since = Date.now() - lastEditAt;
 		const messageId = await this.state.storage.get<number>("statusMessageId");
-		if (messageId !== undefined && since < EDIT_MIN_INTERVAL_MS) return;
+		const isTerminal = s.terminal !== undefined;
+		if (!isTerminal && messageId !== undefined && since < EDIT_MIN_INTERVAL_MS) return;
 
 		await this.state.storage.put({ lastRendered: text, lastEditAt: Date.now() });
 

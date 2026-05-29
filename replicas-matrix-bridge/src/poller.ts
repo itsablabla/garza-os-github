@@ -280,11 +280,17 @@ export class ReplicaPoller {
 							plan = parsedPlan;
 							currentAction = "";
 							appended = true;
+							if (phase === "STARTING") phase = "PLANNING";
 						} else {
 							const narration = thinkingLine(block.text);
 							currentAction = narration;
 							lines.push(`💬 ${narration}`);
 							appended = true;
+							// Any assistant text means the agent is actively responding —
+							// transition out of STARTING so the header stops saying "🤔
+							// Starting · Ns" for trivial-prompt turns that never produce
+							// thinking or tool_use blocks.
+							if (phase === "STARTING") phase = "RUNNING";
 						}
 					}
 				}
@@ -396,7 +402,11 @@ export class ReplicaPoller {
 		const lastEditAt = (await this.state.storage.get<number>("lastEditAt")) ?? 0;
 		const since = Date.now() - lastEditAt;
 		const statusEventId = await this.state.storage.get<string>("statusEventId");
-		if (statusEventId !== undefined && since < EDIT_MIN_INTERVAL_MS) return;
+		// Terminal edits (Done/Failed) MUST land — they're the most important
+		// frame the user sees and the rolling-log freeze depends on them.
+		// Ticker/tool edits get the rate limit to protect the homeserver.
+		const isTerminal = s.terminal !== undefined;
+		if (!isTerminal && statusEventId !== undefined && since < EDIT_MIN_INTERVAL_MS) return;
 
 		await this.state.storage.put({ lastRendered: text, lastEditAt: Date.now() });
 

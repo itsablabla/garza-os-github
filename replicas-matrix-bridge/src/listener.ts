@@ -1,8 +1,18 @@
 import { handleMatrixMessage } from "./dispatch";
 import type { Env } from "./index";
-import { joinRoom, sync, type SyncResponse } from "./matrix";
+import { joinRoom, sendMessage, sync, type SyncResponse } from "./matrix";
 import { decryptMegolm, findSessionKey } from "./megolm";
 import { parseKeyExport, type MegolmSessionKey } from "./megolm-keys";
+import { escapeHtml } from "./render";
+
+// Aliases to make the chat command friendlier than typing the full id.
+function resolveModelAlias(input: string): string {
+	const n = input.trim().toLowerCase();
+	if (n === "sonnet") return "claude-sonnet-4-6";
+	if (n === "opus") return "claude-opus-4-7";
+	if (n === "haiku") return "claude-haiku-4-5";
+	return input.trim();
+}
 
 /**
  * MatrixListener — single global Durable Object that holds the bot's
@@ -153,11 +163,22 @@ export class MatrixListener {
 				}
 				if (msgtype !== "m.text" || !body) continue;
 
-				// Reply-`!cancel` opcode — short-circuit before spawning.
-				if (body.trim().startsWith("!cancel")) {
+				// Commands always run regardless of room size or mention.
+				const trimmed = body.trim();
+				if (trimmed.startsWith("!cancel")) {
 					await this.handleCancel(roomId);
 					continue;
 				}
+				if (trimmed.startsWith("!model")) {
+					await this.handleModelCommand(roomId, ev.event_id, trimmed);
+					continue;
+				}
+
+				// Gate auto-dispatch on room size + mention. In a 2-person
+				// room (you + me), every message is for me. In a larger room
+				// the bot should stay quiet unless it's been mentioned.
+				const shouldDispatch = await this.shouldHandleMessage(roomId, ev);
+				if (!shouldDispatch) continue;
 
 				await this.dispatchMessage(roomId, ev.event_id, body);
 			}
@@ -231,6 +252,68 @@ export class MatrixListener {
 			console.log(`[listener] decrypt fail ev=${ev.event_id}: ${e instanceof Error ? e.message : e}`);
 			return undefined;
 		}
+	}
+
+	// Returns true if the bot should respond. In a 2-person room every
+	// message is for the bot. In a larger room we require an explicit
+	// mention via `m.mentions.user_ids` (preferred per Matrix spec) or
+	// a matrix.to link in the formatted_body. This prevents the bot from
+	// chiming in on every random message once you add it to group chats.
+	private async shouldHandleMessage(
+		roomId: string,
+		ev: { content?: Record<string, unknown> },
+	): Promise<boolean> {
+		const memberCount = await this.cachedRoomMemberCount(roomId);
+		if (memberCount <= 2) return true;
+		const content = ev.content ?? {};
+		const mentions = (content["m.mentions"] as { user_ids?: string[] } | undefined)?.user_ids;
+		if (Array.isArray(mentions) && mentions.includes(this.env.MATRIX_USER_ID)) return true;
+		const fmt = content.formatted_body as string | undefined;
+		if (fmt && (fmt.includes(this.env.MATRIX_USER_ID) || fmt.includes(`/${this.env.MATRIX_USER_ID}`))) return true;
+		return false;
+	}
+
+	private async cachedRoomMemberCount(roomId: string): Promise<number> {
+		const cacheKey = `members:${roomId}`;
+		const cached = await this.env.MAP.get(cacheKey);
+		if (cached) {
+			const n = parseInt(cached, 10);
+			if (Number.isFinite(n)) return n;
+		}
+		try {
+			const url = `${this.env.MATRIX_HOMESERVER}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/joined_members`;
+			const r = await fetch(url, {
+				headers: { Authorization: `Bearer ${this.env.MATRIX_ACCESS_TOKEN}` },
+			});
+			if (!r.ok) return 2; // fail-open to "treat as DM" so we don't go silent
+			const j = (await r.json()) as { joined?: Record<string, unknown> };
+			const n = Object.keys(j.joined ?? {}).length;
+			await this.env.MAP.put(cacheKey, String(n), { expirationTtl: 3600 });
+			return n;
+		} catch {
+			return 2;
+		}
+	}
+
+	// `!model` chat command. `!model` alone prints current + options;
+	// `!model <name>` sets a per-room override stored in KV. Dispatch reads
+	// this on spawn, so the next turn uses the new model.
+	private async handleModelCommand(roomId: string, eventId: string, body: string): Promise<void> {
+		const rest = body.slice("!model".length).trim();
+		const cacheKey = `model:${roomId}`;
+		if (!rest) {
+			const current = (await this.env.MAP.get(cacheKey)) ?? this.env.REPLICAS_MODEL_OVERRIDE ?? "claude-sonnet-4-6";
+			const html = [
+				`<b>Current model:</b> <code>${escapeHtml(current)}</code>`,
+				`<i>Set with <code>!model sonnet</code>, <code>!model opus</code>, <code>!model haiku</code>, or a full id like <code>!model claude-opus-4-7</code>.</i>`,
+			].join("<br><br>");
+			await sendMessage(matrixEnv(this.env), roomId, html, { replyTo: eventId });
+			return;
+		}
+		const resolved = resolveModelAlias(rest);
+		await this.env.MAP.put(cacheKey, resolved, { expirationTtl: 60 * 60 * 24 * 365 });
+		const html = `<b>Model for this room set to</b> <code>${escapeHtml(resolved)}</code><br><i>Next turn will use it.</i>`;
+		await sendMessage(matrixEnv(this.env), roomId, html, { replyTo: eventId });
 	}
 
 	private async dispatchMessage(roomId: string, eventId: string, body: string): Promise<void> {

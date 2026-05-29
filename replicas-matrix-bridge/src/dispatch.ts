@@ -79,13 +79,16 @@ async function createReplica(
 	eventId: string,
 	text: string,
 ): Promise<string | null> {
+	// Per-room model override set via `!model <name>` chat command; falls
+	// back to the worker-wide default if not set for this room.
+	const roomModel = await env.MAP.get(`model:${roomId}`);
 	const body = {
 		name: `mx-${roomId.replace(/[^a-z0-9]/gi, "").slice(0, 16)}-${Date.now()}`,
 		message: prefixWithRoutingHeader(roomId, eventId, text),
 		environment_id: env.REPLICAS_ENV_ID,
 		source: "matrix",
 		coding_agent: env.REPLICAS_AGENT_OVERRIDE || "claude",
-		model: env.REPLICAS_MODEL_OVERRIDE || "claude-sonnet-4-6",
+		model: roomModel || env.REPLICAS_MODEL_OVERRIDE || "claude-sonnet-4-6",
 		thinking_level: env.REPLICAS_THINKING_OVERRIDE || "medium",
 		lifecycle_policy: "delete_after_inactivity",
 		auto_stop_minutes: 60,

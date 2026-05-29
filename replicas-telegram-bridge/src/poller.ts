@@ -42,10 +42,17 @@ interface HistoryResponse {
 	total?: number;
 }
 
-const FIRST_POLL_DELAY_MS = 400;
-const ACTIVE_POLL_INTERVAL_MS = 800;
-const BACKOFF_POLL_INTERVAL_MS = 4000;
+const FIRST_POLL_DELAY_MS = 250;
+const ACTIVE_POLL_INTERVAL_MS = 400;
+const BACKOFF_POLL_INTERVAL_MS = 3000;
 const MAX_WATCH_DURATION_MS = 30 * 60 * 1000;
+// Telegram permits ~1 editMessageText per chat per second; we leave a small
+// margin so a burst of polls coalesces into at most one edit per ~900ms.
+const EDIT_MIN_INTERVAL_MS = 900;
+// Even without new events, refresh the rendered status if at least this
+// long has passed so the ⏱ ticker stays live. Setting this just under
+// EDIT_MIN_INTERVAL_MS means we never starve a real-content edit.
+const TICKER_REFRESH_MS = 2500;
 const CHAT_ACTION_INTERVAL_MS = 4000;
 const REPLY_MAX_LEN = 4000;
 const DASHBOARD_BASE = "https://www.replicas.dev/dashboard?workspaceId=";
@@ -259,7 +266,15 @@ export class ReplicaPoller {
 			return;
 		}
 
-		if (appended || currentAction) await this.renderAndSend();
+		// Render conditions:
+		// - Anything was appended
+		// - currentAction changed (thinking preview updated)
+		// - Or the ticker is stale (force a refresh so ⏱ stays alive)
+		const lastEditAt = (await this.state.storage.get<number>("lastEditAt")) ?? 0;
+		const tickerStale = Date.now() - lastEditAt >= TICKER_REFRESH_MS;
+		if (appended || currentAction || tickerStale) {
+			await this.renderAndSend();
+		}
 		await this.state.storage.setAlarm(Date.now() + ACTIVE_POLL_INTERVAL_MS);
 	}
 
@@ -304,9 +319,18 @@ export class ReplicaPoller {
 		const text = render(s);
 		const lastRendered = await this.state.storage.get<string>("lastRendered");
 		if (text === lastRendered) return;
-		await this.state.storage.put("lastRendered", text);
 
+		// Telegram rate guard: don't edit the same message more than once per
+		// ~900ms. If we're inside the window, leave the state intact so the
+		// next alarm picks up the freshest version (including the ticker tick).
+		const lastEditAt = (await this.state.storage.get<number>("lastEditAt")) ?? 0;
+		const since = Date.now() - lastEditAt;
 		const messageId = await this.state.storage.get<number>("statusMessageId");
+		if (messageId !== undefined && since < EDIT_MIN_INTERVAL_MS) return;
+
+		await this.state.storage.put("lastRendered", text);
+		await this.state.storage.put("lastEditAt", Date.now());
+
 		const replyMarkup = inlineKeyboard(watch.replicaId, !!s.terminal);
 
 		if (messageId !== undefined) {

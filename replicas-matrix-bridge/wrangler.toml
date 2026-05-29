@@ -7,7 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 # Create with: wrangler kv:namespace create MAP
 [[kv_namespaces]]
 binding = "MAP"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "036b2f9231de4d21bf0cdf120b5b4869"
 
 # Durable Objects: one global MatrixListener for /sync, one ReplicaPoller per replica.
 [[durable_objects.bindings]]
@@ -30,7 +30,7 @@ crons = ["*/1 * * * *"]
 REPLICAS_ORG_ID = "778b1aa3-4327-45a4-9874-c8a3a72df610"
 REPLICAS_ENV_ID = "5f06f598-2712-456a-aab1-bb8cbe64ab01"
 REPLICAS_API_BASE = "https://api.replicas.dev/v1"
-MATRIX_HOMESERVER = "https://matrix.beeper.com"
+MATRIX_HOMESERVER = "https://matrix-client.matrix.org"
 REPLICA_TTL_SECONDS = "604800"
 # Default Telegram-spawned replicas to Sonnet medium-thinking; same as
 # the Telegram bridge defaults.

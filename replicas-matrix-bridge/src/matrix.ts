@@ -263,18 +263,18 @@ export async function sync(
 	since: string | undefined,
 	timeoutMs: number,
 ): Promise<SyncResponse> {
-	const filter = encodeURIComponent(
-		JSON.stringify({
-			room: {
-				timeline: { limit: 20, lazy_load_members: true },
-				state: { lazy_load_members: true },
-				ephemeral: { types: [] },
-				account_data: { types: [] },
-			},
-			presence: { types: [] },
+	// URLSearchParams handles the encoding — passing the raw JSON
+	// avoids the double-encoding that produced "Invalid filter ID".
+	const filter = JSON.stringify({
+		room: {
+			timeline: { limit: 20, lazy_load_members: true },
+			state: { lazy_load_members: true },
+			ephemeral: { types: [] },
 			account_data: { types: [] },
-		}),
-	);
+		},
+		presence: { types: [] },
+		account_data: { types: [] },
+	});
 	const params = new URLSearchParams();
 	params.set("timeout", String(timeoutMs));
 	params.set("filter", filter);

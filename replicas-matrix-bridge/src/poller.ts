@@ -88,6 +88,20 @@ const MAX_WATCH_DURATION_MS = 30 * 60 * 1000;
 // limit while still feeling live for the user.
 const EDIT_MIN_INTERVAL_MS = 2000;
 const TICKER_REFRESH_MS = 4000;
+
+// Char-delta edit gate (n3d1117/chatgpt-telegram-bot pattern, see
+// docs/acp-telegram-status-research.md). On non-terminal renders with no
+// phase transition, skip the edit if the rendered text length changed by
+// fewer than this many characters. Stops thinking-preview ticks (~5 chars
+// of italic narration delta) from burning matrix.org quota.
+const CHAR_DELTA_CUTOFF = 50;
+
+// Self-tuning per-turn backoff bonus. Each non-terminal 429 from
+// matrix.org adds 1500ms to the effective edit throttle, capped at 10s.
+// Wiped on /watch fresh-spawn so calm turns start fast; noisy turns
+// settle into a sustainable cadence (matches the TG bridge's pattern).
+const BACKOFF_PER_429_MS = 1500;
+const MAX_BACKOFF_BONUS_MS = 10_000;
 const TYPING_INTERVAL_MS = 25_000;
 const REPLY_MAX_LEN = 16_000; // Matrix doesn't cap message length the way Telegram does (~16KB safe)
 
@@ -117,7 +131,24 @@ export class ReplicaPoller {
 			// send fresh.
 			const body = (await req.json()) as { ackReactionId?: string; initialStatusEventId?: string };
 			const writes: Record<string, unknown> = {};
-			if (body.ackReactionId) writes.reactionEventId = body.ackReactionId;
+
+			// Strict "one emoji at a time" enforcement: if the watcher has
+			// already reached terminal (swap fired with no prior, leaving the
+			// 👀 unredacted), this incoming 👀 would stack against the 🎉/😭
+			// that's already on the prompt. Immediately redact instead of
+			// storing — there's no future swap to clean it up.
+			if (body.ackReactionId) {
+				const phase = await this.state.storage.get<Phase>("phase");
+				const watch = await this.state.storage.get<WatchSpec>("watch");
+				const isPostTerminal = phase === "DONE" || phase === "FAILED";
+				if (isPostTerminal && watch?.roomId) {
+					redact(matrixEnv(this.env), watch.roomId, body.ackReactionId, "post-terminal stale ack")
+						.catch((e) => console.log(`[poller] /ack post-terminal redact failed: ${e instanceof Error ? e.message : e}`));
+				} else {
+					writes.reactionEventId = body.ackReactionId;
+				}
+			}
+
 			if (body.initialStatusEventId) {
 				const existing = await this.state.storage.get<string>("statusEventId");
 				// Only adopt if we haven't already started editing a frame.
@@ -191,7 +222,20 @@ export class ReplicaPoller {
 			// Re-point reactionEventId at the NEW prompt's 👀 so terminal
 			// places the final emoji on whatever message the user just sent
 			// (and redacts that 👀, not the prior phase emoji).
-			if (body.ackReactionId) steerWrites.reactionEventId = body.ackReactionId;
+			//
+			// BEFORE overwriting, redact the prior reactionEventId (the prior
+			// prompt's 👀). Otherwise it stays orphaned forever — never
+			// redacted, never replaced — leaving a stale 👀 on the old prompt
+			// after the final 🎉 lands on the new one. Strict "one emoji at a
+			// time" invariant: each prompt converges to exactly one reaction.
+			if (body.ackReactionId) {
+				const priorReactionId = await this.state.storage.get<string>("reactionEventId");
+				if (priorReactionId && priorReactionId !== body.ackReactionId) {
+					redact(matrixEnv(this.env), body.roomId, priorReactionId, "steering: prior prompt finished")
+						.catch((e) => console.log(`[poller] steering redact prior 👀 failed: ${e instanceof Error ? e.message : e}`));
+				}
+				steerWrites.reactionEventId = body.ackReactionId;
+			}
 			await this.state.storage.put(steerWrites);
 			console.log(`[poller] /watch steer replica=${body.replicaId} ev=${body.startEventId}`);
 			await this.renderAndSend();
@@ -219,6 +263,12 @@ export class ReplicaPoller {
 			"lastEventAt",
 			"phaseBeforeRateLimit",
 			"activeToolStartedAt",
+			// Per-turn throttle bookkeeping — wipe so a fresh turn starts
+			// fast even if the prior turn ratcheted the backoff bonus up.
+			"backoffBonusMs",
+			"rateLimitedUntil",
+			"lastRenderedLen",
+			"lastEditedPhase",
 		]);
 		const baseline = await baselineP;
 		const seed: Record<string, unknown> = {
@@ -863,20 +913,46 @@ export class ReplicaPoller {
 		// frame the user sees and the rolling-log freeze depends on them.
 		// Ticker/tool edits get the rate limit to protect the homeserver.
 		const isTerminal = s.terminal !== undefined;
-		if (!isTerminal && statusEventId !== undefined && since < EDIT_MIN_INTERVAL_MS) return;
 
-		// Honor matrix.org's per-room rate limit. When we hit 429 the server
-		// hands us a retry_after_ms; respect it instead of dumb-retrying
-		// every alarm tick. The "until" timestamp is stored in DO storage so
-		// it survives ticks. Terminal renders skip the gate (the Done frame
-		// is the load-bearing one — it's worth queueing past the limit if
-		// needed; the homeserver will accept it on the next allowed slot).
-		if (!isTerminal) {
+		if (!isTerminal && statusEventId !== undefined) {
+			// (1) Edit floor with self-tuning per-turn backoff bonus. The
+			//     bonus ratchets up by BACKOFF_PER_429_MS each time the
+			//     server says 429, capped at MAX_BACKOFF_BONUS_MS. Resets
+			//     on /watch fresh-spawn.
+			const backoffBonus = (await this.state.storage.get<number>("backoffBonusMs")) ?? 0;
+			if (since < EDIT_MIN_INTERVAL_MS + backoffBonus) return;
+
+			// (2) Honor matrix.org's per-room rate limit. When we hit 429
+			//     the server hands us a retry_after_ms; respect it instead
+			//     of dumb-retrying every alarm tick. Terminal renders skip
+			//     the gate — the Done frame is load-bearing.
 			const rlUntil = (await this.state.storage.get<number>("rateLimitedUntil")) ?? 0;
 			if (Date.now() < rlUntil) return;
+
+			// (3) Char-delta edit gate: skip when the rendered text length
+			//     barely moved AND phase hasn't transitioned. Stops
+			//     thinking-preview ticks (~5 chars of italic narration
+			//     delta) from burning quota. Phase transitions ALWAYS edit
+			//     through so the header emoji + label swap stays snappy.
+			//     Heartbeat-safe: if the gate would skip but >= 2 ticker
+			//     intervals have elapsed since the last edit, force the
+			//     edit through so the heartbeat spinner keeps rotating
+			//     (otherwise the gate kills the "never look frozen" win
+			//     from the heartbeat work, since a heartbeat-only diff is
+			//     0 chars by code-point length).
+			const lastRenderedLen = (await this.state.storage.get<number>("lastRenderedLen")) ?? 0;
+			const lastEditedPhase = await this.state.storage.get<Phase>("lastEditedPhase");
+			const phaseChanged = lastEditedPhase !== undefined && lastEditedPhase !== s.phase;
+			const heartbeatStale = since >= 2 * TICKER_REFRESH_MS;
+			if (!phaseChanged && !heartbeatStale && Math.abs(text.length - lastRenderedLen) < CHAR_DELTA_CUTOFF) return;
 		}
 
-		await this.state.storage.put({ lastRendered: text, lastEditAt: Date.now() });
+		await this.state.storage.put({
+			lastRendered: text,
+			lastEditAt: Date.now(),
+			lastRenderedLen: text.length,
+			lastEditedPhase: s.phase,
+		});
 
 		if (statusEventId !== undefined) {
 			// Terminal edits (Done / Failed) MUST land — the embedded
@@ -901,8 +977,17 @@ export class ReplicaPoller {
 						// Non-terminal: park for the next tick. Do NOT fall
 						// through to sendMessage — that fragmenting fallback
 						// was the source of the multi-bubble group-chat bug.
-						await this.state.storage.put("rateLimitedUntil", Date.now() + waitMs);
-						console.log(`[poller] editMessage 429 — backing off ${waitMs}ms`);
+						// Also bump the per-turn self-tuning backoff bonus
+						// so subsequent edits in this turn space out and the
+						// chain settles instead of bouncing off the limit
+						// repeatedly.
+						const prevBonus = (await this.state.storage.get<number>("backoffBonusMs")) ?? 0;
+						const nextBonus = Math.min(MAX_BACKOFF_BONUS_MS, prevBonus + BACKOFF_PER_429_MS);
+						await this.state.storage.put({
+							rateLimitedUntil: Date.now() + waitMs,
+							backoffBonusMs: nextBonus,
+						});
+						console.log(`[poller] editMessage 429 — wait ${waitMs}ms, bonus ${prevBonus}→${nextBonus}ms`);
 						return;
 					}
 					console.log(`[poller] editMessage failed: ${e instanceof Error ? e.message : e}`);

@@ -105,8 +105,8 @@ describe("render — active state", () => {
 			lines: [],
 		});
 		// Heartbeat dot prefixes the phase emoji and rotates each tick.
-		// For elapsedSec=0 the frame is the first Braille spinner glyph.
-		expect(out).toBe("⠋ 🤔 <b>Starting</b> · 0s");
+		// For elapsedSec=0 the frame is the first quadrant glyph (◐).
+		expect(out).toBe("◐ 🤔 <b>Starting</b> · 0s");
 		// Crucially does NOT repeat the user prompt — the message is a reply
 		// to it in Telegram, so the prompt is already visible above.
 		expect(out).not.toContain("deploy the api");
@@ -238,7 +238,7 @@ describe("render — active state", () => {
 		expect(out).not.toContain("Tools (4");
 	});
 
-	it("sealing flag appends a '▶️ continues' tail", () => {
+	it("sealing flag appends a dotted-trail '▶ continues' tail", () => {
 		const out = render({
 			startedAt: Date.now() - 10_000,
 			stepCount: 12,
@@ -247,7 +247,11 @@ describe("render — active state", () => {
 			sealing: true,
 		});
 		expect(out).toContain("continues");
-		expect(out).toContain("▶️");
+		expect(out).toContain("▶");
+		// Thin dotted trail (┄┄┄┄┄) breathes off the end of the message
+		// rather than ending abruptly — sealed segments read as one
+		// continuous turn flowing across multiple messages.
+		expect(out).toContain("┄");
 	});
 
 	it("activeToolStartedAt does NOT mutate completed ✅ lines", () => {
@@ -511,9 +515,12 @@ describe("Done frame — result is its own message block", () => {
 				resultHtml: "<p>Did I find what?</p>",
 			},
 		});
-		// Header has the new cost format
-		expect(out).toContain("$1.02");
+		// Per-turn $ removed for subscription-account framing — Done
+		// header is duration + tokens only. The dollar figure used to
+		// appear here but doesn't anymore.
+		expect(out).not.toContain("$1.02");
 		expect(out).not.toContain("$1.0222");
+		expect(out).toContain("370 tok"); // 50 + 320
 		// Subtitle is present
 		expect(out).toContain("Opus 4.7");
 		expect(out).toContain("7/13 MCP");

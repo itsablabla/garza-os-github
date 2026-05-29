@@ -405,13 +405,15 @@ export function renderToolsHeader(lines: string[]): string {
 // pane move.
 const THINKING_STILL_THRESHOLD_MS = 60_000;
 
-// Braille spinner frames. The renderer picks a frame from the current
-// elapsed time so the dot advances by one position on every render
-// regardless of whether anything else in the state changed. That's the
-// "always moving" guarantee: even when phase, step count, and lines
-// are static, the heartbeat ticks once per render. Frame interval is
-// the poller's TICKER_REFRESH_MS (~4s), so it reads as a steady pulse.
-const HEARTBEAT_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+// Quadrant-rotation spinner frames. Renders as a smooth filled-circle
+// rotation — same iOS-loader feel as ProgressView. The previous braille
+// set worked but read as "code-y dots" rather than glass; the quadrant
+// glyphs have consistent visual weight and look slick across Beeper,
+// Element, and Telegram clients. The renderer picks a frame from the
+// current elapsed time so the dot advances by one position on every
+// render, regardless of whether anything else in the state changed —
+// that's the "always moving" guarantee.
+const HEARTBEAT_FRAMES = ["◐", "◓", "◑", "◒"];
 
 // Render the spinner frame for the current tick. Frame index is derived
 // from the elapsed seconds so successive ticks always land on different
@@ -539,7 +541,12 @@ function renderActive(state: StatusState): string {
 	// poller starts a new message, append a "▶️ continues" marker so the
 	// reader knows this isn't the live edit anymore. Followed by a fresh
 	// Matrix message that becomes the new editable segment.
-	if (state.sealing) blocks.push(`<i>▶️ continues in next message…</i>`);
+	// Thin dotted trail for the seal tail — visually breathes off the
+	// end of the message rather than ending abruptly. Sealed segments
+	// read as one continuous turn flowing across multiple messages
+	// instead of N disconnected blocks. Dotted line renders cleanly
+	// across Beeper / Element / Telegram regardless of font.
+	if (state.sealing) blocks.push(`<i>┄┄┄┄┄┄  ▶ continues  ┄┄┄┄┄┄</i>`);
 
 	// Matrix HTML treats source `\n` as whitespace, so use `<br><br>` between
 	// blocks. (Plain `\n` in the formatted_body collapses to spaces, which is
@@ -582,8 +589,11 @@ function renderTerminal(state: StatusState): string {
 	let denialsBadge = "";
 	if (state.resultMeta) {
 		const m = state.resultMeta;
-		const costStr = formatCost(m.costUsd ?? 0);
-		if (costStr) headerParts.push(costStr);
+		// Per-turn $ removed — these are subscription accounts (Claude Max /
+		// OpenAI Pro), so an absolute dollar figure doesn't map to anything
+		// the user can act on. Tokens stay — they're the durable currency
+		// against the 5h reset window + weekly quota, both surfaced in the
+		// subtitle's 🪙 row.
 		const t = (m.inputTokens ?? 0) + (m.outputTokens ?? 0);
 		if (t > 0) headerParts.push(`${formatTokens(t)} tok`);
 

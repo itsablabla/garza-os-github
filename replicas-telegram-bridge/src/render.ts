@@ -248,13 +248,39 @@ export function renderPlan(plan: PlanState): string {
 
 function renderTerminal(state: StatusState): string {
 	const duration = formatDuration(state.terminal!.durationSec);
-	if (state.terminal!.kind === "done") {
-		return `${PHASE_EMOJI.DONE} <b>${PHASE_LABEL.DONE}</b> · ${duration}`;
+	const isDone = state.terminal!.kind === "done";
+	const headerEmoji = isDone ? PHASE_EMOJI.DONE : PHASE_EMOJI.FAILED;
+	const headerLabel = isDone ? PHASE_LABEL.DONE : PHASE_LABEL.FAILED;
+	const headerLine = `${headerEmoji} <b>${headerLabel}</b> · ${duration}`;
+
+	const blocks: string[] = [headerLine];
+
+	if (!isDone && state.terminal!.errorMsg) {
+		blocks.push(`<blockquote>${escapeHtml(state.terminal!.errorMsg.slice(0, 400))}</blockquote>`);
 	}
-	const errPart = state.terminal!.errorMsg
-		? `\n<blockquote>${escapeHtml(state.terminal!.errorMsg.slice(0, 400))}</blockquote>`
-		: "";
-	return `${PHASE_EMOJI.FAILED} <b>${PHASE_LABEL.FAILED}</b> · ${duration}${errPart}`;
+
+	if (state.plan) {
+		blocks.push(renderPlan(state.plan));
+	}
+
+	// Keep the rolling log (tool-calls, narration) visible after terminal so
+	// the reader can see what actually happened during the turn — same window
+	// as the in-progress render.
+	if (state.lines.length > 0) {
+		const recent = state.lines.slice(-RECENT_LINES_VISIBLE);
+		const older = state.lines.slice(0, Math.max(0, state.lines.length - RECENT_LINES_VISIBLE));
+		const trimmedOlder = older.slice(-Math.max(0, MAX_TOTAL_LINES - recent.length));
+		const dropped = older.length - trimmedOlder.length;
+		if (trimmedOlder.length > 0) {
+			const dropNote = dropped > 0 ? `\n<i>… ${dropped} earlier</i>` : "";
+			blocks.push(`<blockquote expandable>${trimmedOlder.join("\n")}${dropNote}</blockquote>`);
+		}
+		blocks.push(recent.join("\n"));
+	}
+
+	let out = blocks.join("\n\n");
+	if (out.length > MAX_RENDER_CHARS) out = out.slice(0, MAX_RENDER_CHARS - 1) + "…";
+	return out;
 }
 
 export function escapeHtml(s: string): string {

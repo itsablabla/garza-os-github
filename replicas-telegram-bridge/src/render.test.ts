@@ -151,18 +151,50 @@ describe("render — active state", () => {
 });
 
 describe("render — terminal state", () => {
-	it("done collapses to one line", () => {
+	it("done keeps the rolling log below the Done header", () => {
 		const out = render({
 			startedAt: Date.now() - 14000,
 			stepCount: 6,
 			phase: "EDITING",
-			lines: ["🔧 <code>ls</code>"],
+			lines: ["🔧 <code>ls</code>", "📖 src/index.ts"],
 			terminal: { kind: "done", durationSec: 14 },
 		});
-		expect(out).toBe("🎉 <b>Done</b> · 14s");
+		expect(out).toContain("🎉 <b>Done</b> · 14s");
+		expect(out).toContain("🔧 <code>ls</code>");
+		expect(out).toContain("📖 src/index.ts");
 	});
 
-	it("failed shows error in a blockquote", () => {
+	it("done with no rolling content is just the header", () => {
+		const out = render({
+			startedAt: Date.now() - 3000,
+			stepCount: 0,
+			phase: "STARTING",
+			lines: [],
+			terminal: { kind: "done", durationSec: 3 },
+		});
+		expect(out).toBe("🎉 <b>Done</b> · 3s");
+	});
+
+	it("done preserves the plan block too", () => {
+		const out = render({
+			startedAt: Date.now() - 9000,
+			stepCount: 4,
+			phase: "RUNNING",
+			lines: ["🔧 <code>npm test</code>"],
+			plan: { done: 2, total: 3, items: [
+				{ done: true, content: "scaffold" },
+				{ done: true, content: "wire" },
+				{ done: false, content: "test" },
+			] },
+			terminal: { kind: "done", durationSec: 9 },
+		});
+		expect(out).toContain("🎉 <b>Done</b> · 9s");
+		expect(out).toContain("📋 Plan (2/3)");
+		expect(out).toContain("✓ <s>scaffold</s>");
+		expect(out).toContain("◦ test");
+	});
+
+	it("failed shows error + rolling log + plan", () => {
 		const out = render({
 			startedAt: Date.now() - 8000,
 			stepCount: 3,
@@ -172,6 +204,7 @@ describe("render — terminal state", () => {
 		});
 		expect(out).toContain("❌ <b>Failed</b> · 8s");
 		expect(out).toContain("<blockquote>exit code 1: tests failed</blockquote>");
+		expect(out).toContain("🧪 <code>bun test</code>");
 	});
 
 	it("failed without errorMsg still renders cleanly", () => {

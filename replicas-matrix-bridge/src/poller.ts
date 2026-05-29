@@ -522,6 +522,12 @@ export class ReplicaPoller {
 		let resultText: string | null = null;
 		let resultIsError = false;
 		let resultErrorMsg: string | null = null;
+		// Set true when claude-result returns an error class that
+		// can't be fixed within the existing replica's history
+		// (lone surrogate, context window blown). Triggers the auto-cut
+		// path: flush room: KV mapping after the Failed frame so the
+		// next user message spawns a fresh replica with empty history.
+		let unrecoverable = false;
 		let pendingAssistantText: string | null = null;
 		// Track where the latest text-narration line landed so we can drop it
 		// before terminal — otherwise the user sees the same content twice
@@ -681,9 +687,15 @@ export class ReplicaPoller {
 					// history forever.
 					if (/no low surrogate|no high surrogate|invalid_request_error.*JSON/i.test(raw)) {
 						resultErrorMsg =
-							"Conversation context has invalid characters (lone UTF-16 surrogate from a malformed tool output). Send a new message to start a fresh session — the broken bytes are baked into this session's history and can't be repaired in place.";
+							"Conversation context has invalid characters (lone UTF-16 surrogate from a malformed tool output). Auto-cutting and starting a fresh session — your next message will get a clean reply.";
+						// Auto-recovery directive: this error is unrecoverable
+						// within the existing replica's history. Mark the
+						// turn for auto-cut so the cleanup path flushes KV
+						// and the next user send creates a fresh replica.
+						unrecoverable = true;
 					} else if (/string too long|max_tokens/i.test(raw)) {
-						resultErrorMsg = `Anthropic rejected the request (${raw.slice(0, 80)}…). Try a shorter prompt or /reset for a fresh session.`;
+						resultErrorMsg = `Context window full — auto-cutting and starting fresh. Send your message again.`;
+						unrecoverable = true;
 					} else {
 						resultErrorMsg = raw;
 					}
@@ -895,6 +907,22 @@ export class ReplicaPoller {
 					durationSec: seconds,
 					errorMsg: resultErrorMsg ?? "agent error",
 				});
+				// Auto-cut: when the error is unrecoverable (the broken
+				// state is baked into the replica's chat history and no
+				// follow-up prompt can fix it), flush the room: KV
+				// mapping. The next user message will spawn a fresh
+				// replica with empty history. Future iteration: replace
+				// the text-only Failed frame with a Sonic-voiced
+				// announcement once outbound voice support ships (see
+				// ~/.replicas/plans/2026-05-29_beeper-voice-messages-plan.md).
+				if (unrecoverable) {
+					try {
+						await this.env.MAP.delete(`room:${watch.roomId}`);
+						console.log(`[poller] auto-cut: flushed room:${watch.roomId} mapping (unrecoverable replica state)`);
+					} catch (e) {
+						console.log(`[poller] auto-cut flush failed: ${e instanceof Error ? e.message : e}`);
+					}
+				}
 				await this.state.storage.put("pendingCleanup", true);
 				await this.state.storage.setAlarm(Date.now() + 30_000);
 				return;

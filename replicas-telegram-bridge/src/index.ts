@@ -164,8 +164,13 @@ export function prefixWithRoutingHeader(msg: TgMessage, text: string): string {
 	const parts = [`chat_id=${msg.chat.id}`];
 	if (msg.message_thread_id !== undefined) parts.push(`thread_id=${msg.message_thread_id}`);
 	const header = `[tg:${parts.join(":")}]`;
-	const hint =
-		"# Spawned from Telegram. Post status + your final result back with `~/.replicas/bin/tg-reply.sh \"<text>\"`. Run `~/.replicas/bin/tg-target-detect.sh` once with this prompt'\u0027s first line on stdin to cache the target. See `~/.replicas/TELEGRAM_REPLY.md`.";
+	const hint = [
+		"# Spawned from Telegram. Stream live status with `~/.replicas/bin/tg-status.sh \"🤔 …\"`",
+		"# (edits one message in place — use it before each thinking step / tool call).",
+		"# Send final result / blocker as a new message with `~/.replicas/bin/tg-reply.sh \"…\"`.",
+		"# First: `echo \"<this prompt's first line>\" | ~/.replicas/bin/tg-target-detect.sh` to cache the chat target.",
+		"# Full protocol: `~/.replicas/TELEGRAM_REPLY.md`.",
+	].join("\n");
 	return `${header}\n${hint}\n\n${text}`;
 }
 

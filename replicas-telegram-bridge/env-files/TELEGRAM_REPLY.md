@@ -4,58 +4,105 @@ If your workspace was spawned via the Replicas Telegram bridge (see `replicas-te
 
 ```
 [tg:chat_id=12345678]
-…the user's actual request follows on subsequent lines…
 ```
 
-Or, when the message came from a Telegram supergroup forum topic:
+Or, for a Telegram supergroup forum topic:
 
 ```
 [tg:chat_id=12345678:thread_id=42]
-…request body…
 ```
 
-The header is *not* part of the task — it's routing metadata so you can reply.
+The header is **routing metadata**, not the task. Strip it before composing user-facing text.
 
-## How to reply
+## Two channels — use both
 
-`TG_BOT_TOKEN` is pre-set on every workspace in this env. Two helper scripts are mounted at `~/.replicas/bin/`:
+There are **two** scripts mounted at `~/.replicas/bin/`. Use them for different things:
 
-1. **Once per workspace** (best to do this during your initial planning step):
-   ```bash
-   echo "<paste your initial prompt's first line>" | ~/.replicas/bin/tg-target-detect.sh
-   ```
-   This caches `chat_id` / `thread_id` in `/tmp/tg-target` so you don't need to pass them again. If the header was on stdin (e.g. you pipe the whole prompt) the script only reads the first line.
+| Script | Telegram action | Use for | Persistence |
+| --- | --- | --- | --- |
+| `tg-status.sh` | `editMessageText` (one message, updated in place) | Live status: thinking / tool calls / phase changes | One message, updated continuously |
+| `tg-reply.sh` | `sendMessage` (a new message each call) | Final results, PR links, answers, errors | New messages persist in the chat |
 
-2. **Every time you want to post back to Telegram:**
-   ```bash
-   ~/.replicas/bin/tg-reply.sh "Started working on this — opening a PR shortly."
-   ```
-   - Reads cached target.
-   - Handles Telegram's 4096-char message cap by chunking.
-   - Quietly succeeds on `"ok":true`, errors otherwise.
+This mirrors the Slack-bot UX: a single "live activity" line ticking through what you're doing, plus a separate `posted` reply for the final result.
 
-3. **Override target at call time** if you need to message a different chat:
-   ```bash
-   TG_CHAT_ID=987654 ~/.replicas/bin/tg-reply.sh "Cross-posting result."
-   ```
+## One-time setup at workspace start
 
-## When to reply
+```bash
+# Cache the chat target from the first line of your prompt.
+echo "$PROMPT_FIRST_LINE" | ~/.replicas/bin/tg-target-detect.sh
 
-- **Acknowledge** within the first 30s with one short line so the user knows you're alive.
-- **Post a status update** if you're going to take more than ~60s on a step.
-- **Final result**: post the PR link (or the answer for non-PR tasks). Single message — don't spam.
-- **Errors / blockers**: post the concrete blocker so the user can unblock you.
+# Open the live status thread immediately so the user sees you're alive.
+~/.replicas/bin/tg-status.sh "🤔 Got it — analyzing your request…"
+```
 
-The Worker has already 👀-reacted to the user's message — you don't need to ack with another emoji, send text.
+`PROMPT_FIRST_LINE` is the literal first line you received (e.g. `[tg:chat_id=12345678]`).
 
-## When to *not* reply
+## During work: stream status
 
-- If your prompt does not start with `[tg:chat_id=…]`, you were not spawned from Telegram — reply via whatever surface spawned you (Slack thread, GitHub PR comment, etc.).
-- Don't echo the routing header back; strip it from any message you compose to the user.
+Update the live status line **before each significant action**. Suggested emoji conventions (keep them consistent so users learn the vocabulary):
+
+| Emoji | Means |
+| --- | --- |
+| 🤔 | Thinking / planning |
+| 🔧 | Tool call (file read/write, shell, gh, curl) |
+| 🧪 | Running tests / build |
+| 🌐 | Network call / API hit |
+| 📝 | Writing code / docs |
+| 🔍 | Searching the codebase |
+| ⏳ | Waiting on a long operation |
+| ⚠️ | Blocker / needs user input |
+
+Examples:
+
+```bash
+~/.replicas/bin/tg-status.sh "🔧 Reading src/server.ts"
+~/.replicas/bin/tg-status.sh "🧠 Planning the migration: 3 files to touch"
+~/.replicas/bin/tg-status.sh "📝 Writing migration_0042.sql"
+~/.replicas/bin/tg-status.sh "🧪 Running bun test (15/16 passing so far)"
+~/.replicas/bin/tg-status.sh "🌐 Calling gh pr create"
+```
+
+Each call **edits the same message**. The chat stays clean. The user sees a live "you are here" line.
+
+## At the end: send a real reply
+
+When you have a final answer or PR link, switch to `tg-reply.sh`. That sends a NEW message that persists, leaving the status line for context.
+
+```bash
+~/.replicas/bin/tg-reply.sh "✅ PR opened: https://github.com/owner/repo/pull/42 — adds /healthz endpoint, all tests green."
+```
+
+Optionally update the status to a final state too:
+
+```bash
+~/.replicas/bin/tg-status.sh "✅ Done. PR posted above."
+```
+
+## Errors and blockers
+
+If you hit a blocker the user needs to resolve (missing credential, ambiguous requirement, dangerous operation needing confirmation), use `tg-reply.sh` for the question — status updates aren't visible enough.
+
+```bash
+~/.replicas/bin/tg-reply.sh "⚠️ I need a Stripe API key in 1Password before I can run the test charge. Drop it in 'Stripe Test Key' and reply 'ready'."
+```
+
+## Overrides
+
+Both scripts respect these env vars (useful for testing or cross-posting):
+
+- `TG_CHAT_ID` — target chat (defaults to value from `/tmp/tg-target`).
+- `TG_THREAD_ID` — target supergroup topic.
+- `TG_TARGET_FILE` — where target is cached (default `/tmp/tg-target`).
+- `STATUS_MID_FILE` — where status message_id is cached (default `/tmp/tg-status-mid`).
+
+## When you were NOT spawned from Telegram
+
+If your prompt doesn't start with `[tg:chat_id=…]`, you weren't spawned from this bridge — don't use these scripts. Reply via whatever surface spawned you (Slack thread, GitHub PR comment, etc.).
 
 ## Debugging
 
-- `cat /tmp/tg-target` to confirm the cache exists.
+- `cat /tmp/tg-target` — confirm chat target is cached.
+- `cat /tmp/tg-status-mid` — confirm a live status message exists.
 - `env | grep TG_` — should show `TG_BOT_TOKEN` set globally.
-- If `~/.replicas/bin/tg-reply.sh` returns exit code `3`, the chat target isn't resolved — re-run `tg-target-detect.sh`.
-- Test the bot token directly: `curl -s "https://api.telegram.org/bot$TG_BOT_TOKEN/getMe"` should return `{"ok":true,…}`.
+- `curl -s "https://api.telegram.org/bot$TG_BOT_TOKEN/getMe"` — sanity-check the token.
+- Reset the status line by `rm /tmp/tg-status-mid` (next `tg-status.sh` call will send a new message).

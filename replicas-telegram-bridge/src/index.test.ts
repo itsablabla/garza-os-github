@@ -248,9 +248,11 @@ describe("helpers", () => {
 		expect(out.endsWith("\n\nhi")).toBe(true);
 	});
 
-	it("prefixWithRoutingHeader includes the agent hint and reference doc", () => {
+	it("prefixWithRoutingHeader includes both status and reply helpers + reference doc", () => {
 		const out = prefixWithRoutingHeader(tgMessage(), "do a thing");
+		expect(out).toContain("tg-status.sh");
 		expect(out).toContain("tg-reply.sh");
+		expect(out).toContain("tg-target-detect.sh");
 		expect(out).toContain("TELEGRAM_REPLY.md");
 	});
 

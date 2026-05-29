@@ -185,10 +185,10 @@ export function prefixWithRoutingHeader(msg: TgMessage, text: string): string {
 	if (msg.message_thread_id !== undefined) parts.push(`thread_id=${msg.message_thread_id}`);
 	const header = `[tg:${parts.join(":")}]`;
 	const hint = [
-		"# Spawned from Telegram. Stream live status with `~/.replicas/bin/tg-status.sh \"🤔 …\"`",
+		"# Spawned from Telegram. Stream live status with `bash ~/.replicas/bin/tg-status.sh \"🤔 …\"`",
 		"# (edits one message in place — use it before each thinking step / tool call).",
-		"# Send final result / blocker as a new message with `~/.replicas/bin/tg-reply.sh \"…\"`.",
-		"# First: `echo \"<this prompt's first line>\" | ~/.replicas/bin/tg-target-detect.sh` to cache the chat target.",
+		"# Send final result / blocker as a new message with `bash ~/.replicas/bin/tg-reply.sh \"…\"`.",
+		"# First: `echo \"<this prompt's first line>\" | bash ~/.replicas/bin/tg-target-detect.sh` to cache the chat target.",
 		"# Full protocol: `~/.replicas/TELEGRAM_REPLY.md`.",
 	].join("\n");
 	return `${header}\n${hint}\n\n${text}`;

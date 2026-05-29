@@ -29,10 +29,10 @@ This mirrors the Slack-bot UX: a single "live activity" line ticking through wha
 
 ```bash
 # Cache the chat target from the first line of your prompt.
-echo "$PROMPT_FIRST_LINE" | ~/.replicas/bin/tg-target-detect.sh
+echo "$PROMPT_FIRST_LINE" | bash ~/.replicas/bin/tg-target-detect.sh
 
 # Open the live status thread immediately so the user sees you're alive.
-~/.replicas/bin/tg-status.sh "🤔 Got it — analyzing your request…"
+bash ~/.replicas/bin/tg-status.sh "🤔 Got it — analyzing your request…"
 ```
 
 `PROMPT_FIRST_LINE` is the literal first line you received (e.g. `[tg:chat_id=12345678]`).
@@ -55,11 +55,11 @@ Update the live status line **before each significant action**. Suggested emoji 
 Examples:
 
 ```bash
-~/.replicas/bin/tg-status.sh "🔧 Reading src/server.ts"
-~/.replicas/bin/tg-status.sh "🧠 Planning the migration: 3 files to touch"
-~/.replicas/bin/tg-status.sh "📝 Writing migration_0042.sql"
-~/.replicas/bin/tg-status.sh "🧪 Running bun test (15/16 passing so far)"
-~/.replicas/bin/tg-status.sh "🌐 Calling gh pr create"
+bash ~/.replicas/bin/tg-status.sh "🔧 Reading src/server.ts"
+bash ~/.replicas/bin/tg-status.sh "🧠 Planning the migration: 3 files to touch"
+bash ~/.replicas/bin/tg-status.sh "📝 Writing migration_0042.sql"
+bash ~/.replicas/bin/tg-status.sh "🧪 Running bun test (15/16 passing so far)"
+bash ~/.replicas/bin/tg-status.sh "🌐 Calling gh pr create"
 ```
 
 Each call **edits the same message**. The chat stays clean. The user sees a live "you are here" line.
@@ -69,13 +69,13 @@ Each call **edits the same message**. The chat stays clean. The user sees a live
 When you have a final answer or PR link, switch to `tg-reply.sh`. That sends a NEW message that persists, leaving the status line for context.
 
 ```bash
-~/.replicas/bin/tg-reply.sh "✅ PR opened: https://github.com/owner/repo/pull/42 — adds /healthz endpoint, all tests green."
+bash ~/.replicas/bin/tg-reply.sh "✅ PR opened: https://github.com/owner/repo/pull/42 — adds /healthz endpoint, all tests green."
 ```
 
 Optionally update the status to a final state too:
 
 ```bash
-~/.replicas/bin/tg-status.sh "✅ Done. PR posted above."
+bash ~/.replicas/bin/tg-status.sh "✅ Done. PR posted above."
 ```
 
 ## Errors and blockers
@@ -83,7 +83,7 @@ Optionally update the status to a final state too:
 If you hit a blocker the user needs to resolve (missing credential, ambiguous requirement, dangerous operation needing confirmation), use `tg-reply.sh` for the question — status updates aren't visible enough.
 
 ```bash
-~/.replicas/bin/tg-reply.sh "⚠️ I need a Stripe API key in 1Password before I can run the test charge. Drop it in 'Stripe Test Key' and reply 'ready'."
+bash ~/.replicas/bin/tg-reply.sh "⚠️ I need a Stripe API key in 1Password before I can run the test charge. Drop it in 'Stripe Test Key' and reply 'ready'."
 ```
 
 ## Overrides

@@ -1,0 +1,66 @@
+name = "replicas-matrix-bridge"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Bundle the vendored @matrix-org/olm WASM (~150KB) as a Workers module so
+# we can run Olm 1:1 decryption for /sendToDevice m.room_key events. This
+# is the live-key-sharing path that lets the bridge keep up with Megolm
+# session rotation without manual re-imports.
+rules = [
+  { type = "CompiledWasm", globs = ["**/olm.wasm"], fallthrough = false },
+]
+
+# KV namespace for (matrix-roomId) -> replicaId mapping + idempotency.
+# Create with: wrangler kv:namespace create MAP
+[[kv_namespaces]]
+binding = "MAP"
+id = "036b2f9231de4d21bf0cdf120b5b4869"
+
+# Durable Objects: one global MatrixListener for /sync, one ReplicaPoller per replica.
+[[durable_objects.bindings]]
+name = "WATCHER"
+class_name = "ReplicaPoller"
+
+[[durable_objects.bindings]]
+name = "LISTENER"
+class_name = "MatrixListener"
+
+# Holds the bot device's persistent Olm Account (curve25519 + ed25519 identity
+# keys, OTKs) and the live-captured Megolm session keys received via
+# /sendToDevice. Single global instance.
+[[durable_objects.bindings]]
+name = "OLM_VAULT"
+class_name = "OlmVault"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ReplicaPoller", "MatrixListener"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["OlmVault"]
+
+# Cron trigger keeps the listener alive even if no events fire it.
+[triggers]
+crons = ["*/1 * * * *"]
+
+[vars]
+REPLICAS_ORG_ID = "778b1aa3-4327-45a4-9874-c8a3a72df610"
+REPLICAS_ENV_ID = "5f06f598-2712-456a-aab1-bb8cbe64ab01"
+REPLICAS_API_BASE = "https://api.replicas.dev/v1"
+MATRIX_HOMESERVER = "https://matrix-client.matrix.org"
+REPLICA_TTL_SECONDS = "604800"
+# Default Telegram-spawned replicas to Sonnet medium-thinking; same as
+# the Telegram bridge defaults.
+REPLICAS_AGENT_OVERRIDE = "claude"
+REPLICAS_MODEL_OVERRIDE = "claude-sonnet-4-6"
+REPLICAS_THINKING_OVERRIDE = "medium"
+# Bot device id on matrix.org (the device the MATRIX_ACCESS_TOKEN was minted
+# for). Used as the id in the Olm device-key upload + signature subject.
+MATRIX_DEVICE_ID = "Ww3fWv0z7s"
+
+# Secrets (set via `wrangler secret put`):
+#   MATRIX_ACCESS_TOKEN  — `syt_…` from Beeper Desktop → Settings → Help & About → Show access token
+#   MATRIX_USER_ID       — e.g. `@replicas-bot:beeper.com`
+#   REPLICAS_API_KEY     — same key the Telegram bridge uses

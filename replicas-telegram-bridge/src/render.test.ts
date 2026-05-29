@@ -9,7 +9,7 @@ import {
 } from "./render";
 
 describe("phaseFor", () => {
-	it("maps Read/Grep/Glob to PLANNING", () => {
+	it("maps Read/Grep/Glob/WebFetch to PLANNING", () => {
 		expect(phaseFor("Read", undefined)).toBe("PLANNING");
 		expect(phaseFor("Grep", undefined)).toBe("PLANNING");
 		expect(phaseFor("Glob", undefined)).toBe("PLANNING");
@@ -39,38 +39,49 @@ describe("phaseFor", () => {
 });
 
 describe("formatToolUseLine", () => {
-	it("formats Bash with $ prefix", () => {
-		expect(formatToolUseLine("Bash", { command: "ls" })).toBe("<code>🔧 $ ls</code>");
+	it("places emoji outside <code> so monospace only wraps the command", () => {
+		expect(formatToolUseLine("Bash", { command: "ls -la" })).toBe(
+			"🔧 <code>ls -la</code>",
+		);
 	});
 	it("formats Read with file_path", () => {
 		expect(formatToolUseLine("Read", { file_path: "src/index.ts" })).toBe(
-			"<code>📖 src/index.ts</code>",
+			"📖 <code>src/index.ts</code>",
 		);
 	});
-	it("formats Edit with file_path", () => {
-		expect(formatToolUseLine("Edit", { file_path: "src/server.ts" })).toContain("src/server.ts");
+	it("uses ✏️ for Edit", () => {
+		expect(formatToolUseLine("Edit", { file_path: "src/server.ts" })).toBe(
+			"✏️ <code>src/server.ts</code>",
+		);
 	});
-	it("formats Grep with pattern", () => {
-		expect(formatToolUseLine("Grep", { pattern: "TODO" })).toBe("<code>🔍 grep TODO</code>");
+	it("uses ✍️ for Write", () => {
+		expect(formatToolUseLine("Write", { file_path: "new/file.ts" })).toBe(
+			"✍️ <code>new/file.ts</code>",
+		);
+	});
+	it("formats Grep with grep prefix inside <code>", () => {
+		expect(formatToolUseLine("Grep", { pattern: "TODO" })).toBe(
+			"🔍 <code>grep TODO</code>",
+		);
 	});
 	it("formats WebFetch with url", () => {
 		expect(formatToolUseLine("WebFetch", { url: "https://example.com" })).toBe(
-			"<code>🌐 https://example.com</code>",
+			"🌐 <code>https://example.com</code>",
 		);
 	});
-	it("formats unknown MCP tool with namespace strip", () => {
+	it("formats unknown MCP tool with 🧰 and namespace strip", () => {
 		expect(formatToolUseLine("mcp__replicas__create_replica", {})).toBe(
-			"<code>🧰 replicas__create_replica</code>",
+			"🧰 <code>replicas__create_replica</code>",
 		);
 	});
-	it("HTML-escapes file paths with angle brackets", () => {
+	it("HTML-escapes paths with angle brackets", () => {
 		expect(formatToolUseLine("Read", { file_path: "src/<weird>" })).toContain("&lt;weird&gt;");
 	});
 });
 
 describe("thinkingLine", () => {
-	it("wraps in italic with thinking emoji", () => {
-		expect(thinkingLine("planning the change")).toBe("<i>🤔 planning the change</i>");
+	it("wraps in italic with no leading emoji (header already shows phase)", () => {
+		expect(thinkingLine("planning the change")).toBe("<i>planning the change</i>");
 	});
 	it("collapses newlines into spaces", () => {
 		expect(thinkingLine("line one\nline two")).toContain("line one line two");
@@ -80,8 +91,8 @@ describe("thinkingLine", () => {
 	});
 });
 
-describe("render", () => {
-	it("renders a starting state with task header", () => {
+describe("render — active state", () => {
+	it("starting state shows just the phase header with elapsed time", () => {
 		const out = render({
 			startedAt: Date.now(),
 			stepCount: 0,
@@ -89,26 +100,42 @@ describe("render", () => {
 			userText: "deploy the api",
 			lines: [],
 		});
-		expect(out).toContain("🤔 STARTING");
-		expect(out).toContain("<i>Task:</i> deploy the api");
-		expect(out).toContain("⏱");
+		expect(out).toBe("🤔 <b>Starting</b> · 0s");
+		// Crucially does NOT repeat the user prompt — the message is a reply
+		// to it in Telegram, so the prompt is already visible above.
+		expect(out).not.toContain("deploy the api");
 	});
 
-	it("renders a running state with step counter and current action", () => {
+	it("planning state with thinking preview puts italic line under header", () => {
+		const out = render({
+			startedAt: Date.now() - 14000,
+			stepCount: 0,
+			phase: "PLANNING",
+			currentAction: "<i>reading the codebase</i>",
+			lines: [],
+		});
+		expect(out).toContain("📋 <b>Planning</b>");
+		expect(out).toContain("<i>reading the codebase</i>");
+	});
+
+	it("running state with step counter and tool lines", () => {
 		const out = render({
 			startedAt: Date.now() - 14000,
 			stepCount: 3,
-			phase: "PLANNING",
-			currentAction: "<code>🔧 $ ls -la src/</code>",
-			lines: ["<code>📖 src/index.ts</code>"],
+			phase: "RUNNING",
+			lines: [
+				"🔧 <code>ls -la src/</code>",
+				"📖 <code>src/index.ts</code>",
+				"✏️ <code>src/server.ts</code>",
+			],
 		});
-		expect(out).toContain("📋 PLANNING");
-		expect(out).toContain("step 3");
-		expect(out).toContain("ls -la");
+		expect(out).toContain("🔧 <b>Running</b> · step 3 · 14s");
+		expect(out).toContain("ls -la src/");
+		expect(out).toContain("src/server.ts");
 	});
 
-	it("collapses older steps into an expandable blockquote when many lines exist", () => {
-		const lines = Array.from({ length: 12 }, (_, i) => `<code>step ${i}</code>`);
+	it("collapses older steps into expandable blockquote when many lines exist", () => {
+		const lines = Array.from({ length: 12 }, (_, i) => `📖 <code>step ${i}</code>`);
 		const out = render({
 			startedAt: Date.now(),
 			stepCount: 12,
@@ -117,43 +144,55 @@ describe("render", () => {
 		});
 		expect(out).toContain("<blockquote expandable>");
 		expect(out).toContain("step 11"); // most recent visible
-		expect(out).toContain("step 7"); // oldest of the recent window (12 - 4 = 8 onward)
+		expect(out).toContain("step 7"); // first of the recent window (12 - 4 = 8)
 	});
+});
 
-	it("renders a DONE terminal state without current action", () => {
+describe("render — terminal state", () => {
+	it("done collapses to one line", () => {
 		const out = render({
 			startedAt: Date.now() - 14000,
 			stepCount: 6,
 			phase: "EDITING",
-			lines: ["<code>step 1</code>"],
+			lines: ["🔧 <code>ls</code>"],
 			terminal: { kind: "done", durationSec: 14 },
 		});
-		expect(out).toContain("🎉 DONE");
-		expect(out).toContain("14s");
-		expect(out).not.toContain("step 6"); // no step counter in terminal
+		expect(out).toBe("🎉 <b>Done</b> · 14s");
 	});
 
-	it("renders a FAILED terminal state with error blockquote", () => {
+	it("failed shows error in a blockquote", () => {
 		const out = render({
 			startedAt: Date.now() - 8000,
 			stepCount: 3,
 			phase: "TESTING",
-			lines: ["<code>step</code>"],
+			lines: ["🧪 <code>bun test</code>"],
 			terminal: { kind: "failed", durationSec: 8, errorMsg: "exit code 1: tests failed" },
 		});
-		expect(out).toContain("❌ FAILED");
+		expect(out).toContain("❌ <b>Failed</b> · 8s");
 		expect(out).toContain("<blockquote>exit code 1: tests failed</blockquote>");
+	});
+
+	it("failed without errorMsg still renders cleanly", () => {
+		const out = render({
+			startedAt: Date.now() - 5000,
+			stepCount: 1,
+			phase: "RUNNING",
+			lines: [],
+			terminal: { kind: "failed", durationSec: 5 },
+		});
+		expect(out).toBe("❌ <b>Failed</b> · 5s");
 	});
 });
 
 describe("formatDuration", () => {
-	it("renders seconds under a minute", () => {
+	it("renders seconds under a minute as Ns", () => {
 		expect(formatDuration(14)).toBe("14s");
 		expect(formatDuration(59)).toBe("59s");
 	});
-	it("renders minutes and seconds over a minute", () => {
-		expect(formatDuration(60)).toBe("1m 0s");
-		expect(formatDuration(102)).toBe("1m 42s");
+	it("renders minutes and seconds as M:SS", () => {
+		expect(formatDuration(60)).toBe("1:00");
+		expect(formatDuration(102)).toBe("1:42");
+		expect(formatDuration(605)).toBe("10:05");
 	});
 });
 

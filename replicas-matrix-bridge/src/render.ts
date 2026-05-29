@@ -244,6 +244,29 @@ export function formatCost(usd: number): string {
 	return `$${Math.round(usd)}`;
 }
 
+// Scan `lines` for the 🔄 / ✅ / ❌ lifecycle prefixes and tally a
+// "📋 Tools (M/N)" header line. Stateless — relies on the prefixes the
+// poller writes when it pairs each tool_use to its later tool_result.
+//
+// Returns the rendered header HTML, or "" when there are no tool lines.
+// Adds a trailing " ✅" when M === N AND N > 0 — matches the OpenACP
+// allComplete header treatment.
+export function renderToolsHeader(lines: string[]): string {
+	let total = 0;
+	let done = 0;
+	for (const line of lines) {
+		if (line.startsWith("🔄 ")) {
+			total += 1;
+		} else if (line.startsWith("✅ ") || line.startsWith("❌ ")) {
+			total += 1;
+			done += 1;
+		}
+	}
+	if (total === 0) return "";
+	const allComplete = done === total && total > 0 ? " ✅" : "";
+	return `📋 <b>Tools (${done}/${total})</b>${allComplete}`;
+}
+
 function renderActive(state: StatusState): string {
 	const elapsedSec = Math.max(0, Math.round((Date.now() - state.startedAt) / 1000));
 	const headerParts: string[] = [
@@ -267,6 +290,13 @@ function renderActive(state: StatusState): string {
 	if (state.plan) {
 		blocks.push(renderPlan(state.plan));
 	}
+
+	// "📋 Tools (M/N) ✅" header — live completion count derived from the
+	// 🔄 / ✅ / ❌ lifecycle prefixes the poller writes on each tool line.
+	// Sits above the rolling log so the user sees "how many tools done" at
+	// a glance before reading the individual lines.
+	const toolsHeader = renderToolsHeader(state.lines);
+	if (toolsHeader) blocks.push(toolsHeader);
 
 	// Stream every tool call through unmodified. Tool calls are the point —
 	// the user is watching the agent work, line by line in real time. The
@@ -343,6 +373,11 @@ function renderTerminal(state: StatusState): string {
 	if (state.plan) {
 		blocks.push(renderPlan(state.plan));
 	}
+
+	// "📋 Tools (M/N) ✅" header — same as renderActive. On the Done frame
+	// this is a permanent at-a-glance recap of how many tools ran.
+	const toolsHeader = renderToolsHeader(state.lines);
+	if (toolsHeader) blocks.push(toolsHeader);
 
 	// Keep the rolling log (tool-calls, narration) visible after terminal so
 	// the reader can see what actually happened during the turn — same

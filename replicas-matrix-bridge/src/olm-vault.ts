@@ -37,7 +37,7 @@ interface MegolmKeyEntry {
 	session_id: string;
 	session_key: string;
 	sender_key: string;
-	source: "import" | "live";
+	source: "import" | "live" | "forwarded";
 }
 
 export class OlmVault {
@@ -386,34 +386,56 @@ export class OlmVault {
 				await this.state.storage.put(K_SESSIONS, sessionsMap);
 			}
 
-			// Inspect the inner event and capture m.room_key shares.
+			// Inspect the inner event and capture Megolm session keys.
+			// Two shapes match:
+			//   - m.room_key (initial share when a sender starts a new session)
+			//   - m.forwarded_room_key (response to our m.room_key_request,
+			//     used for E2EE auto-recovery when a session rotates without
+			//     us getting the initial share)
 			let captured = false;
+			let capturedRoomId: string | undefined;
+			let capturedSessionId: string | undefined;
 			try {
 				const inner = JSON.parse(plaintext) as {
 					type?: string;
-					content?: { algorithm?: string; room_id?: string; session_id?: string; session_key?: string };
+					content?: {
+						algorithm?: string;
+						room_id?: string;
+						session_id?: string;
+						session_key?: string;
+						// Forwarded keys carry the original sender's curve25519 in a
+						// dedicated field; the immediate to-device sender_key only
+						// tells us who forwarded, not who originally encrypted.
+						sender_key?: string;
+					};
 				};
-				if (
-					inner.type === "m.room_key" &&
+				const isShare =
+					(inner.type === "m.room_key" || inner.type === "m.forwarded_room_key") &&
 					inner.content?.algorithm === "m.megolm.v1.aes-sha2" &&
 					inner.content.room_id &&
 					inner.content.session_id &&
-					inner.content.session_key
-				) {
+					inner.content.session_key;
+				if (isShare && inner.content) {
+					const c = inner.content;
 					const ks = (await this.state.storage.get<Record<string, MegolmKeyEntry[]>>(K_KEYSTORE)) ?? {};
-					const list = ks[inner.content.room_id] ?? [];
-					if (!list.find((e) => e.session_id === inner.content!.session_id)) {
+					const list = ks[c.room_id!] ?? [];
+					if (!list.find((e) => e.session_id === c.session_id)) {
 						list.push({
-							session_id: inner.content.session_id,
-							session_key: inner.content.session_key,
-							sender_key: senderCurve25519,
-							source: "live",
+							session_id: c.session_id!,
+							session_key: c.session_key!,
+							// Prefer the original sender_key from the inner content
+							// when present (forwarded_room_key) — falls back to the
+							// to-device sender's curve25519 otherwise.
+							sender_key: c.sender_key ?? senderCurve25519,
+							source: inner.type === "m.forwarded_room_key" ? "forwarded" : "live",
 						});
-						ks[inner.content.room_id] = list;
+						ks[c.room_id!] = list;
 						await this.state.storage.put(K_KEYSTORE, ks);
 						captured = true;
+						capturedRoomId = c.room_id;
+						capturedSessionId = c.session_id;
 						console.log(
-							`[olm-vault] captured Megolm room=${inner.content.room_id} session=${inner.content.session_id.slice(0, 16)}…`,
+							`[olm-vault] captured Megolm via ${inner.type} room=${c.room_id} session=${c.session_id!.slice(0, 16)}…`,
 						);
 					}
 				}
@@ -421,7 +443,7 @@ export class OlmVault {
 				/* not JSON — return raw */
 			}
 
-			return Response.json({ ok: true, captured, plaintext });
+			return Response.json({ ok: true, captured, plaintext, capturedRoomId, capturedSessionId });
 		} finally {
 			account.free();
 			void Olm;

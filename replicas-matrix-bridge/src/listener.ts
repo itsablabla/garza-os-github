@@ -121,10 +121,23 @@ export class MatrixListener {
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({ senderCurve25519: senderKey, ciphertext: { type: entry.type, body: entry.body } }),
 				});
-				const j = (await r.json()) as { ok?: boolean; captured?: boolean };
+				const j = (await r.json()) as {
+					ok?: boolean;
+					captured?: boolean;
+					capturedRoomId?: string;
+					capturedSessionId?: string;
+				};
 				console.log(
 					`[listener] to_device sender=${senderKey.slice(0, 12)}… type=${entry.type} ok=${j.ok} captured=${j.captured}`,
 				);
+				// E2EE auto-recovery: when the vault captures a Megolm
+				// session key (either initial m.room_key or our requested
+				// m.forwarded_room_key response), walk the pending-decrypt
+				// queue for that (room, session) and dispatch any
+				// previously-stuck user messages.
+				if (j.captured && j.capturedRoomId && j.capturedSessionId) {
+					await this.drainPendingForSession(j.capturedRoomId, j.capturedSessionId);
+				}
 			} catch (e) {
 				console.log(`[listener] to_device decrypt failed: ${e instanceof Error ? e.message : e}`);
 			}
@@ -233,17 +246,31 @@ export class MatrixListener {
 
 	private async tryDecrypt(
 		roomId: string,
-		ev: { content?: Record<string, unknown>; event_id?: string },
+		ev: { content?: Record<string, unknown>; event_id?: string; sender?: string; origin_server_ts?: number },
 		keys: MegolmSessionKey[],
 	): Promise<{ msgtype: string; body: string } | undefined> {
 		const content = ev.content ?? {};
 		if (content.algorithm !== "m.megolm.v1.aes-sha2") return undefined;
 		const sessionId = content.session_id as string | undefined;
 		const ciphertext = content.ciphertext as string | undefined;
+		const senderKey = content.sender_key as string | undefined;
 		if (!sessionId || !ciphertext) return undefined;
 		const sessionKey = await this.findKey(roomId, sessionId, keys);
 		if (!sessionKey) {
 			console.log(`[listener] no key for room=${roomId} session=${sessionId.slice(0, 16)}…`);
+			// E2EE auto-recovery: queue this event for later retry, then
+			// emit an m.room_key_request to the sender's other devices so
+			// they forward us the missing Megolm session key. Best-effort —
+			// failures don't block other event processing.
+			if (ev.event_id && ev.sender) {
+				await this.queuePendingDecrypt(roomId, sessionId, {
+					event_id: ev.event_id,
+					sender: ev.sender,
+					content: { ciphertext, sender_key: senderKey ?? "" },
+					origin_server_ts: ev.origin_server_ts ?? Date.now(),
+				});
+				await this.maybeSendKeyRequest(roomId, sessionId, ev.sender, senderKey);
+			}
 			return undefined;
 		}
 		try {
@@ -261,6 +288,143 @@ export class MatrixListener {
 			console.log(`[listener] decrypt fail ev=${ev.event_id}: ${e instanceof Error ? e.message : e}`);
 			return undefined;
 		}
+	}
+
+	/**
+	 * Queue an undecryptable encrypted event so we can retry once the
+	 * matching Megolm session key arrives. Stored in DO storage as
+	 * `pending-decrypt:{room}:{session}` → array. Cleaned up on retry or
+	 * by stale-entry pruning.
+	 */
+	private async queuePendingDecrypt(
+		roomId: string,
+		sessionId: string,
+		entry: {
+			event_id: string;
+			sender: string;
+			content: { ciphertext: string; sender_key: string };
+			origin_server_ts: number;
+		},
+	): Promise<void> {
+		const key = `pending-decrypt:${roomId}:${sessionId}`;
+		const list = (await this.state.storage.get<typeof entry[]>(key)) ?? [];
+		if (list.find((e) => e.event_id === entry.event_id)) return;
+		// Bound the queue per session — pathological case (1000 messages
+		// before key arrives) would otherwise eat DO storage.
+		if (list.length >= 50) list.shift();
+		list.push(entry);
+		await this.state.storage.put(key, list);
+	}
+
+	/**
+	 * Send an `m.room_key_request` to-device event addressed to the
+	 * sender's other devices (`<user_id>:*`), asking them to forward us
+	 * the Megolm session key for the given room/session. Dedup'd by
+	 * `(room, session)` within a 5-minute window to avoid spamming.
+	 *
+	 * The sender's clients will see this as a key share request from a
+	 * known-but-unverified device — if they recognize the device id /
+	 * curve25519 they forward; otherwise they may prompt or silently
+	 * ignore. Either way the bridge stops being a black hole when keys
+	 * rotate past our share window.
+	 */
+	private async maybeSendKeyRequest(
+		roomId: string,
+		sessionId: string,
+		sender: string,
+		senderKey: string | undefined,
+	): Promise<void> {
+		const dedupKey = `key-request:${roomId}:${sessionId}`;
+		const lastAt = (await this.state.storage.get<number>(dedupKey)) ?? 0;
+		const now = Date.now();
+		if (now - lastAt < 5 * 60 * 1000) return;
+		await this.state.storage.put(dedupKey, now);
+
+		const requestId = `kr-${now}-${Math.random().toString(36).slice(2, 10)}`;
+		const ourDeviceId = this.env.MATRIX_DEVICE_ID ?? "Ww3fWv0z7s";
+		const body = {
+			messages: {
+				[sender]: {
+					"*": {
+						action: "request",
+						body: {
+							algorithm: "m.megolm.v1.aes-sha2",
+							room_id: roomId,
+							sender_key: senderKey ?? "",
+							session_id: sessionId,
+						},
+						request_id: requestId,
+						requesting_device_id: ourDeviceId,
+					},
+				},
+			},
+		};
+		const txnId = `kreq-${now}-${Math.random().toString(36).slice(2, 8)}`;
+		const url = `${this.env.MATRIX_HOMESERVER}/_matrix/client/v3/sendToDevice/m.room_key_request/${encodeURIComponent(txnId)}`;
+		try {
+			const r = await fetch(url, {
+				method: "PUT",
+				headers: {
+					Authorization: `Bearer ${this.env.MATRIX_ACCESS_TOKEN}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(body),
+			});
+			console.log(
+				`[listener] room_key_request room=${roomId} session=${sessionId.slice(0, 16)}… sender=${sender} status=${r.status}`,
+			);
+		} catch (e) {
+			console.log(`[listener] room_key_request failed: ${e instanceof Error ? e.message : e}`);
+		}
+	}
+
+	/**
+	 * Called when the olm-vault decrypts a to-device event and captures
+	 * a Megolm session key. Walks the pending-decrypt queue for that
+	 * (room, session) and dispatches each previously-stuck user message.
+	 * The actual decryption happens on the next /sync tick when the
+	 * timeline-event loop re-reads `pending-decrypt` and processes them.
+	 *
+	 * For now: just dispatch any queued messages by re-running tryDecrypt
+	 * on each, which will now succeed because the key is in the vault.
+	 */
+	private async drainPendingForSession(
+		roomId: string,
+		sessionId: string,
+	): Promise<void> {
+		const key = `pending-decrypt:${roomId}:${sessionId}`;
+		const list = await this.state.storage.get<{
+			event_id: string;
+			sender: string;
+			content: { ciphertext: string; sender_key: string };
+			origin_server_ts: number;
+		}[]>(key);
+		if (!list || list.length === 0) return;
+		console.log(`[listener] draining ${list.length} pending decrypts for ${roomId} session=${sessionId.slice(0, 16)}…`);
+		const megolmKeys = this.megolmKeys();
+		for (const queued of list) {
+			const synthetic = {
+				event_id: queued.event_id,
+				sender: queued.sender,
+				origin_server_ts: queued.origin_server_ts,
+				content: {
+					algorithm: "m.megolm.v1.aes-sha2",
+					session_id: sessionId,
+					ciphertext: queued.content.ciphertext,
+					sender_key: queued.content.sender_key,
+				},
+			};
+			const decrypted = await this.tryDecrypt(roomId, synthetic, megolmKeys);
+			if (!decrypted) {
+				console.log(`[listener] drain: still can't decrypt ev=${queued.event_id} — leaving in queue`);
+				continue;
+			}
+			if (decrypted.msgtype !== "m.text" || !decrypted.body) continue;
+			const shouldDispatch = await this.shouldHandleMessage(roomId, synthetic);
+			if (!shouldDispatch) continue;
+			await this.dispatchMessage(roomId, queued.event_id, decrypted.body);
+		}
+		await this.state.storage.delete(key);
 	}
 
 	// Returns true if the bot should respond. In a 2-person room every

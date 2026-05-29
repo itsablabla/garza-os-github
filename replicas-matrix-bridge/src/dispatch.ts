@@ -1,5 +1,34 @@
 import type { Env } from "./index";
-import { react, sendMessage } from "./matrix";
+import { MatrixError, react, sendMessage } from "./matrix";
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// The 👀 ack is the FIRST signal the user gets that the bot heard them
+// (lands before the "Starting" frame even sends). It must survive 429s
+// from matrix.org — that's exactly the moment a busy room hits the
+// limit. Retry up to 3x honoring retry_after_ms.
+async function reactWithRetry(
+	env: { MATRIX_HOMESERVER: string; MATRIX_ACCESS_TOKEN: string; MATRIX_USER_ID: string },
+	roomId: string,
+	eventId: string,
+	emoji: string,
+): Promise<string> {
+	for (let attempt = 0; attempt < 3; attempt++) {
+		try {
+			return await react(env, roomId, eventId, emoji);
+		} catch (e) {
+			if (e instanceof MatrixError && e.status === 429) {
+				const waitMs = Math.min(8_000, Math.max(500, e.retryAfterMs ?? 1_500));
+				await sleep(waitMs);
+				continue;
+			}
+			return "";
+		}
+	}
+	return "";
+}
 
 interface ReplicaCreateResponse {
 	replica?: { id: string };
@@ -23,7 +52,9 @@ export async function handleMatrixMessage(
 
 	// Capture the 👀 ack reaction id so the watcher can redact it later when
 	// it swaps in the terminal emoji — otherwise both stack on the prompt.
-	const ackP = react(matrixEnvShape(env), roomId, eventId, "👀").catch(() => "");
+	// Goes through reactWithRetry so a 429 on a busy room doesn't silently
+	// eat the user's first acknowledgment signal.
+	const ackP = reactWithRetry(matrixEnvShape(env), roomId, eventId, "👀");
 
 	const existing = await env.MAP.get(key);
 	console.log(`[dispatch] proceed room=${roomId} ev=${eventId} existing=${existing ?? "none"} text=${JSON.stringify(text.slice(0, 50))}`);

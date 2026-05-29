@@ -666,16 +666,47 @@ export class ReplicaPoller {
 		if (!watch.startEventId) return;
 		const prior = await this.state.storage.get<string>("reactionEventId");
 		if (prior) {
+			// Redact gets the same retry treatment as react — both go
+			// through the rate-limited /rooms/{room}/send/* endpoints, and
+			// if the redact dies the user sees stacked emojis (the old
+			// 👀 plus the new 🎉) instead of a clean transition.
+			for (let attempt = 0; attempt < 4; attempt++) {
+				try {
+					await redact(matrixEnv(this.env), watch.roomId, prior, "phase change");
+					break;
+				} catch (e) {
+					if (e instanceof MatrixError && e.status === 429) {
+						const waitMs = Math.min(8_000, Math.max(500, e.retryAfterMs ?? 1_500));
+						console.log(`[poller] redact 429 attempt ${attempt + 1}, retry in ${waitMs}ms`);
+						await sleep(waitMs);
+						continue;
+					}
+					console.log(`[poller] redact failed: ${e instanceof Error ? e.message : e}`);
+					break;
+				}
+			}
+		}
+		// Reactions are the user-facing "I see you / I'm done" signal —
+		// they MUST land. Retry on 429 honoring the homeserver's
+		// retry_after_ms hint, up to 4 attempts (~20s total worst case).
+		// The 30s cleanup alarm gives us comfortable runway.
+		for (let attempt = 0; attempt < 4; attempt++) {
 			try {
-				await redact(matrixEnv(this.env), watch.roomId, prior, "phase change");
-			} catch {}
+				const id = await react(matrixEnv(this.env), watch.roomId, watch.startEventId, emoji);
+				if (id) await this.state.storage.put("reactionEventId", id);
+				return;
+			} catch (e) {
+				if (e instanceof MatrixError && e.status === 429) {
+					const waitMs = Math.min(8_000, Math.max(500, e.retryAfterMs ?? 1_500));
+					console.log(`[poller] react ${emoji} 429 attempt ${attempt + 1}, retry in ${waitMs}ms`);
+					await sleep(waitMs);
+					continue;
+				}
+				console.log(`[poller] react failed: ${e instanceof Error ? e.message : e}`);
+				return;
+			}
 		}
-		try {
-			const id = await react(matrixEnv(this.env), watch.roomId, watch.startEventId, emoji);
-			if (id) await this.state.storage.put("reactionEventId", id);
-		} catch (e) {
-			console.log(`[poller] react failed: ${e instanceof Error ? e.message : e}`);
-		}
+		console.log(`[poller] react ${emoji} still 429 after 4 attempts; giving up`);
 	}
 
 	private async unpinStatus(watch: WatchSpec): Promise<void> {
@@ -694,6 +725,10 @@ export class ReplicaPoller {
 			await this.state.storage.put("lastTypingAt", Date.now());
 		} catch {}
 	}
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function replicasHeaders(env: Env): HeadersInit {

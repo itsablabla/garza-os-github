@@ -47,6 +47,10 @@
 //   [blockquote: exit code 1: tests failed]
 
 const STATUS_MAX_LEN = 200;
+const RECENT_LINES_VISIBLE = 4;
+// Older steps go into <blockquote expandable> ("Show more"). Generous cap
+// since the user can collapse the expandable.
+const MAX_TOTAL_LINES = 80;
 // Matrix events cap around 64KB; keep well under that since clients vary.
 // Set generously because terminal frames now embed the full result body
 // instead of sending it as a separate message (single-message turns).
@@ -231,141 +235,6 @@ export function render(state: StatusState): string {
 	return renderActive(state);
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Focus-window rendering (2026-05-29 UI cleanup)
-//
-// Designed to make "what is the agent doing RIGHT NOW" instantly readable
-// without forcing the user to skim a 30-line tool log. Three tiers:
-//
-//   CURRENT (latest op): full command + ↳ output preview, indented under it
-//   RECENT (2 prior):    one-line each, basename paths, bash truncated
-//   OLDER (3+ ago):      collapsed into <blockquote expandable> with a
-//                        "[N earlier ops]" header. Errors and user
-//                        steers survive aggregation; everything else
-//                        compresses.
-//
-// Parsing is line-shape based — tool calls match TOOL_EMOJI_RE, tool
-// outputs match OUTPUT_RE, user/narration match NARRATION_RE. We pair an
-// output line with the preceding tool line so the renderer can show them
-// together (or, for non-current ops, drop the output).
-// ──────────────────────────────────────────────────────────────────────────
-
-const TOOL_EMOJI_RE = /^(🔧|📖|✍️|✏️|🔍|🌐|🧰) <code>([\s\S]*)<\/code>$/;
-const OUTPUT_RE = /^<i>(↳|✗) /;
-const NARRATION_RE = /^💬 /;
-
-type OpKind = "tool" | "narration" | "user" | "other";
-
-interface Op {
-	kind: OpKind;
-	line: string;
-	output?: string;
-	isError?: boolean;
-}
-
-function parseOps(lines: string[]): Op[] {
-	const ops: Op[] = [];
-	for (const line of lines) {
-		if (OUTPUT_RE.test(line)) {
-			const isErr = line.startsWith("<i>✗ ");
-			const last = ops[ops.length - 1];
-			if (last && last.kind === "tool") {
-				last.output = line;
-				last.isError = isErr;
-			} else {
-				ops.push({ kind: "other", line, isError: isErr });
-			}
-		} else if (NARRATION_RE.test(line)) {
-			ops.push({
-				kind: line.includes("You:") ? "user" : "narration",
-				line,
-			});
-		} else if (TOOL_EMOJI_RE.test(line)) {
-			ops.push({ kind: "tool", line });
-		} else {
-			ops.push({ kind: "other", line });
-		}
-	}
-	return ops;
-}
-
-// Trim a tool line for compressed rendering: basename for paths,
-// first-~60-chars for bash, leave short args alone. Used in the RECENT
-// + OLDER tiers; CURRENT keeps the full original line.
-const COMPRESS_TARGET = 60;
-function compressToolLine(line: string): string {
-	const m = TOOL_EMOJI_RE.exec(line);
-	if (!m) return line;
-	const emoji = m[1]!;
-	let content = m[2]!;
-	if (content.startsWith("/")) {
-		const parts = content.split("/");
-		content = parts[parts.length - 1] || content;
-	}
-	if (content.length > COMPRESS_TARGET) {
-		content = content.slice(0, COMPRESS_TARGET - 1) + "…";
-	}
-	return `${emoji} <code>${content}</code>`;
-}
-
-function renderOpsFocused(ops: Op[]): string[] {
-	if (ops.length === 0) return [];
-
-	// Window: last 3 ops shown inline (CURRENT + 2 RECENT). Everything
-	// before goes into the expandable.
-	const CURRENT_IDX = ops.length - 1;
-	const RECENT_WINDOW = 3;
-	const VISIBLE_START = Math.max(0, ops.length - RECENT_WINDOW);
-
-	const blocks: string[] = [];
-
-	const older = ops.slice(0, VISIBLE_START);
-	if (older.length > 0) {
-		const olderRendered: string[] = [];
-		for (const op of older) {
-			if (op.kind === "tool") {
-				olderRendered.push(compressToolLine(op.line));
-				// Errors survive even in OLDER; non-error outputs are
-				// dropped to keep the expandable scannable.
-				if (op.isError && op.output) olderRendered.push(op.output);
-			} else if (op.kind === "user") {
-				olderRendered.push(op.line);
-			} else if (op.kind === "other" && op.isError) {
-				olderRendered.push(op.line);
-			}
-			// drop: narration (assistant chatter) and non-error standalone outputs
-		}
-		if (olderRendered.length > 0) {
-			blocks.push(
-				`<blockquote expandable><i>${older.length} earlier op${older.length === 1 ? "" : "s"}</i><br>${olderRendered.join("<br>")}</blockquote>`,
-			);
-		}
-	}
-
-	for (let i = VISIBLE_START; i < ops.length; i++) {
-		const op = ops[i]!;
-		const isCurrent = i === CURRENT_IDX;
-		if (op.kind === "tool") {
-			if (isCurrent) {
-				// Full line + indented output under it
-				blocks.push(op.line);
-				if (op.output) blocks.push(`&nbsp;&nbsp;&nbsp;${op.output}`);
-			} else {
-				blocks.push(compressToolLine(op.line));
-				// Errors survive on non-current too — silent failures are
-				// the worst thing a focus window can hide.
-				if (op.isError && op.output) blocks.push(op.output);
-			}
-		} else if (op.kind === "user" || op.kind === "narration") {
-			blocks.push(op.line);
-		} else if (op.kind === "other") {
-			blocks.push(op.line);
-		}
-	}
-
-	return blocks;
-}
-
 // Smart cost formatting: $0.07 not $0.0781; sub-cent shown as "<$0.01"
 // instead of a sea of zeros. Used in the terminal header.
 export function formatCost(usd: number): string {
@@ -399,10 +268,21 @@ function renderActive(state: StatusState): string {
 		blocks.push(renderPlan(state.plan));
 	}
 
+	// Stream every tool call through unmodified. Tool calls are the point —
+	// the user is watching the agent work, line by line in real time. The
+	// older overflow goes into <blockquote expandable> ("Show more") so the
+	// active window stays readable on long turns.
 	if (state.lines.length > 0) {
-		const ops = parseOps(state.lines);
-		const opBlocks = renderOpsFocused(ops);
-		if (opBlocks.length > 0) blocks.push(opBlocks.join("<br>"));
+		const recent = state.lines.slice(-RECENT_LINES_VISIBLE);
+		const older = state.lines.slice(0, Math.max(0, state.lines.length - RECENT_LINES_VISIBLE));
+		const trimmedOlder = older.slice(-Math.max(0, MAX_TOTAL_LINES - recent.length));
+		const dropped = older.length - trimmedOlder.length;
+
+		if (trimmedOlder.length > 0) {
+			const dropNote = dropped > 0 ? `<br><i>… ${dropped} earlier</i>` : "";
+			blocks.push(`<blockquote expandable>${trimmedOlder.join("<br>")}${dropNote}</blockquote>`);
+		}
+		blocks.push(recent.join("<br>"));
 	}
 
 	// Matrix HTML treats source `\n` as whitespace, so use `<br><br>` between
@@ -464,20 +344,26 @@ function renderTerminal(state: StatusState): string {
 		blocks.push(renderPlan(state.plan));
 	}
 
-	// Same focus window as the active render, so Done frames stay tidy:
-	// CURRENT op (last) expanded with its output, RECENT compressed, OLDER
-	// collapsed under an expandable. Plan items above it are the at-a-glance
-	// recap; if the user wants exact-command-by-command they tap to expand.
+	// Keep the rolling log (tool-calls, narration) visible after terminal so
+	// the reader can see what actually happened during the turn — same
+	// window as the in-progress render. Tool calls are the showpiece; the
+	// answer body sits below them.
 	if (state.lines.length > 0) {
-		const ops = parseOps(state.lines);
-		const opBlocks = renderOpsFocused(ops);
-		if (opBlocks.length > 0) blocks.push(opBlocks.join("<br>"));
+		const recent = state.lines.slice(-RECENT_LINES_VISIBLE);
+		const older = state.lines.slice(0, Math.max(0, state.lines.length - RECENT_LINES_VISIBLE));
+		const trimmedOlder = older.slice(-Math.max(0, MAX_TOTAL_LINES - recent.length));
+		const dropped = older.length - trimmedOlder.length;
+		if (trimmedOlder.length > 0) {
+			const dropNote = dropped > 0 ? `<br><i>… ${dropped} earlier</i>` : "";
+			blocks.push(`<blockquote expandable>${trimmedOlder.join("<br>")}${dropNote}</blockquote>`);
+		}
+		blocks.push(recent.join("<br>"));
 	}
 
 	// Embed the agent's final reply directly in the Done frame. Single
 	// message per turn — Beeper and other bridges can't drop a "second
-	// message" if there is no second message. Sits below the focus-window
-	// log so reading order is past → present → answer.
+	// message" if there is no second message. Sits below the op log so
+	// reading order is past → present → answer.
 	if (isDone && state.terminal!.resultHtml) {
 		blocks.push(state.terminal!.resultHtml);
 	}

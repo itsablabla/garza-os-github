@@ -222,11 +222,25 @@ async function startWatcher(
 		.catch(() => {});
 }
 
+/**
+ * Replace any lone UTF-16 surrogate code unit (a high surrogate without
+ * a matching low surrogate, or vice versa) with U+FFFD REPLACEMENT
+ * CHARACTER. This is defense-in-depth against Anthropic 400s of the
+ * shape `invalid_request_error: The request body is not valid JSON: no
+ * low surrogate in string at line 1 column N`. Most often the lone
+ * surrogate comes from a tool result the agent later sends back, which
+ * the bridge can't fix from out here — but we sanitize everything we
+ * send TOWARDS Replicas so the bridge is never the introducer.
+ */
+export function sanitizeForJson(s: string): string {
+	return s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
+}
+
 export function prefixWithRoutingHeader(roomId: string, eventId: string, text: string): string {
 	const header = `[matrix:room=${roomId}:event=${eventId}]`;
 	const hint =
 		"# Spawned from Matrix. Your tool calls and final reply are auto-surfaced via an external poller. Emit Markdown freely; it'll be rendered to Matrix HTML.";
-	return `${header}\n${hint}\n\n${text}`;
+	return sanitizeForJson(`${header}\n${hint}\n\n${text}`);
 }
 
 function replicasHeaders(env: Env): HeadersInit {

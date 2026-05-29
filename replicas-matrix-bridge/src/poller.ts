@@ -671,7 +671,22 @@ export class ReplicaPoller {
 				sawResult = true;
 				if (ev.payload?.is_error || ev.payload?.api_error_status) {
 					resultIsError = true;
-					resultErrorMsg = ev.payload.api_error_status ?? "agent error";
+					const raw = ev.payload.api_error_status ?? "agent error";
+					// Surface specific Anthropic 400s with a user-actionable
+					// recovery hint instead of dumping the raw API error
+					// string into the Failed frame. Lone-surrogate / invalid
+					// JSON is the common case when a tool returned mid-emoji
+					// or otherwise malformed text — only fix is a fresh
+					// session, since the bad bytes live in the conversation
+					// history forever.
+					if (/no low surrogate|no high surrogate|invalid_request_error.*JSON/i.test(raw)) {
+						resultErrorMsg =
+							"Conversation context has invalid characters (lone UTF-16 surrogate from a malformed tool output). Send a new message to start a fresh session — the broken bytes are baked into this session's history and can't be repaired in place.";
+					} else if (/string too long|max_tokens/i.test(raw)) {
+						resultErrorMsg = `Anthropic rejected the request (${raw.slice(0, 80)}…). Try a shorter prompt or /reset for a fresh session.`;
+					} else {
+						resultErrorMsg = raw;
+					}
 				} else if (ev.payload?.result) {
 					resultText = ev.payload.result;
 				}

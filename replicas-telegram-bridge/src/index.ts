@@ -39,10 +39,17 @@ interface TgMessage {
 	message_thread_id?: number;
 }
 
+interface TgCallbackQuery {
+	id: string;
+	from?: { id: number };
+	data?: string;
+}
+
 interface TgUpdate {
 	update_id: number;
 	message?: TgMessage;
 	edited_message?: TgMessage;
+	callback_query?: TgCallbackQuery;
 }
 
 interface ReplicaCreateResponse {
@@ -86,17 +93,49 @@ export default {
 			return new Response("bad json", { status: 400 });
 		}
 
+		if (update.callback_query) {
+			ctx.waitUntil(handleCallback(update.callback_query, env));
+			return new Response("ok");
+		}
+
 		const msg = update.message ?? update.edited_message;
-		if (!msg) return new Response("ok"); // join/leave/reaction-only updates etc.
+		if (!msg) return new Response("ok");
 
 		const text = (msg.text ?? msg.caption ?? "").trim();
 		if (!text) return new Response("ok");
 
-		// Handle on a background task so Telegram doesn't retry on slow Replicas calls.
 		ctx.waitUntil(handleMessage(msg, text, env));
 		return new Response("ok");
 	},
 };
+
+async function handleCallback(
+	cb: { id: string; data?: string; from?: { id: number } },
+	env: Env,
+): Promise<void> {
+	const data = cb.data ?? "";
+	if (data.startsWith("c:")) {
+		const replicaId = data.slice(2);
+		try {
+			const stub = env.WATCHER.get(env.WATCHER.idFromName(replicaId));
+			await stub.fetch("https://watcher/cancel", { method: "POST" });
+		} catch {}
+		await ackCallback(env, cb.id, "Cancelling…");
+		return;
+	}
+	await ackCallback(env, cb.id);
+}
+
+async function ackCallback(env: Env, id: string, text?: string): Promise<void> {
+	const params = new URLSearchParams();
+	params.set("callback_query_id", id);
+	if (text) params.set("text", text);
+	await fetch(`${env.TG_API_BASE}/bot${env.TG_TOKEN}/answerCallbackQuery`, {
+		method: "POST",
+		headers: { "Content-Type": "application/x-www-form-urlencoded" },
+		body: params.toString(),
+	}).catch(() => {});
+}
 
 export async function handleMessage(msg: TgMessage, text: string, env: Env): Promise<void> {
 	const key = routingKey(msg.chat.id, msg.message_thread_id);

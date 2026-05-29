@@ -90,6 +90,64 @@ export default {
 			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));
 			return stub.fetch("https://vault/upload-otks", { method: "POST", body: '{"count":50}' });
 		}
+		if (req.method === "GET" && url.pathname === "/debug/kv-conflicts") {
+			// Walk all `room:` mappings in KV and surface any case where
+			// the same replicaId is mapped to multiple rooms. Cross-room
+			// contamination of the watcher state would result from such a
+			// collision — Jaden's "many chats saying the same thing" is
+			// exactly the symptom. Today empirically zero collisions; the
+			// endpoint is the standing detector.
+			const list = await env.MAP.list({ prefix: "room:" });
+			const byReplica: Record<string, string[]> = {};
+			for (const k of list.keys) {
+				const val = await env.MAP.get(k.name);
+				if (!val) continue;
+				(byReplica[val] = byReplica[val] ?? []).push(k.name);
+			}
+			const conflicts = Object.fromEntries(
+				Object.entries(byReplica).filter(([, rooms]) => rooms.length > 1),
+			);
+			return Response.json({
+				totalRooms: list.keys.length,
+				totalReplicas: Object.keys(byReplica).length,
+				conflicts,
+				conflictCount: Object.keys(conflicts).length,
+			});
+		}
+
+		if (req.method === "GET" && url.pathname.startsWith("/debug/verify-room/")) {
+			// Per-room delivery audit. Pulls the watcher's stored
+			// `statusEventId` + `replyEventId` and checks they're both
+			// present in the room's recent timeline. Used to triage
+			// reports of "I asked the bot and never got a reply" —
+			// surfaces whether the bridge thinks it sent something the
+			// room doesn't actually have.
+			const roomId = decodeURIComponent(url.pathname.slice("/debug/verify-room/".length));
+			if (!roomId) return new Response("missing room id", { status: 400 });
+			const replicaId = await env.MAP.get(`room:${roomId}`);
+			if (!replicaId) return Response.json({ ok: false, error: "no KV mapping for room" });
+			const stub = env.WATCHER.get(env.WATCHER.idFromName(replicaId));
+			const dbg = await stub.fetch("https://watcher/debug").then((r) => r.json() as Promise<{ state?: Record<string, unknown> }>);
+			const state = dbg.state ?? {};
+			const statusEventId = state.statusEventId as string | undefined;
+			const replyEventId = state.replyEventId as string | undefined;
+			const present = async (eid: string): Promise<boolean> => {
+				const r = await fetch(
+					`${env.MATRIX_HOMESERVER}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/event/${encodeURIComponent(eid)}`,
+					{ headers: { Authorization: `Bearer ${env.MATRIX_ACCESS_TOKEN}` } },
+				);
+				return r.ok;
+			};
+			return Response.json({
+				roomId,
+				replicaId,
+				statusEventId: statusEventId ?? null,
+				statusEventDelivered: statusEventId ? await present(statusEventId) : null,
+				replyEventId: replyEventId ?? null,
+				replyEventDelivered: replyEventId ? await present(replyEventId) : null,
+			});
+		}
+
 		if (req.method === "GET" && url.pathname === "/debug/vault/lookup") {
 			const roomId = url.searchParams.get("room") ?? "";
 			const sessionId = url.searchParams.get("session") ?? "";

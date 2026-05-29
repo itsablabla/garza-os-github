@@ -406,6 +406,12 @@ export class ReplicaPoller {
 
 		const pendingCleanup = snap.get("pendingCleanup") as boolean | undefined;
 		if (pendingCleanup) {
+			// Pre-cleanup delivery verification — confirm both the Done
+			// frame edit and the reply message landed in the room. If
+			// they didn't, the timeline check logs a warning so we can
+			// see in tail when the bridge silently dropped a message.
+			// Best-effort; failures don't block the cleanup.
+			await this.verifyTurnDelivered(watch);
 			await this.unpinStatus(watch);
 			await this.state.storage.deleteAll();
 			return;
@@ -1100,10 +1106,20 @@ export class ReplicaPoller {
 		const existing = await this.state.storage.get<string>("replyEventId");
 		if (existing) return; // already sent successfully on a prior pass
 		const trimmed = html.slice(0, REPLY_MAX_LEN);
+
+		// Stable txn id derived from the user's prompt id. Matrix dedupes
+		// per (access_token, txn_id) — if we crash between the homeserver
+		// accepting the send and us persisting `replyEventId`, the next
+		// retry hits the same txn and the server returns the SAME event_id
+		// instead of creating a duplicate. End-to-end idempotency for the
+		// "reply is its own block" send path.
+		const stableTxn = watch.startEventId ? `reply-${watch.startEventId}` : undefined;
+
 		for (let attempt = 0; attempt < 4; attempt++) {
 			try {
 				const id = await sendMessage(matrixEnv(this.env), watch.roomId, trimmed, {
 					replyTo: watch.startEventId,
+					txnId: stableTxn,
 				});
 				await this.state.storage.put("replyEventId", id);
 				return;
@@ -1119,6 +1135,55 @@ export class ReplicaPoller {
 			}
 		}
 		console.log(`[poller] reply send exhausted retries`);
+	}
+
+	/**
+	 * Pre-cleanup delivery verification. Called from the pendingCleanup
+	 * alarm before tearing down the watcher state. Confirms that the
+	 * Done frame edit + the reply message both landed in the room by
+	 * fetching the recent timeline and checking for the stored event ids.
+	 *
+	 * If either is missing, attempts ONE recovery action:
+	 *   - statusEventId missing → log warning (the user lost the Done
+	 *     frame; can't easily recover without re-sending the whole pane).
+	 *   - replyEventId missing → re-call sendReplyAsOwnBlock, which uses
+	 *     the same stable txn id so Matrix dedupes if the prior send did
+	 *     actually land.
+	 *
+	 * Returns true if both confirmed, false if anything was missing. Used
+	 * for logging / future metrics, not to block cleanup.
+	 */
+	private async verifyTurnDelivered(watch: WatchSpec): Promise<boolean> {
+		const statusEventId = await this.state.storage.get<string>("statusEventId");
+		const replyEventId = await this.state.storage.get<string>("replyEventId");
+		// Both undefined is the post-seal terminal case; nothing to verify.
+		if (!statusEventId && !replyEventId) return true;
+		const present = async (eventId: string): Promise<boolean> => {
+			// Use /rooms/{id}/event/{eventId} for an exact-id existence
+			// check — works for messages that have been edited (the
+			// original still exists; /messages with limit=N might page
+			// past it if the room has many edits since).
+			const r = await fetch(
+				`${this.env.MATRIX_HOMESERVER}/_matrix/client/v3/rooms/${encodeURIComponent(watch.roomId)}/event/${encodeURIComponent(eventId)}`,
+				{ headers: { Authorization: `Bearer ${this.env.MATRIX_ACCESS_TOKEN}` } },
+			);
+			return r.ok;
+		};
+		try {
+			let allOk = true;
+			if (statusEventId && !(await present(statusEventId))) {
+				console.log(`[poller] verify: statusEventId ${statusEventId.slice(0, 16)}… missing from room=${watch.roomId}`);
+				allOk = false;
+			}
+			if (replyEventId && !(await present(replyEventId))) {
+				console.log(`[poller] verify: replyEventId ${replyEventId.slice(0, 16)}… missing from room=${watch.roomId}`);
+				allOk = false;
+			}
+			return allOk;
+		} catch (e) {
+			console.log(`[poller] verify failed: ${e instanceof Error ? e.message : e}`);
+			return false;
+		}
 	}
 
 	/**

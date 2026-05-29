@@ -316,11 +316,19 @@ export class ReplicaPoller {
 
 		if (!resultText && sawResult && pendingAssistantText) resultText = pendingAssistantText;
 
-		// If we're about to send a final markdown reply that mirrors the last
-		// 💬 narration we pushed, drop the narration. Without this, the Done
-		// frame shows the response in italic narration AND the reply lands as
-		// a separate markdown bubble underneath — duplicate content.
-		if (sawResult && !resultIsError && resultText && lastTextNarrationIdx !== null) {
+		// If we're about to send a final markdown reply AND the rolling log
+		// already has other lines (tool-call lines from earlier in the turn),
+		// drop the trailing 💬 narration — otherwise the Done frame would
+		// duplicate the response (once truncated as italic narration, once in
+		// full as the markdown reply below). When there are NO other lines
+		// (text-only turn) keep the narration so the Done frame isn't empty.
+		if (
+			sawResult &&
+			!resultIsError &&
+			resultText &&
+			lastTextNarrationIdx !== null &&
+			lines.length > 1
+		) {
 			lines.splice(lastTextNarrationIdx, 1);
 		}
 

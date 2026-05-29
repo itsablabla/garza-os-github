@@ -3,6 +3,147 @@
 **Date:** 2026-05-29
 **Why:** Jaden asked for a deep-research pass on how *open ACP / AI Telegram bots* surface live status. The bridges already work; this is to find any pattern we should borrow vs. confirm we're aligned with the field.
 
+## Detailed Deep-Dive (2026-05-29, second follow-up)
+
+Read every relevant TG plugin file in [Open-ACP/OpenACP](https://github.com/Open-ACP/OpenACP) end-to-end after Jaden asked to go deeper. This section documents the actual implementation mechanics — race-conditions, dedup tricks, state machines — that the prior summary missed. Each subsection cites concrete files + line ranges.
+
+### 1. ThinkingIndicator state machine ([`activity.ts:33-147`](https://github.com/Open-ACP/OpenACP/blob/main/src/plugins/telegram/activity.ts#L33-L147))
+
+```
+                      show()                  dismiss()/finalize…()
+   [idle, no msg]  ────────────►  [showing]  ─────────────────────►  [dismissed, msg stays in chat]
+                                       │  ▲
+                              every 15s│  │ refresh timer rearms
+                                       ▼  │
+                                "💭 Still thinking... (Ns)"
+                                       │
+                            elapsed ≥ 3min: stopRefreshTimer
+```
+
+Concrete details that matter:
+
+- **`sending` + `dismissed` flags both checked inside the sendQueue continuation.** Lines 67-73: after `await sendQueue.enqueue(...)` resolves, re-checks `this.dismissed` because the agent may have started streaming text during the queue wait. If dismissed, the message stays in chat (no delete call to save API cost) but `msgId` is never captured.
+- **Refresh timer is internal, not driven by alarms.** `setInterval(..., 15_000)` runs in-process; doesn't survive worker restart. Workers reset = thinking indicator goes stale until next event. Acceptable because they run a long-lived Node process, not a CF Worker.
+- **3-minute auto-stop is enforced by the refresh callback itself** (line 118: `if (Date.now() - this.showTime >= THINKING_MAX_MS) { stopRefreshTimer; return }`). No separate timeout. If thinking runs >3 min, the message just stops updating at the last "Still thinking... (180s)" and that text remains forever.
+- **`finalizeWithViewerLink(url)` is the "high mode" exit.** When the tunnel service is configured, the agent's full chain-of-thought is stored to a web viewer; the indicator gets edited to `💭 Thinking...      <a href="...">View thinking</a>`. This is the OpenACP equivalent of our `<blockquote expandable>` collapse — but as a separate hosted page, not inline expansion.
+
+### 2. ToolCard ([`activity.ts:159-294`](https://github.com/Open-ACP/OpenACP/blob/main/src/plugins/telegram/activity.ts#L159-L294))
+
+The most complex piece. Renders a SINGLE Telegram message representing the live state of N tool calls — header `<b>📋 Tools (M/N)</b>` then completed-tools-first, then plan section, then running-tools.
+
+Key implementation details:
+
+- **`flushPromise` is a Promise chain.** Every `_sendOrEdit` is chained via `.then(() => this._sendOrEdit(...))`. Serializes ALL card edits — no two card edits run concurrently, period. Snapshots flow through the chain in order even when emitted faster than Telegram can accept them.
+- **Snapshot dedup at line 236**: `if (this.msgId && fullText === this.lastSentText) return`. Cheap text equality check before any API call. Stops re-edits when the render didn't actually change.
+- **Overflow strip for >4096 chars** (lines 222-233): if the rendered card exceeds Telegram's per-message limit, the spec list is mapped with `outputContent: null` and re-rendered. Drops the inline tool-output previews while keeping the tool-call headers + status. Only the FIRST chunk gets this treatment.
+- **Overflow chunks recycled as edits, not new sends each render** (lines 261-279): chunks 1..N go into separate Telegram messages tracked in `overflowMsgIds[]`. Subsequent renders that produce the same chunk count edit those messages in place. If chunk count DECREASES, stale messages are deleted with `deleteMessage`.
+- **`aborted` flag for destroy()**: if `destroy()` runs while a flush is in flight (e.g., session cancelled), the next `_sendOrEdit` checks `this.aborted` and bails out without making the API call.
+
+### 3. ActivityTracker — the orchestrator ([`activity.ts:309-490`](https://github.com/Open-ACP/OpenACP/blob/main/src/plugins/telegram/activity.ts#L309-L490))
+
+Owns the ThinkingIndicator + current ToolCard + (importantly) the **previous** ToolCard.
+
+```
+                   onNewPrompt()                                   onTextStart() / onThought()
+   [idle]  ──────────────────────────►  [new turn]  ───────────────────────────────────────►  ...
+              ↓                                       ↓
+       previousToolCard ← undefined           sealToolCardIfNeeded():
+       toolStateMap ← clear()                   previousToolCard ← toolCard
+       toolCard ← new ToolCard                  toolStateMap ← new ToolStateMap()
+                                                toolCard ← new ToolCard
+                                                                ↓
+                                                onToolUpdate() arrives for an OLD tool id:
+                                                    if previousToolStateMap.get(id): route THERE
+                                                    else: route to current
+```
+
+Two patterns we should pay attention to:
+
+- **The seal-and-keep pattern.** `sealToolCardIfNeeded()` finalizes the current card, moves it to `previousToolCard`, and opens a fresh card. The previous card is NOT deleted — it stays in chat as historical record AND its `previousToolStateMap` is kept around so that late-arriving `onToolUpdate` events for tools that started before the seal still update the right (old) card. Line 429-436 explicitly handles this out-of-order case.
+- **The clear-on-new-prompt pattern.** `onNewPrompt` resets `previousToolCard = undefined` AND clears the `toolStateMap`. So a new prompt FULLY isolates from prior cards — even an out-of-order update arriving for an ancient tool id won't accidentally edit a 3-minute-old card. The boundary between turns is hard; the boundary between phases within a turn (seal) is soft.
+
+For us: we don't have this distinction because our rolling log is a flat `lines[]` array. An out-of-order Replicas event (rare, but possible — tool_result arriving after another tool_use has already started) just appends to lines and renders as a sequence. We don't actually mutate prior tool-call renderings. Different design tradeoff — ours is simpler but loses the "this specific tool's status updated" semantics.
+
+### 4. MessageDraft — streaming the final text ([`streaming.ts:22-289`](https://github.com/Open-ACP/OpenACP/blob/main/src/plugins/telegram/streaming.ts#L22-L289))
+
+This is where the agent's actual reply text accumulates. Separate from ToolCard. Three subtle patterns worth borrowing:
+
+- **Snapshot the buffer BEFORE the first await.** Lines 66-69, with an explicit comment: "append() can be called synchronously while we're awaiting sendQueue, so this.buffer may change." `const snapshot = this.buffer;` captures the value going OUT, so `lastSentBuffer` accurately tracks what landed. Our equivalent would be `text = render(s)` then comparing `text` to `lastRendered` — we DO this correctly today.
+- **Do NOT reset `messageId` on transient errors.** Lines 135-139, explicit comment: "transient errors would cause the next flush to sendMessage the full buffer as a NEW message, creating duplicates." Same lesson we learned the hard way in our Matrix bridge with the fall-through-to-sendMessage fragmentation bug. They got there preemptively.
+- **`displayTruncated` flag for finalize correctness.** Lines 102-106 and 165-167: if `flush()` had to truncate because intermediate HTML > 4096, set the flag. `finalize()` checks: if buffer == lastSentBuffer AND !displayTruncated, skip (already sent). But if displayTruncated, MUST resend the full buffer even though it equals last. Subtle dedup-vs-correctness conflict that's easy to get wrong.
+- **"Enqueue all chunks in a tight synchronous loop"** for split messages (lines 204-247). The comment is explicit: "prevents concurrent handlers (usage, session_end) from slipping their messages between our chunks in the sendQueue." We don't have this risk because we don't have a global sendQueue — each replica's DO is its own ordering domain. But noted for the design space.
+- **HTML→plaintext fallback on each chunk.** Lines 229-244: if HTML send fails (malformed tags after a chunk boundary), enqueues a plain-text fallback with `chunkMd.slice(0, 4096)` and no `parse_mode`. Acceptable degradation. We don't do this — we just log and move on. Worth considering for the Matrix `markdownToHtml` path if we ever get a malformed-HTML edge case.
+
+### 5. formatting.ts — render shapes ([`formatting.ts:213-248`](https://github.com/Open-ACP/OpenACP/blob/main/src/plugins/telegram/formatting.ts#L213-L248))
+
+The actual visual shape of a ToolCard:
+
+```
+📋 Tools (3/5) ✅
+                                                ← `headerCheck = allComplete ? " ✅" : ""`
+🔧 Bash · "npm test"
+   📄 View file
+                                                ← completed-tools section, in order
+
+── Plan: 2/4 ──
+✅ 1. Locate the failing test
+✅ 2. Add a fixture
+🔄 3. Re-run tests
+⬜ 4. Update changelog
+────                                            ← plan only renders if planEntries.length > 0
+
+🔧 Write · src/foo.ts
+                                                ← running-tools section
+```
+
+Visual conventions worth noting:
+
+- **Completed tools render BEFORE plan, running tools render AFTER.** The plan acts as a divider; the user reads top-down as "what's done → what's next → what's happening right now."
+- **Plan status icons match ACP status names exactly**: `⬜ pending`, `🔄 in_progress`, `✅ completed`. We use `◦ ► ✓` instead. Either works; theirs is closer to ACP semantics.
+- **Tool kind icons resolved per-tool via `resolveToolIcon(tool)`**, not by Phase. So a `Read` tool always shows 📖 even in a "Running" phase. Ours uses Phase emoji on the header and tool emoji on the line — the same info shows up in two places, which we get away with because Telegram lines are short.
+- **High-verbosity mode adds `Input:` + `Output:` `<pre>` blocks** under each tool with 3800-char truncation. We don't have a verbosity knob — tool inputs/outputs always show in the truncated `↳ output` lines. The OpenACP "low/medium/high" knob is per-session config and would be a clean addition for us if we want it.
+
+### 6. Forum-topic isolation ([`topic-manager.ts:47-158`](https://github.com/Open-ACP/OpenACP/blob/main/src/plugins/telegram/topic-manager.ts#L47-L158) + [`topics.ts`](https://github.com/Open-ACP/OpenACP/blob/main/src/plugins/telegram/topics.ts))
+
+Each session lives in its own Telegram forum topic inside a group. Two system topics are reserved (Notifications + Assistant). Session topics include the session record's metadata: `topicId`, `sessionId`, `agentName`, `lastActiveAt`.
+
+Operational features we don't have:
+
+- **`/cleanup`-style bulk delete** for finished/error/cancelled sessions. Cancels active sessions first (to prevent orphaned processes), then deletes the topic via the platform adapter, then removes the session record.
+- **Active-session deletion requires `confirmed: true`.** If a user tries to delete an active session topic, the call returns `needsConfirmation: true` and a confirmation prompt is sent. Two-step delete.
+- **System topics guarded by ID match**. `isSystemTopic(record)` returns true if the topicId matches the notification or assistant topic IDs. They can't be deleted by any user-facing command. We don't need this because we don't have system topics — but the pattern of "reserved IDs that user commands can never touch" is generally useful.
+
+For our Matrix bridge: Beeper groups support topics too (`org.matrix.msc3440` thread spec). We could give each replica its own thread inside a group room. That'd require Replicas-side support for parallel sessions per room, which we don't have today (per-room → single replica via the KV `room:${roomId}` mapping). Larger refactor than a tunable.
+
+### 7. Permission flow ([`permissions.ts:26-125`](https://github.com/Open-ACP/OpenACP/blob/main/src/plugins/telegram/permissions.ts#L26-L125))
+
+When the agent requests permission to run a sensitive tool, OpenACP surfaces it as an inline keyboard message in the session topic, AND fires a notification in the Notifications topic with a deep link back. Key bits:
+
+- **Callback data shape**: `p:<callbackKey>:<optionId>` where `callbackKey` is `nanoid(8)`. Telegram caps callback_data at 64 bytes; long requestId/sessionId can't fit, so a short key maps to in-memory pending state.
+- **Pending state is in-memory only.** `this.pending = new Map()`. NOT persistent — a worker restart loses the mapping and all pending permission requests become orphaned (`'❌ Expired'` response). For us this would be a CF Worker DO restart, which is rare but happens; OpenACP's Node process is similarly fragile here.
+- **Two-channel surfacing.** The actual permission buttons go in the session topic; a separate notification with a deep link (`buildDeepLink(chatId, threadId, msg.message_id)`) goes to the Notifications topic. Lets the user see "I have permissions to approve" without scrolling through every session topic.
+- **On response, the buttons are removed via `editMessageReplyMarkup({ reply_markup: undefined })`.** Locks out double-clicks; the message itself stays. Standard Telegram pattern.
+
+We can't replicate this end-to-end because Replicas doesn't expose permission requests in `/history` — the agent runs autonomously and applies allow/deny based on the workspace policy. But the SHAPE of "request → buttons → callback → resolve → strip buttons" is the right pattern if Replicas ever surfaces it.
+
+### 8. Concrete patterns worth lifting (prioritized)
+
+The Update section listed three borrowable patterns. Now with the deeper look, here's an updated list with effort estimates:
+
+| Pattern | Effort | Reason |
+|---|---|---|
+| **3-minute thinking auto-stop** ("Still working…" header transition at 60s, hard auto-stop at 180s) | ~10 lines, render-side | Cheap UX win; long-thinking turns currently look frozen |
+| **`displayTruncated` flag for finalize correctness** | ~5 lines, poller-side | Defensive fix for an edge case (intermediate truncation forces full-resend) |
+| **`previousToolStateMap` for out-of-order tool updates** | ~30 lines, poller-side | Marginal — Replicas /history is mostly in-order; only matters if we add live tool-streaming via SSE |
+| **Tool-kind icon resolution per spec** | ~20 lines, render-side | Cosmetic; we already do this via `formatToolUseLine` switch |
+| **HTML→plaintext fallback on edit failure** | ~15 lines, matrix.ts | Defense against malformed-HTML edge case; low probability |
+| **Per-session forum topics** | Large refactor — needs Replicas-side multi-session-per-room | Not a tune |
+| **Permission button flow** | Needs Replicas-side surface | Not actionable today |
+
+The first two are clean ~30-line follow-up PRs if we want them. Everything else is either a rewrite or blocked on upstream.
+
+---
+
 ## Update (2026-05-29, follow-up)
 
 Jaden pointed me at **[Open-ACP/OpenACP](https://github.com/Open-ACP/OpenACP)** — a self-hosted bridge that connects Claude Code / Codex / Gemini / Cursor / 28+ AI coding agents to Telegram, Discord, and Slack via ACP. Direct fellow-traveler in our exact space, built in TypeScript, 8MB repo. Their Telegram status design is fundamentally different from ours and worth understanding.

@@ -407,12 +407,17 @@ export class ReplicaPoller {
 
 		if (!resultText && sawResult && pendingAssistantText) resultText = pendingAssistantText;
 
-		// When a final markdown reply is coming, always drop the trailing 💬
-		// narration. The Done frame stays tidy (just header + subtitle for
-		// text-only turns, plus tool-call log for multi-step ones) and the
-		// full reply lands as the next message — no duplicated body.
-		if (sawResult && !resultIsError && resultText && lastTextNarrationIdx !== null) {
-			lines.splice(lastTextNarrationIdx, 1);
+		// When a final markdown reply is coming, drop ANY trailing 💬
+		// narration lines that have accumulated across ticks — the full
+		// markdown reply that lands as the next message carries the same
+		// content in full. Using lastTextNarrationIdx alone misses this
+		// when the text and claude-result arrive in different ticks (the
+		// index is per-tick and resets to null on each alarm).
+		void lastTextNarrationIdx;
+		if (sawResult && !resultIsError && resultText) {
+			while (lines.length > 0 && lines[lines.length - 1]!.startsWith("💬 ")) {
+				lines.pop();
+			}
 		}
 
 		// Batched write of all mutated fields + lastSeenCount.
@@ -469,10 +474,24 @@ export class ReplicaPoller {
 		}
 
 		// Drain pendingFinalReply on every tick — first attempt may have lost
-		// the message, retries until matrix returns an event_id.
+		// the message, retries until Telegram accepts. This branch is
+		// SELF-TERMINATING: once the drain succeeds we transition straight
+		// to the 30s cleanup alarm; while it's still failing we retry every
+		// 2s. We must NOT fall through to the active-poll ticker below
+		// because that would (a) keep re-editing the Done frame with an
+		// ever-increasing elapsed time and (b) reset the alarm to 180ms,
+		// canceling the proper cleanup transition entirely.
 		const pendingReply = await this.state.storage.get<string>("pendingFinalReply");
 		if (pendingReply) {
 			await this.flushFinalReply(watch);
+			const stillPending = await this.state.storage.get<string>("pendingFinalReply");
+			if (stillPending) {
+				await this.state.storage.setAlarm(Date.now() + 2_000);
+			} else {
+				await this.state.storage.put("pendingCleanup", true);
+				await this.state.storage.setAlarm(Date.now() + 30_000);
+			}
+			return;
 		}
 
 		// Render conditions:
@@ -604,19 +623,17 @@ export class ReplicaPoller {
 		}
 	}
 
-	// Drain pendingFinalReply: retry on every alarm tick until Telegram accepts.
-	// Optimistically clear the slot BEFORE sending so a second concurrent
-	// flush (e.g. a render interleaving with the alarm) can't double-send.
-	// On failure we restore the slot so the next alarm tick retries.
+	// Drain pendingFinalReply: retry on every alarm tick until Telegram
+	// accepts. Delete-after-success is crash-safe — if the worker dies
+	// mid-send the slot survives and the next alarm tick retries.
 	private async flushFinalReply(watch: WatchSpec): Promise<void> {
 		const pending = await this.state.storage.get<string>("pendingFinalReply");
 		if (!pending) return;
-		await this.state.storage.delete("pendingFinalReply");
 		const ok = await this.sendReply(watch, pending);
 		if (ok) {
+			await this.state.storage.delete("pendingFinalReply");
 			console.log(`[poller] pendingFinalReply flushed (len=${pending.length})`);
 		} else {
-			await this.state.storage.put("pendingFinalReply", pending);
 			console.log(`[poller] pendingFinalReply retry will fire next alarm`);
 		}
 	}

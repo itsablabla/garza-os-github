@@ -1,0 +1,3 @@
+host/node_modules/
+host/.wrangler/
+host/dist/

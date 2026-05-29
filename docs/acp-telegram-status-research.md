@@ -3,6 +3,58 @@
 **Date:** 2026-05-29
 **Why:** Jaden asked for a deep-research pass on how *open ACP / AI Telegram bots* surface live status. The bridges already work; this is to find any pattern we should borrow vs. confirm we're aligned with the field.
 
+## Update (2026-05-29, follow-up)
+
+Jaden pointed me at **[Open-ACP/OpenACP](https://github.com/Open-ACP/OpenACP)** — a self-hosted bridge that connects Claude Code / Codex / Gemini / Cursor / 28+ AI coding agents to Telegram, Discord, and Slack via ACP. Direct fellow-traveler in our exact space, built in TypeScript, 8MB repo. Their Telegram status design is fundamentally different from ours and worth understanding.
+
+**The big design split:**
+
+| Concern | Our bridges | OpenACP |
+|---|---|---|
+| Status surface | **One message, edited in place** through phases | **Many separate messages** — ThinkingIndicator, then a ToolCard per tool, then final text |
+| Tool calls | Pushed as lines into the single status frame's `lines[]` | Each tool gets its own Telegram message ("ToolCard") that updates as the tool progresses |
+| "Thinking" preview | Italic line under the phase header in the status frame | Separate "💭 Thinking..." message; dismissed when first tool runs |
+| Text streaming cadence | `EDIT_MIN_INTERVAL_MS = 2000` (Matrix) / inheriting from Matrix on TG | `FLUSH_INTERVAL = 5000ms` debounced; only the FINAL text buffer is sent |
+| Thinking ticker | `TICKER_REFRESH_MS = 4000` | `THINKING_REFRESH_MS = 15000` with a `THINKING_MAX_MS = 3 * 60 * 1000` auto-stop |
+| Markdown | `markdownToTelegramHtml` only on the final reply; inline `<code>` for tool args | Always HTML; the comment in their `renderer.ts:12-14` explicitly says HTML handles diffs + code fences "more reliably" than plain text |
+| Cancellation / sealing | Phase flip to DONE/FAILED; rolling log preserved | `sealToolCardIfNeeded()` "preserves tool results as historical record" when text starts streaming, then opens a fresh card |
+| 429 handling | Per-room `rateLimitedUntil`, terminal renders retry inline up to 4× | Not visible in `streaming.ts` — they delegate to a `sendQueue` abstraction that "presumably manages rate-limiting transparently" |
+| Topic isolation | None — DM or single room per replica | **Each session gets its own Telegram forum topic** (in groups with topics enabled) |
+
+**Concrete numbers worth borrowing:**
+
+- **5s debounce on text streaming** (vs. our ~2s edit floor). They're MUCH more conservative than us, which makes sense because they're sending separate cards not edits.
+- **15s thinking-ticker** (vs. our 4s). For an agent that thinks for 30s+, refreshing every 4s is probably 4x too aggressive.
+- **3-minute thinking-indicator hard cap** — auto-dismiss to avoid stale "thinking..." messages. We don't have this; our long-running turns just keep showing the same phase header. Worth adding a "Still working..." re-render at a longer cadence.
+
+**Concrete patterns worth adopting:**
+
+1. **The `sealToolCard` concept.** When text streaming starts after a tool, OpenACP "seals" the tool card — finalizes it, then opens a fresh state for whatever comes next. For us this maps to "don't keep mutating the tool line in `lines[]` once we've moved on; lock its rendered output." Subtle but real for any tool whose `tool_result` arrives late.
+2. **Hard-cap on thinking duration.** Our agent can sit in `PLANNING · step 0 · 1:23` forever if the model is genuinely thinking; UX-wise this looks frozen. OpenACP auto-dismisses after 3 minutes. Ours could re-render the header to add `Still planning…` or similar at the 1-min mark.
+3. **HTML-only by default** — they don't even try plain text. We agree on this; our `formatToolUseLine` already wraps everything in `<code>` HTML tags.
+4. **Forum topics per session** — Telegram-specific. Each session = its own thread inside the group. We don't do this. Worth considering for the Telegram bridge if users want multiple concurrent agents in one group.
+
+**Where we beat them:**
+
+- **Phase emoji on the header** (🤔/📋/✏️/🔧/🧪/🚢/🎉/❌) — they don't have this; their phases are implicit in the message-type split.
+- **Reaction emojis on the user prompt** (👀 → 🎉/😭). Not visible in their code. Direct ack-on-receipt + ack-on-completion is a UX win they're missing.
+- **`!model` per-room command.** Their model switching looks coarser (session-level config, not per-room).
+
+**Where they beat us:**
+
+- **Tool cards as scrollable history.** When a turn has 10 tools, our rolling log truncates the older ones to a `<blockquote expandable>`. They keep each as a permanent Telegram message — the user can scroll back to see "what exactly did Read on file X return?" days later. Lossless history.
+- **Permission buttons inline.** They surface `🔐 permission` requests with allow/deny buttons; the agent blocks until the user clicks. We can't do this because Replicas doesn't expose permission requests in `/history`.
+- **Topics-per-session isolation.**
+
+**The 40-line PR I proposed in the prior section is still right** — bumping group cadence, adding a char-delta gate, adding self-tuning backoff are still valid wins regardless of whether we adopt OpenACP's many-messages model. The structural split (one edited message vs. many separate cards) is a deeper architectural choice that's mostly a matter of taste + which UX you optimize for.
+
+**Quick links:**
+- Repo: [Open-ACP/OpenACP](https://github.com/Open-ACP/OpenACP)
+- Telegram plugin: [`src/plugins/telegram/`](https://github.com/Open-ACP/OpenACP/tree/main/src/plugins/telegram)
+- The three files that matter: `streaming.ts` (5s debounce + finalize), `renderer.ts` (HTML composition per message type), `activity.ts` (ThinkingIndicator + ToolCard + ActivityTracker — 545 lines, the core of their UX)
+
+---
+
 ## TL;DR
 
 - **ACP (Agent Client Protocol)** — Zed's open standard for editor↔agent streaming — uses a typed `SessionUpdate` discriminated union pushed via `session/update` notifications. Five status-relevant variants: `content`, `tool_call`, `plan`, `available_commands`, `current_mode`. Tool calls carry a four-state status (`pending|in_progress|completed|failed`). Plans replace-not-delta. Permission requests are blocking RPCs. Cancellation must still drain pending updates.

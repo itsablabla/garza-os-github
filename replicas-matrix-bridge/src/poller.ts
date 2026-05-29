@@ -218,6 +218,7 @@ export class ReplicaPoller {
 			"filesTouched",
 			"lastEventAt",
 			"phaseBeforeRateLimit",
+			"activeToolStartedAt",
 		]);
 		const baseline = await baselineP;
 		const seed: Record<string, unknown> = {
@@ -405,6 +406,13 @@ export class ReplicaPoller {
 		let phaseBeforeRateLimit =
 			(await this.state.storage.get<Phase>("phaseBeforeRateLimit")) ?? null;
 
+		// Start time of the most recent unmatched tool_use. Used by the
+		// renderer to append a live `· Ns` tail to the latest 🔄 line,
+		// so a long-running tool keeps visibly timing on every tick.
+		// Cleared when no 🔄 lines remain after a tool_result.
+		let activeToolStartedAt =
+			(await this.state.storage.get<number>("activeToolStartedAt")) ?? undefined;
+
 		let sawResult = false;
 		let resultText: string | null = null;
 		let resultIsError = false;
@@ -479,6 +487,12 @@ export class ReplicaPoller {
 							const diff = computeDiffStats(toolName, block.input);
 							if (diff) toolDiffById[block.id] = diff;
 						}
+
+						// Live-elapsed tail on the in-flight 🔄 line. Renderer
+						// reads this to append ` · Ns` to the last 🔄 line on
+						// every tick, so a long-running tool keeps visibly
+						// timing instead of looking frozen.
+						activeToolStartedAt = Date.now();
 
 						// #9 track touched files for the footer
 						const fp =
@@ -627,6 +641,15 @@ export class ReplicaPoller {
 							delete toolStartedAt[tuId];
 							delete toolNameById[tuId];
 							delete toolDiffById[tuId];
+
+							// If no 🔄 lines remain, drop activeToolStartedAt
+							// so the renderer stops appending the live `· Ns`
+							// tail. If another 🔄 is still in-flight (parallel
+							// tools), leave activeToolStartedAt pointing at the
+							// most recent — renderer always targets the LAST
+							// 🔄 line.
+							const stillRunning = lines.some((l) => l.startsWith("🔄 "));
+							if (!stillRunning) activeToolStartedAt = undefined;
 						}
 
 						const raw = block.content;
@@ -681,6 +704,8 @@ export class ReplicaPoller {
 		};
 		if (phaseBeforeRateLimit !== null) writes.phaseBeforeRateLimit = phaseBeforeRateLimit;
 		else await this.state.storage.delete("phaseBeforeRateLimit");
+		if (activeToolStartedAt !== undefined) writes.activeToolStartedAt = activeToolStartedAt;
+		else await this.state.storage.delete("activeToolStartedAt");
 		if (plan) writes.plan = plan;
 		if (systemInfo) writes.systemInfo = systemInfo;
 		if (contextUsage) writes.contextUsage = contextUsage;
@@ -756,19 +781,14 @@ export class ReplicaPoller {
 		const lastEditAt = (await this.state.storage.get<number>("lastEditAt")) ?? 0;
 		const tickerStale = Date.now() - lastEditAt >= TICKER_REFRESH_MS;
 
-		// #1 — hard 3-min ticker stop. When the phase has stalled in
-		// STARTING/PLANNING without making a single tool call, stop
-		// forcing re-renders past 180s. The "Still planning…" header
-		// freezes at whatever elapsed-time count it was on; the ticker
-		// resumes the instant a real event lands (appended === true).
-		const elapsedFromStart = Date.now() - startedAt;
-		const inLongThinking =
-			(phase === "STARTING" || phase === "PLANNING") &&
-			stepCount === 0 &&
-			elapsedFromStart > 3 * 60_000;
-		const allowTicker = !inLongThinking;
-
-		if (appended || currentAction || (tickerStale && allowTicker)) {
+		// Always render on the ticker cadence regardless of phase. The
+		// prior 3-min hard-stop for long-thinking phases froze the pane
+		// at "Still planning · 3:00" and gave the user no signal the
+		// agent was still working. The render layer carries a heartbeat
+		// spinner that rotates per tick so the pane visibly moves on
+		// every render — that's the contract we're trying to honor:
+		// the status pane must never look like nothing is happening.
+		if (appended || currentAction || tickerStale) {
 			await this.renderAndSend();
 		}
 		await this.state.storage.setAlarm(Date.now() + ACTIVE_POLL_INTERVAL_MS);
@@ -804,6 +824,7 @@ export class ReplicaPoller {
 			"filesTouched",
 			"lastEventAt",
 			"sessionTotals",
+			"activeToolStartedAt",
 		])) as Map<string, unknown>;
 		const watch = snap.get("watch") as WatchSpec | undefined;
 		if (!watch) return null;
@@ -822,6 +843,7 @@ export class ReplicaPoller {
 			filesTouched: (snap.get("filesTouched") as string[] | undefined) ?? undefined,
 			lastEventAt: (snap.get("lastEventAt") as number | undefined) ?? undefined,
 			sessionTotals: (snap.get("sessionTotals") as import("./render").SessionTotals | undefined) ?? undefined,
+			activeToolStartedAt: (snap.get("activeToolStartedAt") as number | undefined) ?? undefined,
 		};
 	}
 

@@ -140,6 +140,11 @@ export interface StatusState {
 	// surfaced once turnCount > 1, so a single-turn conversation looks
 	// the same as before.
 	sessionTotals?: SessionTotals;
+	// Start timestamp of the most recently issued tool_use that has not
+	// yet matched a tool_result. When set, the active 🔄 tool line in
+	// the rolling log carries a live `· Ns` elapsed counter that ticks
+	// on every render — so a long-running tool never looks frozen.
+	activeToolStartedAt?: number;
 	terminal?: {
 		kind: "done" | "failed";
 		durationSec: number;
@@ -366,11 +371,27 @@ export function renderToolsHeader(lines: string[]): string {
 
 // Per OpenACP: a long thinking phase that never makes a tool call
 // looks frozen at "Planning · 0s" forever. After 60s, prefix the label
-// with "Still …"; ticker is allowed to keep running until 180s, after
-// which the poller stops forcing re-renders (handled in the alarm
-// loop). The "Still …" label survives past 180s — it's just the
-// elapsed-time counter that freezes.
+// with "Still …". The ticker now keeps running indefinitely (the prior
+// 3-min hard-stop was removed) so the elapsed counter keeps advancing
+// and the heartbeat spinner keeps rotating — the user always sees the
+// pane move.
 const THINKING_STILL_THRESHOLD_MS = 60_000;
+
+// Braille spinner frames. The renderer picks a frame from the current
+// elapsed time so the dot advances by one position on every render
+// regardless of whether anything else in the state changed. That's the
+// "always moving" guarantee: even when phase, step count, and lines
+// are static, the heartbeat ticks once per render. Frame interval is
+// the poller's TICKER_REFRESH_MS (~4s), so it reads as a steady pulse.
+const HEARTBEAT_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+// Render the spinner frame for the current tick. Frame index is derived
+// from the elapsed seconds so successive ticks always land on different
+// frames (no risk of two consecutive renders showing the same frame).
+export function heartbeatFrame(elapsedSec: number): string {
+	const idx = ((elapsedSec | 0) % HEARTBEAT_FRAMES.length + HEARTBEAT_FRAMES.length) % HEARTBEAT_FRAMES.length;
+	return HEARTBEAT_FRAMES[idx];
+}
 
 function renderActive(state: StatusState): string {
 	const elapsedMs = Math.max(0, Date.now() - state.startedAt);
@@ -388,8 +409,13 @@ function renderActive(state: StatusState): string {
 		? `Still ${PHASE_LABEL[state.phase].toLowerCase()}…`
 		: PHASE_LABEL[state.phase];
 
+	// Heartbeat dot prefixes the phase emoji and rotates one frame per
+	// render. Even if no other field in the header changes, the dot
+	// advances — so the pane is always visibly moving. Terminal frames
+	// (Done / Failed) drop the heartbeat (the rolling log replaces it).
+	const heartbeat = heartbeatFrame(elapsedSec);
 	const headerParts: string[] = [
-		`${PHASE_EMOJI[state.phase]} <b>${labelText}</b>`,
+		`${heartbeat} ${PHASE_EMOJI[state.phase]} <b>${labelText}</b>`,
 	];
 	if (state.stepCount > 0) headerParts.push(`step ${state.stepCount}`);
 	headerParts.push(formatDuration(elapsedSec));
@@ -429,13 +455,34 @@ function renderActive(state: StatusState): string {
 	const toolsHeader = renderToolsHeader(state.lines);
 	if (toolsHeader) blocks.push(toolsHeader);
 
+	// Live-elapsed tail on the latest in-flight tool. Find the LAST 🔄
+	// line in the array and append ` · Ns` from activeToolStartedAt so
+	// the user can see a long-running tool actively timing instead of
+	// staring at a static "🔄 e2b__run_code" forever. Only mutates a
+	// shallow clone — the array in state stays as-is.
+	let lines = state.lines;
+	if (state.activeToolStartedAt !== undefined && state.lines.length > 0) {
+		const toolElapsed = Math.max(0, Math.round((Date.now() - state.activeToolStartedAt) / 1000));
+		let lastRunning = -1;
+		for (let i = state.lines.length - 1; i >= 0; i--) {
+			if (state.lines[i].startsWith("🔄 ")) {
+				lastRunning = i;
+				break;
+			}
+		}
+		if (lastRunning >= 0) {
+			lines = state.lines.slice();
+			lines[lastRunning] = `${lines[lastRunning]} <i>· ${formatDuration(toolElapsed)}</i>`;
+		}
+	}
+
 	// Stream every tool call through unmodified. Tool calls are the point —
 	// the user is watching the agent work, line by line in real time. The
 	// older overflow goes into <blockquote expandable> ("Show more") so the
 	// active window stays readable on long turns.
-	if (state.lines.length > 0) {
-		const recent = state.lines.slice(-RECENT_LINES_VISIBLE);
-		const older = state.lines.slice(0, Math.max(0, state.lines.length - RECENT_LINES_VISIBLE));
+	if (lines.length > 0) {
+		const recent = lines.slice(-RECENT_LINES_VISIBLE);
+		const older = lines.slice(0, Math.max(0, lines.length - RECENT_LINES_VISIBLE));
 		const trimmedOlder = older.slice(-Math.max(0, MAX_TOTAL_LINES - recent.length));
 		const dropped = older.length - trimmedOlder.length;
 

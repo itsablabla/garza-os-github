@@ -104,7 +104,9 @@ describe("render — active state", () => {
 			userText: "deploy the api",
 			lines: [],
 		});
-		expect(out).toBe("🤔 <b>Starting</b> · 0s");
+		// Heartbeat dot prefixes the phase emoji and rotates each tick.
+		// For elapsedSec=0 the frame is the first Braille spinner glyph.
+		expect(out).toBe("⠋ 🤔 <b>Starting</b> · 0s");
 		// Crucially does NOT repeat the user prompt — the message is a reply
 		// to it in Telegram, so the prompt is already visible above.
 		expect(out).not.toContain("deploy the api");
@@ -149,6 +151,55 @@ describe("render — active state", () => {
 		expect(out).toContain("<blockquote expandable>");
 		expect(out).toContain("step 11"); // most recent visible
 		expect(out).toContain("step 7"); // first of the recent window (12 - 4 = 8)
+	});
+
+	it("heartbeat dot advances by one frame per elapsed second", () => {
+		const out0 = render({
+			startedAt: Date.now(),
+			stepCount: 0,
+			phase: "STARTING",
+			lines: [],
+		});
+		const out1 = render({
+			startedAt: Date.now() - 1000,
+			stepCount: 0,
+			phase: "STARTING",
+			lines: [],
+		});
+		// Two consecutive seconds must produce different heartbeat frames
+		// so the user always sees the pane moving even when nothing else
+		// changes.
+		const frame0 = out0.split(" ")[0];
+		const frame1 = out1.split(" ")[0];
+		expect(frame0).not.toBe(frame1);
+	});
+
+	it("active 🔄 tool line gets a live elapsed tail from activeToolStartedAt", () => {
+		const out = render({
+			startedAt: Date.now() - 30_000,
+			stepCount: 1,
+			phase: "RUNNING",
+			lines: ["🔄 🧰 <code>e2b__run_code</code>"],
+			activeToolStartedAt: Date.now() - 7_500,
+		});
+		expect(out).toContain("🔄 🧰 <code>e2b__run_code</code>");
+		// Renderer appends ` · Ns` to the last 🔄 line so a slow tool
+		// visibly times instead of looking frozen.
+		expect(out).toMatch(/🔄 🧰 <code>e2b__run_code<\/code> <i>· [78]s<\/i>/);
+	});
+
+	it("activeToolStartedAt does NOT mutate completed ✅ lines", () => {
+		const out = render({
+			startedAt: Date.now() - 30_000,
+			stepCount: 2,
+			phase: "RUNNING",
+			lines: ["✅ 🧰 <code>e2b__run_code</code> <i>(1.2s)</i>", "🔄 🧰 <code>e2b__run_code</code>"],
+			activeToolStartedAt: Date.now() - 3_000,
+		});
+		// First line untouched
+		expect(out).toContain("✅ 🧰 <code>e2b__run_code</code> <i>(1.2s)</i>");
+		// Second (last 🔄) line gets the tail
+		expect(out).toMatch(/🔄 🧰 <code>e2b__run_code<\/code> <i>· [23]s<\/i>/);
 	});
 });
 

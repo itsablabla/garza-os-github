@@ -212,6 +212,32 @@ describe("render — active state", () => {
 		expect(out).not.toContain("step 2 (sealed)");
 	});
 
+	it("steered prompt (💬 You: …) opens a fresh segment with no prior tools visible", () => {
+		// Simulates the post-steer state: prior segment had 4 tool calls
+		// (now sealed in their own message), the new segment opens with
+		// the user's steered prompt and is empty of tools.
+		const lines = [
+			"🔧 <code>prior step 0</code>",
+			"🔧 <code>prior step 1</code>",
+			"🔧 <code>prior step 2</code>",
+			"🔧 <code>prior step 3</code>",
+			"💬 <i>You: actually look at the other repo instead</i>",
+		];
+		const out = render({
+			startedAt: Date.now() - 30_000,
+			stepCount: 4,
+			phase: "RUNNING",
+			lines,
+			segmentStartLine: 4, // the 💬 line is the first line of the new segment
+		});
+		expect(out).toContain("💬 <i>You: actually look at the other repo instead</i>");
+		// Prior segment's tool lines must NOT appear in the new active frame.
+		expect(out).not.toContain("prior step 0");
+		expect(out).not.toContain("prior step 3");
+		// Tools header should reflect THIS segment (0 tools so far), not 4.
+		expect(out).not.toContain("Tools (4");
+	});
+
 	it("sealing flag appends a '▶️ continues' tail", () => {
 		const out = render({
 			startedAt: Date.now() - 10_000,

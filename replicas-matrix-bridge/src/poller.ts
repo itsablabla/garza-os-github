@@ -218,6 +218,20 @@ export class ReplicaPoller {
 			!isPostTerminal
 		) {
 			const lines = (await this.state.storage.get<string[]>("lines")) ?? [];
+			let segmentStartLine =
+				(await this.state.storage.get<number>("segmentStartLine")) ?? 0;
+			// Seal-on-steer: when the current segment has *any* content,
+			// seal it (final-edit with "▶️ continues" tail) and start a
+			// new message that opens with the 💬 You: line. Each steered
+			// prompt is a clear narrative boundary, so always splitting on
+			// steer matches the "more calls = more blocks" intuition. If
+			// the current segment is empty (steered before any tool ran),
+			// just push the 💬 line into the existing segment — no seal.
+			if (SEGMENT_TOOL_CAP > 0 && lines.length > segmentStartLine) {
+				const priorState = await this.loadState();
+				if (priorState) await this.sealCurrentSegment(priorState);
+				segmentStartLine = lines.length;
+			}
 			if (body.userText) {
 				const escaped = body.userText
 					.replace(/&/g, "&amp;")
@@ -226,7 +240,12 @@ export class ReplicaPoller {
 					.slice(0, 200);
 				lines.push(`💬 <i>You: ${escaped}</i>`);
 			}
-			const steerWrites: Record<string, unknown> = { watch: body, lines, lastRendered: "" };
+			const steerWrites: Record<string, unknown> = {
+				watch: body,
+				lines,
+				lastRendered: "",
+				segmentStartLine,
+			};
 			// Re-point reactionEventId at the NEW prompt's 👀 so terminal
 			// places the final emoji on whatever message the user just sent
 			// (and redacts that 👀, not the prior phase emoji).

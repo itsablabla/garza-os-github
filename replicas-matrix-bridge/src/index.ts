@@ -90,6 +90,15 @@ export default {
 			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));
 			return stub.fetch("https://vault/upload-otks", { method: "POST", body: '{"count":50}' });
 		}
+		if (req.method === "GET" && url.pathname === "/debug/vault/lookup") {
+			const roomId = url.searchParams.get("room") ?? "";
+			const sessionId = url.searchParams.get("session") ?? "";
+			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));
+			return stub.fetch(
+				`https://vault/lookup?room=${encodeURIComponent(roomId)}&session=${encodeURIComponent(sessionId)}`,
+			);
+		}
+
 		if (req.method === "GET" && url.pathname === "/debug/vault/keystore") {
 			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));
 			return stub.fetch("https://vault/keystore");
@@ -120,6 +129,46 @@ export default {
 			if (!replicaId) return new Response("missing replica id", { status: 400 });
 			const stub = env.WATCHER.get(env.WATCHER.idFromName(replicaId));
 			return stub.fetch("https://watcher/debug", { method: "GET" });
+		}
+
+		if (req.method === "POST" && url.pathname.startsWith("/admin/recover-room/")) {
+			// One-shot E2EE recovery: pulls the recent timeline for a room,
+			// finds encrypted events whose Megolm session key isn't in the
+			// vault, queues each into pending-decrypt, and emits a single
+			// m.room_key_request per unknown session. Use when messages
+			// were sent BEFORE the auto-recovery code shipped — the
+			// listener won't re-process them on /sync (past the since
+			// token), so we need an out-of-band pull.
+			const roomId = decodeURIComponent(url.pathname.slice("/admin/recover-room/".length));
+			if (!roomId) return new Response("missing room id", { status: 400 });
+			const encoded = encodeURIComponent(roomId);
+			const limitParam = url.searchParams.get("limit") ?? "20";
+			const r = await fetch(
+				`${env.MATRIX_HOMESERVER}/_matrix/client/v3/rooms/${encoded}/messages?dir=b&limit=${limitParam}`,
+				{ headers: { Authorization: `Bearer ${env.MATRIX_ACCESS_TOKEN}` } },
+			);
+			if (!r.ok) return new Response(`upstream ${r.status}`, { status: 502 });
+			const body = (await r.json()) as {
+				chunk?: {
+					type?: string;
+					event_id?: string;
+					sender?: string;
+					origin_server_ts?: number;
+					content?: { algorithm?: string; ciphertext?: string; session_id?: string; sender_key?: string };
+				}[];
+			};
+			// Hand the encrypted events to the listener via a new helper
+			// endpoint so its DO state (queue + dedupe + key-request) is
+			// the source of truth. The listener handles queuing and
+			// sending the m.room_key_request.
+			const stub = env.LISTENER.get(env.LISTENER.idFromName("global"));
+			const resp = await stub.fetch("https://listener/recover-room", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ roomId, events: body.chunk ?? [] }),
+			});
+			const txt = await resp.text();
+			return new Response(txt, { status: resp.status, headers: { "Content-Type": "application/json" } });
 		}
 
 		if (req.method === "POST" && url.pathname.startsWith("/admin/join-room/")) {

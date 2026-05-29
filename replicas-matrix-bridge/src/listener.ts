@@ -57,6 +57,87 @@ export class MatrixListener {
 			await this.state.storage.deleteAlarm();
 			return new Response("ok");
 		}
+		if (req.method === "POST" && url.pathname === "/recover-room") {
+			// Out-of-band E2EE recovery: take a batch of encrypted events
+			// (pulled by the /admin endpoint via /rooms/{id}/messages) and
+			// run them through tryDecrypt. Events with unknown sessions
+			// queue + trigger a key-request via the normal path; events
+			// that decrypt are dispatched immediately if mention rules pass.
+			const body = (await req.json()) as {
+				roomId: string;
+				events: {
+					type?: string;
+					event_id?: string;
+					sender?: string;
+					origin_server_ts?: number;
+					content?: { algorithm?: string; ciphertext?: string; session_id?: string; sender_key?: string };
+				}[];
+			};
+			const megolmKeys = this.megolmKeys();
+			let queued = 0;
+			let dispatched = 0;
+			let skipped = 0;
+			let triedDecrypt = 0;
+			const sessionsRequested = new Set<string>();
+			for (const ev of body.events ?? []) {
+				if (ev.type !== "m.room.encrypted" || !ev.event_id || !ev.sender) {
+					skipped += 1;
+					continue;
+				}
+				const algorithm = ev.content?.algorithm;
+				const sessionId = ev.content?.session_id;
+				const ciphertext = ev.content?.ciphertext;
+				const senderKey = ev.content?.sender_key;
+				if (algorithm !== "m.megolm.v1.aes-sha2" || !sessionId || !ciphertext) {
+					skipped += 1;
+					continue;
+				}
+				triedDecrypt += 1;
+				const sessionKey = await this.findKey(body.roomId, sessionId, megolmKeys);
+				if (!sessionKey) {
+					// Queue + emit room_key_request (one per session)
+					await this.queuePendingDecrypt(body.roomId, sessionId, {
+						event_id: ev.event_id,
+						sender: ev.sender,
+						content: { ciphertext, sender_key: senderKey ?? "" },
+						origin_server_ts: ev.origin_server_ts ?? Date.now(),
+					});
+					if (!sessionsRequested.has(sessionId)) {
+						sessionsRequested.add(sessionId);
+						await this.maybeSendKeyRequest(body.roomId, sessionId, ev.sender, senderKey);
+					}
+					queued += 1;
+					continue;
+				}
+				try {
+					const { plaintext } = await decryptMegolm(sessionKey, ciphertext);
+					const inner = JSON.parse(plaintext) as { type?: string; content?: { msgtype?: string; body?: string } };
+					if (inner.type !== "m.room.message" || inner.content?.msgtype !== "m.text" || !inner.content.body) {
+						skipped += 1;
+						continue;
+					}
+					const synthetic = { content: ev.content as Record<string, unknown> };
+					const shouldDispatch = await this.shouldHandleMessage(body.roomId, synthetic);
+					if (!shouldDispatch) {
+						skipped += 1;
+						continue;
+					}
+					await this.dispatchMessage(body.roomId, ev.event_id, inner.content.body);
+					dispatched += 1;
+				} catch (e) {
+					console.log(`[recover-room] decrypt fail: ${e instanceof Error ? e.message : e}`);
+					skipped += 1;
+				}
+			}
+			return Response.json({
+				ok: true,
+				queued,
+				dispatched,
+				skipped,
+				triedDecrypt,
+				sessionsRequested: sessionsRequested.size,
+			});
+		}
 		if (req.method === "GET" && url.pathname === "/debug") {
 			const since = await this.state.storage.get<string>("since");
 			const alarmAt = await this.state.storage.getAlarm();

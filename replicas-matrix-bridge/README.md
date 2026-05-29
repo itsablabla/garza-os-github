@@ -91,6 +91,7 @@ and finally:
 ## Limitations
 
 - **Unencrypted rooms only**. Beeper enforces E2EE by default; Matrix's Olm/Megolm key handling doesn't fit on Cloudflare Workers. Either use a manually-unencrypted DM, or wait for v2 (hosted listener with `matrix-bot-sdk`).
+- **Self-bot mode supported**. If `MATRIX_USER_ID` is your own account (no dedicated bot user), the listener still works: it skips events whose `unsigned.transaction_id` is set (those echo the bot worker's own sends) instead of filtering by `sender`. Messages you type in Element/Beeper come back without `transaction_id` set and trigger normally.
 - **No inline keyboards**. Matrix has no equivalent; cancel is via `!cancel` reply.
 - **No `<details>`**. Older log entries go into a plain `<blockquote>` (the user scrolls), not the expandable caret we use in Telegram.
 

@@ -89,7 +89,13 @@ export class MatrixListener {
 			for (const ev of events) {
 				if (ev.type !== "m.room.message") continue;
 				if (!ev.event_id || !ev.sender) continue;
-				if (ev.sender === this.env.MATRIX_USER_ID) continue;
+				// Skip our own sends. We can't filter by `sender` because the
+				// bot account may be the same Matrix user the human types
+				// from (self-bot mode). Instead, /sync echoes back the
+				// transaction_id only to the access token that PUT the event,
+				// so its presence means "this came from us" regardless of who
+				// the sender field says it is.
+				if (ev.unsigned?.transaction_id) continue;
 
 				const content = ev.content ?? {};
 				const msgtype = content.msgtype as string | undefined;

@@ -256,6 +256,11 @@ export interface MatrixEvent {
 	room_id?: string;
 	content?: Record<string, unknown>;
 	origin_server_ts?: number;
+	// Matrix echoes the txn back on /sync only to the access token that sent
+	// the event. We use this (not `sender`) to skip the bot's own sends so
+	// self-bot mode works — same Matrix user typing in Element while the
+	// worker also holds a token for that user.
+	unsigned?: { transaction_id?: string };
 }
 
 export async function sync(

@@ -221,8 +221,11 @@ export function prefixWithRoutingHeader(msg: TgMessage, text: string): string {
 	const parts = [`chat_id=${msg.chat.id}`];
 	if (msg.message_thread_id !== undefined) parts.push(`thread_id=${msg.message_thread_id}`);
 	const header = `[tg:${parts.join(":")}]`;
-	const hint =
-		"# Spawned from Telegram. Your thinking, tool calls, and final reply are surfaced to the user automatically by an external poller (Durable Object) — just work the task normally and your final assistant message becomes the Telegram reply.";
+	const hint = [
+		"# Spawned from Telegram. Do NOT call tg-reply.sh, tg-status.sh, or tg-target-detect.sh — those legacy helpers were removed.",
+		"# An external poller (Durable Object) reads /v1/replica/{id}/history every ~800ms and projects your thinking, tool_use, and final assistant message straight to Telegram with HTML formatting (bold, code, fenced blocks, links all render).",
+		"# Just work the task normally. Emit Markdown freely in your final assistant text — it'll be converted to Telegram HTML before sending.",
+	].join("\n");
 	return `${header}\n${hint}\n\n${text}`;
 }
 

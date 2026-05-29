@@ -180,8 +180,16 @@ async function createReplica(
 		coding_agent: env.REPLICAS_AGENT_OVERRIDE || "claude",
 		model: roomModel || env.REPLICAS_MODEL_OVERRIDE || "claude-sonnet-4-6",
 		thinking_level: env.REPLICAS_THINKING_OVERRIDE || "medium",
+		// Bumped from 60→1440 (24h) on 2026-05-29 after observing that
+		// `Replica gone (404)` was the dominant Failed-turn class: 5 of 7
+		// terminal failures in a 2h sample window. Replicas were getting
+		// auto-deleted between user messages — typical pattern was a
+		// user sending a follow-up an hour after the prior Done, finding
+		// the replica already gone. Subscription-plan cost is fixed so
+		// holding replicas longer doesn't change the bill, just reduces
+		// the respawn-on-next-message friction.
 		lifecycle_policy: "delete_after_inactivity",
-		auto_stop_minutes: 60,
+		auto_stop_minutes: 1440,
 		metadata: { matrix_room_id: roomId, matrix_event_id: eventId },
 	};
 	const r = await fetch(`${env.REPLICAS_API_BASE}/replica`, {

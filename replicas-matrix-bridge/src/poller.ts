@@ -452,11 +452,50 @@ export class ReplicaPoller {
 		if (!r.ok) {
 			console.log(`[poller] /history ${r.status}`);
 			if (r.status === 404 || r.status === 410) {
-				// Pre-fix: deleteAll() ran silently, leaving the pane
-				// frozen mid-progress when the upstream replica vanished
-				// (TTL expiry, manual delete, internal error). Now we
-				// surface the upstream-gone state to the user so they
-				// know to resend instead of waiting forever.
+				// 404/410 = upstream replica deleted (TTL expiry / auto-stop
+				// + lifecycle / manual delete). Sweep observation today:
+				// this was 5/7 of the failed turns in a 2h sample — by far
+				// the dominant failure class. Used to land a Failed frame
+				// and require the user to send a second message to spawn
+				// fresh. Now we auto-respawn inline: flush the dead room:
+				// + model: KV, create a fresh replica with the SAME user
+				// text, and re-bootstrap the watcher pointing at the new
+				// replica id. The user sees a brief "respawning..." frame
+				// rather than Failed + a manual retry. If anything fails
+				// we fall back to the legacy Failed-and-give-up path.
+				const userText = watch.userText;
+				if (userText) {
+					try {
+						await this.env.MAP.delete(`room:${watch.roomId}`);
+						await this.env.MAP.delete(`model:${watch.roomId}`);
+						const newReplicaId = await this.respawnReplica(watch, userText);
+						if (newReplicaId) {
+							// Persist the new replicaId to KV with the same TTL.
+							const ttl = Math.max(60, parseInt(this.env.REPLICA_TTL_SECONDS, 10) || 604800);
+							await this.env.MAP.put(`room:${watch.roomId}`, newReplicaId, { expirationTtl: ttl });
+							// Re-point THIS watcher at the new replica id so the
+							// next /history poll succeeds against it. lastSeenCount
+							// resets to 0 so we project from scratch.
+							const newWatch: WatchSpec = { ...watch, replicaId: newReplicaId };
+							await this.state.storage.put({
+								watch: newWatch,
+								lastSeenCount: 0,
+								// Wipe per-turn projection state so the new
+								// replica's events render cleanly.
+								lines: [],
+								stepCount: 0,
+								phase: "STARTING",
+								startedAt: Date.now(),
+							});
+							await this.state.storage.setAlarm(Date.now() + ACTIVE_POLL_INTERVAL_MS);
+							console.log(`[poller] auto-respawn: ${watch.replicaId} → ${newReplicaId}`);
+							return;
+						}
+					} catch (e) {
+						console.log(`[poller] auto-respawn failed: ${e instanceof Error ? e.message : e}`);
+					}
+				}
+				// Fallback: legacy Failed-and-give-up path.
 				const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
 				await this.setTerminal(watch, {
 					kind: "failed",
@@ -1256,6 +1295,48 @@ export class ReplicaPoller {
 	 * Returns true if both confirmed, false if anything was missing. Used
 	 * for logging / future metrics, not to block cleanup.
 	 */
+	/**
+	 * Create a fresh Replicas-side replica with the same user text the
+	 * dead one had. Used by the alarmInner 404 auto-respawn path so a
+	 * user whose replica TTL expired between turns doesn't see a
+	 * Failed-then-retry pair.
+	 *
+	 * Mirrors the shape of dispatch.ts createReplica() — kept inline
+	 * here so the poller doesn't import dispatch (which would create a
+	 * circular reference). Cost-free duplication for a 30-line helper.
+	 */
+	private async respawnReplica(watch: WatchSpec, userText: string): Promise<string | null> {
+		const eventId = watch.startEventId ?? "auto-respawn";
+		const header = `[matrix:room=${watch.roomId}:event=${eventId}]`;
+		const hint =
+			"# Auto-respawned (prior replica was deleted). Continue from the user's most recent prompt.\n# Tool calls and final reply are auto-surfaced via an external poller.";
+		const sanitize = (s: string): string =>
+			s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
+		const body = {
+			name: `mx-respawn-${watch.roomId.replace(/[^a-z0-9]/gi, "").slice(0, 12)}-${Date.now()}`,
+			message: sanitize(`${header}\n${hint}\n\n${userText}`),
+			environment_id: this.env.REPLICAS_ENV_ID,
+			source: "matrix",
+			coding_agent: this.env.REPLICAS_AGENT_OVERRIDE || "claude",
+			model: this.env.REPLICAS_MODEL_OVERRIDE || "claude-sonnet-4-6",
+			thinking_level: this.env.REPLICAS_THINKING_OVERRIDE || "medium",
+			lifecycle_policy: "delete_after_inactivity",
+			auto_stop_minutes: 1440,
+			metadata: { matrix_room_id: watch.roomId, matrix_event_id: eventId, auto_respawn: true },
+		};
+		const r = await fetch(`${this.env.REPLICAS_API_BASE}/replica`, {
+			method: "POST",
+			headers: replicasHeaders(this.env),
+			body: JSON.stringify(body),
+		});
+		if (!r.ok) {
+			console.log(`[poller] respawn failed: HTTP ${r.status}`);
+			return null;
+		}
+		const json = (await r.json()) as { replica?: { id?: string }; id?: string };
+		return json.replica?.id ?? json.id ?? null;
+	}
+
 	private async verifyTurnDelivered(watch: WatchSpec): Promise<boolean> {
 		const statusEventId = await this.state.storage.get<string>("statusEventId");
 		const replyEventId = await this.state.storage.get<string>("replyEventId");

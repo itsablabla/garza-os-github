@@ -1,4 +1,5 @@
 import type { Env } from "./index";
+import { markdownToTelegramHtml } from "./markdown";
 
 interface WatchSpec {
 	replicaId: string;
@@ -222,16 +223,33 @@ export class ReplicaPoller {
 		while (body.length > 0) {
 			const piece = body.slice(0, REPLY_MAX_LEN);
 			body = body.slice(REPLY_MAX_LEN);
-			const params = new URLSearchParams();
-			params.set("chat_id", String(watch.chatId));
-			if (watch.threadId !== undefined) params.set("message_thread_id", String(watch.threadId));
-			params.set("text", piece);
-			const r = await this.tgCall("sendMessage", params);
-			const t = await r.text();
-			if (!t.includes('"ok":true')) {
-				console.log(`[poller] sendReply failed: ${t.slice(0, 200)}`);
-			}
+			await this.sendFormattedReplyChunk(watch, piece);
 			if (body.length > 0) await new Promise((res) => setTimeout(res, 1100));
+		}
+	}
+
+	private async sendFormattedReplyChunk(watch: WatchSpec, piece: string): Promise<void> {
+		const html = markdownToTelegramHtml(piece);
+		const params = new URLSearchParams();
+		params.set("chat_id", String(watch.chatId));
+		if (watch.threadId !== undefined) params.set("message_thread_id", String(watch.threadId));
+		params.set("text", html);
+		params.set("parse_mode", "HTML");
+		const r = await this.tgCall("sendMessage", params);
+		const t = await r.text();
+		if (t.includes('"ok":true')) return;
+
+		// Telegram rejected the entities (mismatched tags, bad chars, etc.) —
+		// fall back to plain text so the user still gets the message.
+		console.log(`[poller] sendReply HTML failed, retry plain: ${t.slice(0, 200)}`);
+		const fallback = new URLSearchParams();
+		fallback.set("chat_id", String(watch.chatId));
+		if (watch.threadId !== undefined) fallback.set("message_thread_id", String(watch.threadId));
+		fallback.set("text", piece);
+		const r2 = await this.tgCall("sendMessage", fallback);
+		const t2 = await r2.text();
+		if (!t2.includes('"ok":true')) {
+			console.log(`[poller] sendReply plain also failed: ${t2.slice(0, 200)}`);
 		}
 	}
 

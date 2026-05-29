@@ -2,14 +2,18 @@ import type { Env } from "./index";
 import { markdownToTelegramHtml as markdownToHtml } from "./markdown";
 import { editMessage, react, redact, sendMessage, typing, unpin, pin } from "./matrix";
 import {
+	escapeHtml,
 	formatToolUseLine,
 	parsePlan,
 	phaseFor,
 	render,
 	thinkingLine,
+	type ContextUsage,
 	type Phase,
 	type PlanState,
+	type ResultMeta,
 	type StatusState,
+	type SystemInfo,
 } from "./render";
 
 /**
@@ -49,6 +53,9 @@ interface ContentBlock {
 	thinking?: string;
 	name?: string;
 	input?: Record<string, unknown>;
+	// tool_result blocks only — the raw output (string) or list of inner blocks.
+	content?: string | Array<{ type?: string; text?: string }>;
+	is_error?: boolean;
 }
 
 interface HistoryResponse {
@@ -248,6 +255,9 @@ export class ReplicaPoller {
 		let stepCount = (snap.get("stepCount") as number | undefined) ?? 0;
 		let currentAction = (snap.get("currentAction") as string | undefined) ?? "";
 		let plan = (snap.get("plan") as PlanState | undefined) ?? null;
+		let systemInfo = (await this.state.storage.get<import("./render").SystemInfo>("systemInfo")) ?? null;
+		let contextUsage = (await this.state.storage.get<import("./render").ContextUsage>("contextUsage")) ?? null;
+		let resultMeta = (await this.state.storage.get<import("./render").ResultMeta>("resultMeta")) ?? null;
 
 		let sawResult = false;
 		let resultText: string | null = null;
@@ -311,6 +321,69 @@ export class ReplicaPoller {
 				} else if (ev.payload?.result) {
 					resultText = ev.payload.result;
 				}
+				// Capture cost + token meta for the Done header.
+				const usage = (ev.payload as { usage?: { input_tokens?: number; output_tokens?: number } })?.usage ?? {};
+				const cost = (ev.payload as { total_cost_usd?: number })?.total_cost_usd ?? 0;
+				if (cost > 0 || usage.input_tokens || usage.output_tokens) {
+					resultMeta = {
+						costUsd: cost,
+						inputTokens: usage.input_tokens ?? 0,
+						outputTokens: usage.output_tokens ?? 0,
+					};
+					appended = true;
+				}
+			} else if (t === "claude-system") {
+				// One-time projection of the system info Replicas hands us at
+				// the start of a turn — model, MCP server statuses, tool count.
+				// Pinned into the dim subtitle line under the phase header.
+				const payload = ev.payload as {
+					model?: string;
+					mcp_servers?: Array<{ name?: string; status?: string }>;
+					tools?: unknown[];
+				};
+				const mcps = payload.mcp_servers ?? [];
+				const active = mcps.filter((s) => s?.status === "connected" || s?.status === "ready").length;
+				systemInfo = {
+					model: payload.model ?? "claude",
+					mcpCount: mcps.length,
+					mcpActive: active,
+					toolCount: Array.isArray(payload.tools) ? payload.tools.length : 0,
+				};
+				appended = true;
+			} else if (t === "context-usage") {
+				const payload = ev.payload as { totalTokens?: number; maxTokens?: number; percentage?: number };
+				if (payload.totalTokens || payload.maxTokens) {
+					contextUsage = {
+						totalTokens: payload.totalTokens ?? 0,
+						maxTokens: payload.maxTokens ?? 0,
+						pct: payload.percentage ?? 0,
+					};
+					appended = true;
+				}
+			} else if (t === "claude-user") {
+				// tool_result blocks come back inside claude-user — extract +
+				// project as a dimmed `↳ preview` line under the last tool call
+				// so the reader sees both the call and its outcome.
+				for (const block of content) {
+					if (block.type === "tool_result") {
+						const raw = block.content;
+						let preview = "";
+						if (typeof raw === "string") preview = raw;
+						else if (Array.isArray(raw)) {
+							for (const sub of raw) {
+								if (sub && sub.type === "text" && typeof sub.text === "string") preview += sub.text;
+							}
+						}
+						preview = preview.replace(/\s+/g, " ").trim();
+						if (preview.length > 0) {
+							const trimmed = preview.length > 100 ? preview.slice(0, 99) + "…" : preview;
+							const isErr = block.is_error === true;
+							const icon = isErr ? "✗" : "↳";
+							lines.push(`<i>${icon} ${escapeHtml(trimmed)}</i>`);
+							appended = true;
+						}
+					}
+				}
 			}
 		}
 
@@ -340,6 +413,9 @@ export class ReplicaPoller {
 			lastSeenCount: events.length,
 		};
 		if (plan) writes.plan = plan;
+		if (systemInfo) writes.systemInfo = systemInfo;
+		if (contextUsage) writes.contextUsage = contextUsage;
+		if (resultMeta) writes.resultMeta = resultMeta;
 		await this.state.storage.put(writes);
 
 		console.log(
@@ -400,6 +476,9 @@ export class ReplicaPoller {
 			"currentAction",
 			"lines",
 			"plan",
+			"systemInfo",
+			"contextUsage",
+			"resultMeta",
 		])) as Map<string, unknown>;
 		const watch = snap.get("watch") as WatchSpec | undefined;
 		if (!watch) return null;
@@ -412,6 +491,9 @@ export class ReplicaPoller {
 			currentAction: currentAction || undefined,
 			lines: (snap.get("lines") as string[] | undefined) ?? [],
 			plan: (snap.get("plan") as PlanState | undefined) ?? undefined,
+			systemInfo: (snap.get("systemInfo") as SystemInfo | undefined) ?? undefined,
+			contextUsage: (snap.get("contextUsage") as ContextUsage | undefined) ?? undefined,
+			resultMeta: (snap.get("resultMeta") as ResultMeta | undefined) ?? undefined,
 		};
 	}
 

@@ -75,6 +75,25 @@ export interface PlanState {
 	items: PlanItem[];
 }
 
+export interface SystemInfo {
+	model: string;
+	mcpCount: number;
+	mcpActive: number;
+	toolCount: number;
+}
+
+export interface ResultMeta {
+	costUsd: number;
+	inputTokens: number;
+	outputTokens: number;
+}
+
+export interface ContextUsage {
+	pct: number;
+	totalTokens: number;
+	maxTokens: number;
+}
+
 export interface StatusState {
 	userText?: string;
 	startedAt: number;
@@ -83,6 +102,9 @@ export interface StatusState {
 	currentAction?: string;
 	lines: string[];
 	plan?: PlanState;
+	systemInfo?: SystemInfo;
+	resultMeta?: ResultMeta;
+	contextUsage?: ContextUsage;
 	terminal?: { kind: "done" | "failed"; durationSec: number; errorMsg?: string };
 }
 
@@ -211,6 +233,9 @@ function renderActive(state: StatusState): string {
 	headerParts.push(formatDuration(elapsedSec));
 	const blocks: string[] = [headerParts.join(" · ")];
 
+	const subtitle = renderSubtitle(state);
+	if (subtitle) blocks.push(subtitle);
+
 	if (state.currentAction && state.currentAction.startsWith("<i>")) {
 		blocks.push(state.currentAction);
 	}
@@ -251,9 +276,19 @@ function renderTerminal(state: StatusState): string {
 	const isDone = state.terminal!.kind === "done";
 	const headerEmoji = isDone ? PHASE_EMOJI.DONE : PHASE_EMOJI.FAILED;
 	const headerLabel = isDone ? PHASE_LABEL.DONE : PHASE_LABEL.FAILED;
-	const headerLine = `${headerEmoji} <b>${headerLabel}</b> · ${duration}`;
+	const headerParts: string[] = [`${headerEmoji} <b>${headerLabel}</b>`, duration];
+	if (state.resultMeta) {
+		const m = state.resultMeta;
+		if (m.costUsd > 0) headerParts.push(`$${m.costUsd.toFixed(4)}`);
+		const t = (m.inputTokens ?? 0) + (m.outputTokens ?? 0);
+		if (t > 0) headerParts.push(`${formatTokens(t)} tok`);
+	}
+	const headerLine = headerParts.join(" · ");
 
 	const blocks: string[] = [headerLine];
+
+	const subtitle = renderSubtitle(state);
+	if (subtitle) blocks.push(subtitle);
 
 	if (!isDone && state.terminal!.errorMsg) {
 		blocks.push(`<blockquote>${escapeHtml(state.terminal!.errorMsg.slice(0, 400))}</blockquote>`);
@@ -290,6 +325,34 @@ export function escapeHtml(s: string): string {
 export function truncate(s: string, n: number): string {
 	if (s.length <= n) return s;
 	return s.slice(0, n - 1) + "…";
+}
+
+function renderSubtitle(state: StatusState): string {
+	const parts: string[] = [];
+	if (state.systemInfo) {
+		const s = state.systemInfo;
+		parts.push(prettyModel(s.model));
+		if (s.mcpCount > 0) parts.push(`${s.mcpActive}/${s.mcpCount} MCP`);
+		if (s.toolCount > 0) parts.push(`${s.toolCount} tools`);
+	}
+	if (state.contextUsage && state.contextUsage.pct > 0) {
+		parts.push(`ctx ${Math.round(state.contextUsage.pct)}%`);
+	}
+	if (parts.length === 0) return "";
+	return `<i>${escapeHtml(parts.join(" · "))}</i>`;
+}
+
+function prettyModel(m: string): string {
+	const match = m.match(/^claude-(sonnet|opus|haiku)-(\d+)-(\d+)/i);
+	if (!match) return m;
+	const [, family, major, minor] = match;
+	return `${family![0]!.toUpperCase() + family!.slice(1)} ${major}.${minor}`;
+}
+
+export function formatTokens(n: number): string {
+	if (n < 1000) return String(n);
+	if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
+	return `${Math.round(n / 1000)}k`;
 }
 
 export function formatDuration(seconds: number): string {

@@ -1,6 +1,8 @@
 import { handleMatrixMessage } from "./dispatch";
 import type { Env } from "./index";
 import { joinRoom, sync, type SyncResponse } from "./matrix";
+import { decryptMegolm, findSessionKey } from "./megolm";
+import { parseKeyExport, type MegolmSessionKey } from "./megolm-keys";
 
 /**
  * MatrixListener — single global Durable Object that holds the bot's
@@ -86,8 +88,8 @@ export class MatrixListener {
 		const joined = resp.rooms?.join ?? {};
 		for (const [roomId, room] of Object.entries(joined)) {
 			const events = room.timeline?.events ?? [];
+			const megolmKeys = this.megolmKeys();
 			for (const ev of events) {
-				if (ev.type !== "m.room.message") continue;
 				if (!ev.event_id || !ev.sender) continue;
 				// Skip our own sends. We can't filter by `sender` because the
 				// bot account may be the same Matrix user the human types
@@ -97,9 +99,22 @@ export class MatrixListener {
 				// the sender field says it is.
 				if (ev.unsigned?.transaction_id) continue;
 
-				const content = ev.content ?? {};
-				const msgtype = content.msgtype as string | undefined;
-				const body = content.body as string | undefined;
+				let msgtype: string | undefined;
+				let body: string | undefined;
+
+				if (ev.type === "m.room.message") {
+					const content = ev.content ?? {};
+					msgtype = content.msgtype as string | undefined;
+					body = content.body as string | undefined;
+				} else if (ev.type === "m.room.encrypted") {
+					// E2EE event — try to decrypt using imported Megolm keys.
+					const decrypted = await this.tryDecrypt(roomId, ev, megolmKeys);
+					if (!decrypted) continue;
+					msgtype = decrypted.msgtype;
+					body = decrypted.body;
+				} else {
+					continue;
+				}
 				if (msgtype !== "m.text" || !body) continue;
 
 				// Reply-`!cancel` opcode — short-circuit before spawning.
@@ -110,6 +125,48 @@ export class MatrixListener {
 
 				await this.dispatchMessage(roomId, ev.event_id, body);
 			}
+		}
+	}
+
+	private cachedKeys: MegolmSessionKey[] | undefined;
+
+	private megolmKeys(): MegolmSessionKey[] {
+		if (this.cachedKeys === undefined) {
+			this.cachedKeys = parseKeyExport(this.env.MATRIX_MEGOLM_KEYS_JSON);
+			console.log(`[listener] loaded ${this.cachedKeys.length} Megolm session keys`);
+		}
+		return this.cachedKeys;
+	}
+
+	private async tryDecrypt(
+		roomId: string,
+		ev: { content?: Record<string, unknown>; event_id?: string },
+		keys: MegolmSessionKey[],
+	): Promise<{ msgtype: string; body: string } | undefined> {
+		const content = ev.content ?? {};
+		if (content.algorithm !== "m.megolm.v1.aes-sha2") return undefined;
+		const sessionId = content.session_id as string | undefined;
+		const ciphertext = content.ciphertext as string | undefined;
+		if (!sessionId || !ciphertext) return undefined;
+		const sessionKey = findSessionKey(keys, roomId, sessionId);
+		if (!sessionKey) {
+			console.log(`[listener] no key for room=${roomId} session=${sessionId.slice(0, 16)}…`);
+			return undefined;
+		}
+		try {
+			const { plaintext } = await decryptMegolm(sessionKey, ciphertext);
+			const inner = JSON.parse(plaintext) as {
+				type?: string;
+				content?: { msgtype?: string; body?: string };
+			};
+			if (inner.type !== "m.room.message") return undefined;
+			return {
+				msgtype: inner.content?.msgtype ?? "",
+				body: inner.content?.body ?? "",
+			};
+		} catch (e) {
+			console.log(`[listener] decrypt fail ev=${ev.event_id}: ${e instanceof Error ? e.message : e}`);
+			return undefined;
 		}
 	}
 

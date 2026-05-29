@@ -15,6 +15,10 @@ export interface Env {
 	REPLICAS_AGENT_OVERRIDE?: string;
 	REPLICAS_MODEL_OVERRIDE?: string;
 	REPLICAS_THINKING_OVERRIDE?: string;
+	// JSON array of Megolm session keys (Element key-export format, decrypted
+	// out of band and stashed here). Used by the listener to decrypt
+	// m.room.encrypted events whose session_id we hold.
+	MATRIX_MEGOLM_KEYS_JSON?: string;
 }
 
 export { ReplicaPoller } from "./poller";

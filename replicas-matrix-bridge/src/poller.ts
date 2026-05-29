@@ -110,7 +110,24 @@ export class ReplicaPoller {
 			// send fresh.
 			const body = (await req.json()) as { ackReactionId?: string; initialStatusEventId?: string };
 			const writes: Record<string, unknown> = {};
-			if (body.ackReactionId) writes.reactionEventId = body.ackReactionId;
+
+			// Strict "one emoji at a time" enforcement: if the watcher has
+			// already reached terminal (swap fired with no prior, leaving the
+			// 👀 unredacted), this incoming 👀 would stack against the 🎉/😭
+			// that's already on the prompt. Immediately redact instead of
+			// storing — there's no future swap to clean it up.
+			if (body.ackReactionId) {
+				const phase = await this.state.storage.get<Phase>("phase");
+				const watch = await this.state.storage.get<WatchSpec>("watch");
+				const isPostTerminal = phase === "DONE" || phase === "FAILED";
+				if (isPostTerminal && watch?.roomId) {
+					redact(matrixEnv(this.env), watch.roomId, body.ackReactionId, "post-terminal stale ack")
+						.catch((e) => console.log(`[poller] /ack post-terminal redact failed: ${e instanceof Error ? e.message : e}`));
+				} else {
+					writes.reactionEventId = body.ackReactionId;
+				}
+			}
+
 			if (body.initialStatusEventId) {
 				const existing = await this.state.storage.get<string>("statusEventId");
 				// Only adopt if we haven't already started editing a frame.
@@ -184,7 +201,20 @@ export class ReplicaPoller {
 			// Re-point reactionEventId at the NEW prompt's 👀 so terminal
 			// places the final emoji on whatever message the user just sent
 			// (and redacts that 👀, not the prior phase emoji).
-			if (body.ackReactionId) steerWrites.reactionEventId = body.ackReactionId;
+			//
+			// BEFORE overwriting, redact the prior reactionEventId (the prior
+			// prompt's 👀). Otherwise it stays orphaned forever — never
+			// redacted, never replaced — leaving a stale 👀 on the old prompt
+			// after the final 🎉 lands on the new one. Strict "one emoji at a
+			// time" invariant: each prompt converges to exactly one reaction.
+			if (body.ackReactionId) {
+				const priorReactionId = await this.state.storage.get<string>("reactionEventId");
+				if (priorReactionId && priorReactionId !== body.ackReactionId) {
+					redact(matrixEnv(this.env), body.roomId, priorReactionId, "steering: prior prompt finished")
+						.catch((e) => console.log(`[poller] steering redact prior 👀 failed: ${e instanceof Error ? e.message : e}`));
+				}
+				steerWrites.reactionEventId = body.ackReactionId;
+			}
 			await this.state.storage.put(steerWrites);
 			console.log(`[poller] /watch steer replica=${body.replicaId} ev=${body.startEventId}`);
 			await this.renderAndSend();

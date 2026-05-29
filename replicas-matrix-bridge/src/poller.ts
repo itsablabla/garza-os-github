@@ -301,6 +301,16 @@ export class ReplicaPoller {
 
 		const startedAt = (snap.get("startedAt") as number | undefined) ?? Date.now();
 		if (Date.now() - startedAt > MAX_WATCH_DURATION_MS) {
+			// Pre-fix: deleteAll() ran silently, leaving the user-facing
+			// status pane frozen at whatever mid-progress frame was last
+			// rendered. Now we land a terminal "timed out" frame first so
+			// the pane resolves cleanly and the room doesn't look stuck.
+			const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+			await this.setTerminal(watch, {
+				kind: "failed",
+				durationSec: seconds,
+				errorMsg: `Watch timed out — agent ran longer than ${Math.round(MAX_WATCH_DURATION_MS / 60_000)} min.`,
+			});
 			await this.state.storage.deleteAll();
 			return;
 		}
@@ -322,6 +332,17 @@ export class ReplicaPoller {
 		if (!r.ok) {
 			console.log(`[poller] /history ${r.status}`);
 			if (r.status === 404 || r.status === 410) {
+				// Pre-fix: deleteAll() ran silently, leaving the pane
+				// frozen mid-progress when the upstream replica vanished
+				// (TTL expiry, manual delete, internal error). Now we
+				// surface the upstream-gone state to the user so they
+				// know to resend instead of waiting forever.
+				const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+				await this.setTerminal(watch, {
+					kind: "failed",
+					durationSec: seconds,
+					errorMsg: `Replica gone (upstream returned ${r.status}). Send a new message to start a fresh session.`,
+				});
 				await this.state.storage.deleteAll();
 				return;
 			}

@@ -135,6 +135,28 @@ export default {
 			return new Response(body, { status: r.status, headers: { "Content-Type": "application/json" } });
 		}
 
+		if (req.method === "GET" && url.pathname === "/debug/joined-rooms") {
+			const r = await fetch(
+				`${env.MATRIX_HOMESERVER}/_matrix/client/v3/joined_rooms`,
+				{ headers: { Authorization: `Bearer ${env.MATRIX_ACCESS_TOKEN}` } },
+			);
+			const body = await r.text();
+			return new Response(body, { status: r.status, headers: { "Content-Type": "application/json" } });
+		}
+
+		if (req.method === "GET" && url.pathname.startsWith("/debug/room-timeline/")) {
+			const roomId = decodeURIComponent(url.pathname.slice("/debug/room-timeline/".length));
+			if (!roomId) return new Response("missing room id", { status: 400 });
+			const encoded = encodeURIComponent(roomId);
+			const limit = url.searchParams.get("limit") ?? "20";
+			const r = await fetch(
+				`${env.MATRIX_HOMESERVER}/_matrix/client/v3/rooms/${encoded}/messages?dir=b&limit=${limit}`,
+				{ headers: { Authorization: `Bearer ${env.MATRIX_ACCESS_TOKEN}` } },
+			);
+			const body = await r.text();
+			return new Response(body, { status: r.status, headers: { "Content-Type": "application/json" } });
+		}
+
 		if (req.method === "POST" && url.pathname === "/dispatch") {
 			const body = (await req.json()) as DispatchBody;
 			ctx.waitUntil(handleMatrixMessage(env, body.roomId, body.eventId, body.body));

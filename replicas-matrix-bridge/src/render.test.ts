@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	formatCost,
+	renderToolsHeader,
 	formatDuration,
 	formatToolUseLine,
 	parsePlan,
@@ -439,5 +440,48 @@ describe("formatCost", () => {
 	it("drops decimals once we're past $10", () => {
 		expect(formatCost(12.456)).toBe("$12");
 		expect(formatCost(1.42)).toBe("$1.42");
+	});
+});
+
+describe("renderToolsHeader", () => {
+	const run = (s: string) => `🔄 ${s}`;
+	const ok = (s: string) => `✅ ${s}`;
+	const err = (s: string) => `❌ ${s}`;
+	const tool = (s: string) => `🔧 <code>${s}</code>`;
+
+	it("returns empty when there are no tool lines", () => {
+		expect(renderToolsHeader([])).toBe("");
+		expect(renderToolsHeader(["💬 some narration", "<i>↳ standalone output</i>"])).toBe("");
+	});
+
+	it("counts running tools toward the total but not the done count", () => {
+		const lines = [run(tool("ls")), run(tool("pwd"))];
+		expect(renderToolsHeader(lines)).toBe("📋 <b>Tools (0/2)</b>");
+	});
+
+	it("counts both ✅ and ❌ as done", () => {
+		const lines = [
+			ok(tool("ls")),
+			err(tool("rm -rf /")),
+			run(tool("git status")),
+		];
+		expect(renderToolsHeader(lines)).toBe("📋 <b>Tools (2/3)</b>");
+	});
+
+	it("appends ✅ to the header when all tools are done", () => {
+		const lines = [ok(tool("ls")), ok(tool("pwd")), err(tool("nope"))];
+		// 3 done, 3 total → all complete
+		expect(renderToolsHeader(lines)).toBe("📋 <b>Tools (3/3)</b> ✅");
+	});
+
+	it("ignores non-tool lines mixed in (narration, outputs, user steers)", () => {
+		const lines = [
+			"💬 <i>Reading the codebase</i>",
+			ok(tool("ls")),
+			"<i>↳ index.ts main.ts</i>",
+			"💬 <i>You: now what</i>",
+			run(tool("grep foo")),
+		];
+		expect(renderToolsHeader(lines)).toBe("📋 <b>Tools (1/2)</b>");
 	});
 });

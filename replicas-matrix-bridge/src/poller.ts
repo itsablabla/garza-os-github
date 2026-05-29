@@ -61,6 +61,12 @@ interface ContentBlock {
 	thinking?: string;
 	name?: string;
 	input?: Record<string, unknown>;
+	// tool_use blocks: Anthropic-assigned id ("toolu_…"). Used to pair the
+	// later tool_result back to its tool_use so we can swap the running 🔄
+	// status icon on the rendered line in place to ✅ / ❌.
+	id?: string;
+	// tool_result blocks: points at the originating tool_use.id.
+	tool_use_id?: string;
 	// tool_result blocks only — the raw output (string) or list of inner blocks.
 	content?: string | Array<{ type?: string; text?: string }>;
 	is_error?: boolean;
@@ -201,6 +207,9 @@ export class ReplicaPoller {
 			"lastTypingAt",
 			"lastEditAt",
 			"plan",
+			// Per-turn tool lifecycle tracker — wipe so the next turn doesn't
+			// inherit stale tool_use_id → line mappings.
+			"toolLineIndex",
 		]);
 		const baseline = await baselineP;
 		const seed: Record<string, unknown> = {
@@ -311,6 +320,12 @@ export class ReplicaPoller {
 		let stepCount = (snap.get("stepCount") as number | undefined) ?? 0;
 		let currentAction = (snap.get("currentAction") as string | undefined) ?? "";
 		let plan = (snap.get("plan") as PlanState | undefined) ?? null;
+		// Per-tool lifecycle tracker: tool_use.id → index in `lines`. When the
+		// matching tool_result lands later, we use this to find and mutate the
+		// `🔄 …` status prefix in place (→ `✅ …` or `❌ …`). Matches the
+		// OpenACP per-line lifecycle icon UX.
+		const toolLineIndex =
+			(await this.state.storage.get<Record<string, number>>("toolLineIndex")) ?? {};
 		let systemInfo = (await this.state.storage.get<import("./render").SystemInfo>("systemInfo")) ?? null;
 		let contextUsage = (await this.state.storage.get<import("./render").ContextUsage>("contextUsage")) ?? null;
 		let resultMeta = (await this.state.storage.get<import("./render").ResultMeta>("resultMeta")) ?? null;
@@ -344,7 +359,15 @@ export class ReplicaPoller {
 							(block.input ?? {}) as Record<string, unknown>,
 						);
 						currentAction = line;
-						lines.push(line);
+						// Emit with a 🔄 lifecycle prefix to show "running".
+						// The matching tool_result will swap this in place
+						// to ✅ on success or ❌ on error. Record the row
+						// index by the Anthropic tool_use.id so the pairing
+						// survives across alarm ticks.
+						const renderedLine = `🔄 ${line}`;
+						const newIdx = lines.length;
+						lines.push(renderedLine);
+						if (block.id) toolLineIndex[block.id] = newIdx;
 						stepCount += 1;
 						appended = true;
 					} else if (block.type === "text" && block.text) {
@@ -422,6 +445,28 @@ export class ReplicaPoller {
 				// so the reader sees both the call and its outcome.
 				for (const block of content) {
 					if (block.type === "tool_result") {
+						const isErr = block.is_error === true;
+
+						// Mutate the originating tool_use line's status prefix
+						// in place: 🔄 → ✅ on success, 🔄 → ❌ on error. The
+						// OpenACP "each tool ticks live" UX. We find the row by
+						// tool_use_id via the toolLineIndex we built when the
+						// tool_use was first projected.
+						if (block.tool_use_id && toolLineIndex[block.tool_use_id] !== undefined) {
+							const idx = toolLineIndex[block.tool_use_id]!;
+							if (idx >= 0 && idx < lines.length) {
+								const newPrefix = isErr ? "❌ " : "✅ ";
+								const before = lines[idx]!;
+								if (before.startsWith("🔄 ")) {
+									lines[idx] = newPrefix + before.slice("🔄 ".length);
+									appended = true;
+								}
+							}
+							// One-shot: clear so a malformed second result for
+							// the same tool_use_id can't keep flipping the row.
+							delete toolLineIndex[block.tool_use_id];
+						}
+
 						const raw = block.content;
 						let preview = "";
 						if (typeof raw === "string") preview = raw;
@@ -433,7 +478,6 @@ export class ReplicaPoller {
 						preview = preview.replace(/\s+/g, " ").trim();
 						if (preview.length > 0) {
 							const trimmed = preview.length > 100 ? preview.slice(0, 99) + "…" : preview;
-							const isErr = block.is_error === true;
 							const icon = isErr ? "✗" : "↳";
 							lines.push(`<i>${icon} ${escapeHtml(trimmed)}</i>`);
 							appended = true;
@@ -466,6 +510,7 @@ export class ReplicaPoller {
 			stepCount,
 			currentAction,
 			lastSeenCount: events.length,
+			toolLineIndex,
 		};
 		if (plan) writes.plan = plan;
 		if (systemInfo) writes.systemInfo = systemInfo;

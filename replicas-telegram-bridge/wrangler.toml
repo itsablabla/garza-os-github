@@ -1,0 +1,23 @@
+name = "replicas-telegram-bridge"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+# KV namespace for mapping (chat_id:thread_id) -> replica_id.
+# Create with: wrangler kv:namespace create MAP
+# Then paste the id below.
+[[kv_namespaces]]
+binding = "MAP"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Secrets (do NOT commit values). Set with:
+#   wrangler secret put TG_TOKEN
+#   wrangler secret put TG_WEBHOOK_SECRET
+#   wrangler secret put REPLICAS_API_KEY
+# Non-secret defaults can live in [vars] below.
+[vars]
+REPLICAS_ORG_ID = "778b1aa3-4327-45a4-9874-c8a3a72df610"
+REPLICAS_ENV_ID = "5f06f598-2712-456a-aab1-bb8cbe64ab01"
+REPLICAS_API_BASE = "https://api.replicas.dev/v1"
+TG_API_BASE = "https://api.telegram.org"
+REPLICA_TTL_SECONDS = "604800"

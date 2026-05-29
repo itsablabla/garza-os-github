@@ -66,11 +66,29 @@ export class ReplicaPoller {
 	}
 
 	async alarm(): Promise<void> {
+		try {
+			await this.alarmInner();
+		} catch (e) {
+			console.error("[poller] alarm threw", e instanceof Error ? e.message : String(e));
+			// Re-arm after backoff so we don't get stuck.
+			try {
+				await this.state.storage.setAlarm(Date.now() + BACKOFF_POLL_INTERVAL_MS);
+			} catch {
+				// give up
+			}
+		}
+	}
+
+	private async alarmInner(): Promise<void> {
 		const watch = await this.state.storage.get<WatchSpec>("watch");
-		if (!watch) return;
+		if (!watch) {
+			console.log("[poller] no watch — exiting alarm");
+			return;
+		}
 
 		const startedAt = (await this.state.storage.get<number>("startedAt")) ?? Date.now();
 		if (Date.now() - startedAt > MAX_WATCH_DURATION_MS) {
+			console.log("[poller] watch exceeded max duration");
 			await this.state.storage.deleteAll();
 			return;
 		}
@@ -88,6 +106,7 @@ export class ReplicaPoller {
 		);
 
 		if (!r.ok) {
+			console.log(`[poller] /history ${r.status}; replicaId=${watch.replicaId}`);
 			if (r.status === 404 || r.status === 410) {
 				await this.state.storage.deleteAll();
 				return;
@@ -129,6 +148,10 @@ export class ReplicaPoller {
 			finalReply = pendingAssistantText;
 		}
 
+		console.log(
+			`[poller] events=${events.length} fresh=${fresh.length} newStatus=${newStatus ? "yes" : "no"} sawResult=${sawResult}`,
+		);
+
 		if (newStatus) {
 			const prev = (await this.state.storage.get<string>("lastStatusText")) ?? "";
 			if (newStatus !== prev) {
@@ -141,6 +164,7 @@ export class ReplicaPoller {
 
 		if (sawResult) {
 			if (finalReply) {
+				console.log(`[poller] sending final reply (${finalReply.length} chars)`);
 				await this.sendReply(watch, finalReply);
 			}
 			// keep state around briefly in case follow-up arrives, then clean
@@ -177,6 +201,7 @@ export class ReplicaPoller {
 		const t = await r.text();
 		if (t.includes('"ok":true')) return true;
 		if (t.includes("message is not modified")) return true;
+		console.log(`[poller] editMessageText failed: ${t.slice(0, 200)}`);
 		return false;
 	}
 
@@ -188,6 +213,7 @@ export class ReplicaPoller {
 		const r = await this.tgCall("sendMessage", params);
 		const t = await r.text();
 		const m = t.match(/"message_id"\s*:\s*(\d+)/);
+		if (!m) console.log(`[poller] sendStatusMessage failed: ${t.slice(0, 200)}`);
 		return m ? parseInt(m[1]!, 10) : null;
 	}
 
@@ -200,7 +226,11 @@ export class ReplicaPoller {
 			params.set("chat_id", String(watch.chatId));
 			if (watch.threadId !== undefined) params.set("message_thread_id", String(watch.threadId));
 			params.set("text", piece);
-			await this.tgCall("sendMessage", params);
+			const r = await this.tgCall("sendMessage", params);
+			const t = await r.text();
+			if (!t.includes('"ok":true')) {
+				console.log(`[poller] sendReply failed: ${t.slice(0, 200)}`);
+			}
 			if (body.length > 0) await new Promise((res) => setTimeout(res, 1100));
 		}
 	}

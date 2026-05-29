@@ -205,8 +205,56 @@ export default {
 		return new Response("not found", { status: 404 });
 	},
 
-	async scheduled(_event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+	async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+		// Kick the listener every minute. If its alarm chain is healthy this
+		// is a no-op (setAlarm just replaces the existing alarm); if it's
+		// somehow stuck the /start handler re-arms it.
 		const stub = env.LISTENER.get(env.LISTENER.idFromName("global"));
-		await stub.fetch("https://listener/start", { method: "POST" }).catch(() => {});
+		ctx.waitUntil(stub.fetch("https://listener/start", { method: "POST" }).catch(() => {}));
+
+		// Defense-in-depth invite sweeper. The listener's per-sync
+		// `for (invite) { joinRoom() }` loop is the fast path, but it
+		// silently fails on rate limit / transient network errors and the
+		// catch swallows the failure. Two manual joins already today
+		// (Jett Butler, Nomad Office) — the pattern is real. Once per
+		// minute, fetch pending invites and force-join each.
+		ctx.waitUntil(
+			(async () => {
+				try {
+					const r = await fetch(
+						`${env.MATRIX_HOMESERVER}/_matrix/client/v3/sync?filter=%7B%22room%22%3A%7B%22invite%22%3A%7B%22limit%22%3A50%7D%2C%22join%22%3A%7B%22limit%22%3A0%2C%22timeline%22%3A%7B%22limit%22%3A0%7D%7D%2C%22leave%22%3A%7B%22limit%22%3A0%7D%7D%7D&timeout=0`,
+						{ headers: { Authorization: `Bearer ${env.MATRIX_ACCESS_TOKEN}` } },
+					);
+					if (!r.ok) return;
+					const data = (await r.json()) as { rooms?: { invite?: Record<string, unknown> } };
+					const invites = Object.keys(data.rooms?.invite ?? {});
+					for (const roomId of invites) {
+						const encoded = encodeURIComponent(roomId);
+						try {
+							const joinResp = await fetch(
+								`${env.MATRIX_HOMESERVER}/_matrix/client/v3/rooms/${encoded}/join`,
+								{
+									method: "POST",
+									headers: {
+										Authorization: `Bearer ${env.MATRIX_ACCESS_TOKEN}`,
+										"Content-Type": "application/json",
+									},
+									body: "{}",
+								},
+							);
+							if (joinResp.ok) {
+								console.log(`[cron] auto-joined invite ${roomId}`);
+							} else {
+								console.log(`[cron] invite-sweep join failed ${roomId} status=${joinResp.status}`);
+							}
+						} catch (e) {
+							console.log(`[cron] invite-sweep join exception ${roomId}: ${e instanceof Error ? e.message : e}`);
+						}
+					}
+				} catch (e) {
+					console.log(`[cron] invite-sweep top-level failed: ${e instanceof Error ? e.message : e}`);
+				}
+			})(),
+		);
 	},
 };

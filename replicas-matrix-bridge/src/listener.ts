@@ -69,6 +69,15 @@ export class MatrixListener {
 	}
 
 	async alarm(): Promise<void> {
+		// Schedule the safety-net alarm BEFORE doing the work. If
+		// alarmInner hangs, throws past the catch, or the DO instance is
+		// killed mid-execution by CF Workers, the next alarm is already
+		// armed and the chain self-heals on its own — without depending
+		// on the cron-driven `/start` fallback (which can also fail). The
+		// safety-net fires at SYNC_TIMEOUT_MS + ALARM_INTERVAL_MS out;
+		// the post-body setAlarm below replaces it with the normal
+		// fast-tick when alarmInner returns successfully.
+		await this.state.storage.setAlarm(Date.now() + SYNC_TIMEOUT_MS + ALARM_INTERVAL_MS);
 		try {
 			await this.alarmInner();
 		} catch (e) {

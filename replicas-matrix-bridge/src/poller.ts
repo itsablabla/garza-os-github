@@ -354,6 +354,15 @@ export class ReplicaPoller {
 	}
 
 	async alarm(): Promise<void> {
+		// Schedule the safety-net alarm BEFORE the body runs. If
+		// alarmInner hangs, throws past the catch, or the DO instance is
+		// killed mid-execution by CF Workers, the chain self-heals via
+		// the pre-set alarm — without relying on the catch's setAlarm
+		// (which itself can fail) or any external poke. Same pattern as
+		// the listener fix (`c39beb13`): the watcher had silent-die
+		// scenarios where phase=STARTING with alarm=NO and the user saw
+		// a frozen "🤔 Starting · 0s" pane forever.
+		await this.state.storage.setAlarm(Date.now() + BACKOFF_POLL_INTERVAL_MS);
 		try {
 			await this.alarmInner();
 		} catch (e) {

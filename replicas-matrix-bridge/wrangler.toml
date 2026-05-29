@@ -1,0 +1,44 @@
+name = "replicas-matrix-bridge"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+# KV namespace for (matrix-roomId) -> replicaId mapping + idempotency.
+# Create with: wrangler kv:namespace create MAP
+[[kv_namespaces]]
+binding = "MAP"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Durable Objects: one global MatrixListener for /sync, one ReplicaPoller per replica.
+[[durable_objects.bindings]]
+name = "WATCHER"
+class_name = "ReplicaPoller"
+
+[[durable_objects.bindings]]
+name = "LISTENER"
+class_name = "MatrixListener"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ReplicaPoller", "MatrixListener"]
+
+# Cron trigger keeps the listener alive even if no events fire it.
+[triggers]
+crons = ["*/1 * * * *"]
+
+[vars]
+REPLICAS_ORG_ID = "778b1aa3-4327-45a4-9874-c8a3a72df610"
+REPLICAS_ENV_ID = "5f06f598-2712-456a-aab1-bb8cbe64ab01"
+REPLICAS_API_BASE = "https://api.replicas.dev/v1"
+MATRIX_HOMESERVER = "https://matrix.beeper.com"
+REPLICA_TTL_SECONDS = "604800"
+# Default Telegram-spawned replicas to Sonnet medium-thinking; same as
+# the Telegram bridge defaults.
+REPLICAS_AGENT_OVERRIDE = "claude"
+REPLICAS_MODEL_OVERRIDE = "claude-sonnet-4-6"
+REPLICAS_THINKING_OVERRIDE = "medium"
+
+# Secrets (set via `wrangler secret put`):
+#   MATRIX_ACCESS_TOKEN  — `syt_…` from Beeper Desktop → Settings → Help & About → Show access token
+#   MATRIX_USER_ID       — e.g. `@replicas-bot:beeper.com`
+#   REPLICAS_API_KEY     — same key the Telegram bridge uses

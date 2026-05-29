@@ -4,9 +4,11 @@ export interface Env {
 	MAP: KVNamespace;
 	WATCHER: DurableObjectNamespace;
 	LISTENER: DurableObjectNamespace;
+	OLM_VAULT: DurableObjectNamespace;
 	MATRIX_HOMESERVER: string;
 	MATRIX_ACCESS_TOKEN: string;
 	MATRIX_USER_ID: string;
+	MATRIX_DEVICE_ID?: string;
 	REPLICAS_API_KEY: string;
 	REPLICAS_ORG_ID: string;
 	REPLICAS_ENV_ID: string;
@@ -23,6 +25,7 @@ export interface Env {
 
 export { ReplicaPoller } from "./poller";
 export { MatrixListener } from "./listener";
+export { OlmVault } from "./olm-vault";
 
 interface DispatchBody {
 	roomId: string;
@@ -47,6 +50,27 @@ export default {
 		if (req.method === "GET" && url.pathname === "/debug/listener") {
 			const stub = env.LISTENER.get(env.LISTENER.idFromName("global"));
 			return stub.fetch("https://listener/debug");
+		}
+
+		if (req.method === "GET" && url.pathname === "/debug/vault/identity") {
+			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));
+			return stub.fetch("https://vault/identity");
+		}
+		if (req.method === "POST" && url.pathname === "/admin/vault/bootstrap") {
+			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));
+			return stub.fetch("https://vault/bootstrap", { method: "POST" });
+		}
+		if (req.method === "POST" && url.pathname === "/admin/vault/upload-device") {
+			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));
+			return stub.fetch("https://vault/upload-device", { method: "POST" });
+		}
+		if (req.method === "POST" && url.pathname === "/admin/vault/upload-otks") {
+			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));
+			return stub.fetch("https://vault/upload-otks", { method: "POST", body: '{"count":50}' });
+		}
+		if (req.method === "GET" && url.pathname === "/debug/vault/keystore") {
+			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));
+			return stub.fetch("https://vault/keystore");
 		}
 
 		if (req.method === "GET" && url.pathname === "/debug/olm") {

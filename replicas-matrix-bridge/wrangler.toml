@@ -26,9 +26,20 @@ class_name = "ReplicaPoller"
 name = "LISTENER"
 class_name = "MatrixListener"
 
+# Holds the bot device's persistent Olm Account (curve25519 + ed25519 identity
+# keys, OTKs) and the live-captured Megolm session keys received via
+# /sendToDevice. Single global instance.
+[[durable_objects.bindings]]
+name = "OLM_VAULT"
+class_name = "OlmVault"
+
 [[migrations]]
 tag = "v1"
 new_classes = ["ReplicaPoller", "MatrixListener"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["OlmVault"]
 
 # Cron trigger keeps the listener alive even if no events fire it.
 [triggers]
@@ -45,6 +56,9 @@ REPLICA_TTL_SECONDS = "604800"
 REPLICAS_AGENT_OVERRIDE = "claude"
 REPLICAS_MODEL_OVERRIDE = "claude-sonnet-4-6"
 REPLICAS_THINKING_OVERRIDE = "medium"
+# Bot device id on matrix.org (the device the MATRIX_ACCESS_TOKEN was minted
+# for). Used as the id in the Olm device-key upload + signature subject.
+MATRIX_DEVICE_ID = "5hFpeVVZb4"
 
 # Secrets (set via `wrangler secret put`):
 #   MATRIX_ACCESS_TOKEN  — `syt_…` from Beeper Desktop → Settings → Help & About → Show access token

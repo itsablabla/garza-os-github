@@ -188,6 +188,7 @@ async function startWatcher(env: Env, replicaId: string, msg: TgMessage): Promis
 				chatId: msg.chat.id,
 				threadId: msg.message_thread_id,
 				startMessageId: msg.message_id,
+				userText: msg.text ?? msg.caption ?? "",
 			}),
 		})
 		.catch(() => {});

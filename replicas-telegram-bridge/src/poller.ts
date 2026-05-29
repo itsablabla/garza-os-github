@@ -6,6 +6,7 @@ interface WatchSpec {
 	chatId: number;
 	threadId?: number;
 	startMessageId?: number;
+	userText?: string;
 }
 
 interface HistoryEvent {
@@ -36,6 +37,8 @@ const BACKOFF_POLL_INTERVAL_MS = 6000;
 const MAX_WATCH_DURATION_MS = 30 * 60 * 1000; // give up after 30 min
 const STATUS_MAX_LEN = 200;
 const REPLY_MAX_LEN = 4000;
+const STATUS_LOG_MAX_LINES = 10;
+const USER_HEADER_PREVIEW_LEN = 120;
 
 export class ReplicaPoller {
 	private state: DurableObjectState;
@@ -52,9 +55,13 @@ export class ReplicaPoller {
 			const body = (await req.json()) as WatchSpec;
 			await this.state.storage.put("watch", body);
 			await this.state.storage.put("lastSeenCount", 0);
-			await this.state.storage.put("lastStatusText", "");
+			await this.state.storage.put("statusLines", [] as string[]);
 			await this.state.storage.put("startedAt", Date.now());
 			await this.state.storage.delete("statusMessageId");
+			await this.state.storage.delete("pendingCleanup");
+			// Open the status message immediately so the user sees activity right
+			// after the bot's 👀 reaction, before the first /history poll.
+			await this.appendStatus("🤔 <i>Starting…</i>");
 			await this.state.storage.setAlarm(Date.now() + FIRST_POLL_DELAY_MS);
 			return new Response("ok");
 		}
@@ -64,6 +71,33 @@ export class ReplicaPoller {
 			return new Response("ok");
 		}
 		return new Response("not found", { status: 404 });
+	}
+
+	private async appendStatus(line: string): Promise<void> {
+		const watch = await this.state.storage.get<WatchSpec>("watch");
+		if (!watch) return;
+		const lines = ((await this.state.storage.get<string[]>("statusLines")) ?? []).concat(line);
+		const trimmed = lines.slice(-STATUS_LOG_MAX_LINES);
+		await this.state.storage.put("statusLines", trimmed);
+		await this.renderStatus(watch, trimmed);
+	}
+
+	private async finalizeStatus(line: string): Promise<void> {
+		const watch = await this.state.storage.get<WatchSpec>("watch");
+		if (!watch) return;
+		const lines = ((await this.state.storage.get<string[]>("statusLines")) ?? []).concat(line);
+		const trimmed = lines.slice(-STATUS_LOG_MAX_LINES);
+		await this.state.storage.put("statusLines", trimmed);
+		await this.renderStatus(watch, trimmed);
+	}
+
+	private async renderStatus(watch: WatchSpec, lines: string[]): Promise<void> {
+		const header = headerFor(watch);
+		const body = (header ? `${header}\n` : "") + lines.join("\n");
+		const clipped = body.length > STATUS_MAX_LEN * STATUS_LOG_MAX_LINES
+			? body.slice(0, STATUS_MAX_LEN * STATUS_LOG_MAX_LINES) + "…"
+			: body;
+		await this.upsertStatus(watch, clipped);
 	}
 
 	async alarm(): Promise<void> {
@@ -132,7 +166,7 @@ export class ReplicaPoller {
 			if (t === "claude-assistant") {
 				for (const block of blocks) {
 					if (block.type === "thinking" && block.thinking) {
-						newStatus = "🤔 " + truncate(block.thinking, STATUS_MAX_LEN);
+						newStatus = "🤔 <i>" + escapeHtml(truncate(block.thinking, STATUS_MAX_LEN)) + "</i>";
 					} else if (block.type === "tool_use") {
 						newStatus = formatToolUse(block);
 					} else if (block.type === "text" && block.text) {
@@ -154,16 +188,16 @@ export class ReplicaPoller {
 		);
 
 		if (newStatus) {
-			const prev = (await this.state.storage.get<string>("lastStatusText")) ?? "";
-			if (newStatus !== prev) {
-				await this.upsertStatus(watch, newStatus);
-				await this.state.storage.put("lastStatusText", newStatus);
-			}
+			await this.appendStatus(newStatus);
 		}
 
 		await this.state.storage.put("lastSeenCount", events.length);
 
 		if (sawResult) {
+			const startedAt = (await this.state.storage.get<number>("startedAt")) ?? Date.now();
+			const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+			await this.finalizeStatus(`✅ <i>Done in ${seconds}s</i>`);
+
 			if (finalReply) {
 				console.log(`[poller] sending final reply (${finalReply.length} chars)`);
 				await this.sendReply(watch, finalReply);
@@ -198,6 +232,7 @@ export class ReplicaPoller {
 		params.set("chat_id", String(watch.chatId));
 		params.set("message_id", String(mid));
 		params.set("text", text);
+		params.set("parse_mode", "HTML");
 		const r = await this.tgCall("editMessageText", params);
 		const t = await r.text();
 		if (t.includes('"ok":true')) return true;
@@ -211,6 +246,7 @@ export class ReplicaPoller {
 		params.set("chat_id", String(watch.chatId));
 		if (watch.threadId !== undefined) params.set("message_thread_id", String(watch.threadId));
 		params.set("text", text);
+		params.set("parse_mode", "HTML");
 		const r = await this.tgCall("sendMessage", params);
 		const t = await r.text();
 		const m = t.match(/"message_id"\s*:\s*(\d+)/);
@@ -267,29 +303,44 @@ function truncate(s: string, n: number): string {
 	return s.slice(0, n - 1) + "…";
 }
 
-function formatToolUse(block: ContentBlock): string {
+function escapeHtml(s: string): string {
+	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function code(s: string): string {
+	return `<code>${escapeHtml(s)}</code>`;
+}
+
+export function formatToolUse(block: ContentBlock): string {
 	const name = block.name ?? "tool";
 	const input = (block.input ?? {}) as Record<string, string | undefined>;
 	switch (name) {
 		case "Bash":
-			return "🔧 $ " + truncate(input.command ?? "", STATUS_MAX_LEN);
+			return "🔧 " + code("$ " + truncate(input.command ?? "", STATUS_MAX_LEN));
 		case "Read":
-			return "📖 " + truncate(input.file_path ?? "", STATUS_MAX_LEN);
+			return "📖 " + code(truncate(input.file_path ?? "", STATUS_MAX_LEN));
 		case "Write":
-			return "📝 write " + truncate(input.file_path ?? "", STATUS_MAX_LEN);
+			return "📝 write " + code(truncate(input.file_path ?? "", STATUS_MAX_LEN));
 		case "Edit":
-			return "✏️ edit " + truncate(input.file_path ?? "", STATUS_MAX_LEN);
+			return "✏️ edit " + code(truncate(input.file_path ?? "", STATUS_MAX_LEN));
 		case "Grep":
-			return "🔍 grep " + truncate(input.pattern ?? "", STATUS_MAX_LEN);
+			return "🔍 grep " + code(truncate(input.pattern ?? "", STATUS_MAX_LEN));
 		case "Glob":
-			return "🔍 glob " + truncate(input.pattern ?? "", STATUS_MAX_LEN);
+			return "🔍 glob " + code(truncate(input.pattern ?? "", STATUS_MAX_LEN));
 		case "WebFetch":
 		case "WebSearch":
-			return "🌐 " + truncate(input.url ?? input.query ?? "", STATUS_MAX_LEN);
+			return "🌐 " + code(truncate(input.url ?? input.query ?? "", STATUS_MAX_LEN));
 		default:
 			if (name.startsWith("mcp__")) {
-				return "🧰 " + truncate(name.replace(/^mcp__/, ""), STATUS_MAX_LEN);
+				return "🧰 " + code(truncate(name.replace(/^mcp__/, ""), STATUS_MAX_LEN));
 			}
-			return "🔧 " + truncate(name, STATUS_MAX_LEN);
+			return "🔧 " + code(truncate(name, STATUS_MAX_LEN));
 	}
+}
+
+export function headerFor(watch: WatchSpec): string {
+	if (!watch.userText) return "";
+	const preview = truncate(watch.userText.split("\n").find((l) => l.trim().length > 0) ?? "", USER_HEADER_PREVIEW_LEN);
+	if (!preview) return "";
+	return `<i>Task:</i> ${escapeHtml(preview)}`;
 }

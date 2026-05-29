@@ -9,6 +9,10 @@ export interface Env {
 	MATRIX_ACCESS_TOKEN: string;
 	MATRIX_USER_ID: string;
 	MATRIX_DEVICE_ID?: string;
+	// Base58-encoded SSSS recovery key (e.g. `EsTu zRAC eDpv …`) used to
+	// decrypt the cross-signing private keys stashed in the user's account
+	// data. Optional — only required by /admin/vault/cross-sign.
+	MATRIX_RECOVERY_KEY?: string;
 	REPLICAS_API_KEY: string;
 	REPLICAS_ORG_ID: string;
 	REPLICAS_ENV_ID: string;
@@ -63,6 +67,10 @@ export default {
 		if (req.method === "POST" && url.pathname === "/admin/vault/reset") {
 			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));
 			return stub.fetch("https://vault/reset", { method: "POST" });
+		}
+		if (req.method === "POST" && url.pathname === "/admin/vault/cross-sign") {
+			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));
+			return stub.fetch("https://vault/cross-sign", { method: "POST" });
 		}
 		if (req.method === "POST" && url.pathname === "/admin/vault/bootstrap") {
 			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));

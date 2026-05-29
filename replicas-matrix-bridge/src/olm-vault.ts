@@ -11,6 +11,7 @@
 
 import type { Env } from "./index";
 import { getOlm } from "./olm-init";
+import { decodeRecoveryKey, decryptSecret, verifyRecoveryKey } from "./ssss";
 
 // Storage keys
 const K_ACCOUNT_PICKLE = "olm:account";
@@ -55,6 +56,7 @@ export class OlmVault {
 				await this.state.storage.deleteAll();
 				return Response.json({ ok: true });
 			}
+			if (req.method === "POST" && url.pathname === "/cross-sign") return await this.crossSign();
 			if (req.method === "POST" && url.pathname === "/bootstrap") return await this.bootstrap();
 			if (req.method === "GET" && url.pathname === "/identity") return await this.identity();
 			if (req.method === "POST" && url.pathname === "/upload-device") return await this.uploadDevice();
@@ -224,6 +226,112 @@ export class OlmVault {
 		}
 	}
 
+	// Decrypt SSSS-stored self-signing private key with MATRIX_RECOVERY_KEY,
+	// then use it to sign our device's ed25519 key — making the device
+	// cross-signed and trusted by every other client of the user (Element,
+	// Beeper, etc). After this, mautrix bridges proactively share Megolm
+	// keys with the bot device on every session rotation.
+	private async crossSign(): Promise<Response> {
+		const userId = this.env.MATRIX_USER_ID;
+		const deviceId = this.deviceId();
+		const recovery = this.env.MATRIX_RECOVERY_KEY;
+		if (!recovery) return Response.json({ ok: false, error: "MATRIX_RECOVERY_KEY not set" }, { status: 400 });
+
+		const homeserver = this.env.MATRIX_HOMESERVER.replace(/\/$/, "");
+		const token = this.env.MATRIX_ACCESS_TOKEN;
+		const authHeaders = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+		const ud = encodeURIComponent(userId);
+
+		// 1. Default SSSS key id.
+		const defR = await fetch(`${homeserver}/_matrix/client/v3/user/${ud}/account_data/m.secret_storage.default_key`, { headers: authHeaders });
+		if (!defR.ok) return Response.json({ ok: false, stage: "default_key", status: defR.status, body: await defR.text() }, { status: 502 });
+		const def = (await defR.json()) as { key?: string };
+		if (!def.key) return Response.json({ ok: false, error: "no default_key in account_data" }, { status: 500 });
+
+		// 2. SSSS key config.
+		const cfgR = await fetch(`${homeserver}/_matrix/client/v3/user/${ud}/account_data/m.secret_storage.key.${encodeURIComponent(def.key)}`, { headers: authHeaders });
+		if (!cfgR.ok) return Response.json({ ok: false, stage: "key_config", status: cfgR.status }, { status: 502 });
+		const cfg = (await cfgR.json()) as { algorithm?: string; iv?: string; mac?: string };
+		if (cfg.algorithm !== "m.secret_storage.v1.aes-hmac-sha2" || !cfg.iv || !cfg.mac) {
+			return Response.json({ ok: false, error: "unsupported SSSS algorithm or missing iv/mac" }, { status: 500 });
+		}
+
+		// 3. Decode recovery key, verify it matches the SSSS config.
+		let seed: Uint8Array;
+		try { seed = decodeRecoveryKey(recovery); }
+		catch (e) { return Response.json({ ok: false, error: `bad recovery key: ${e instanceof Error ? e.message : e}` }, { status: 400 }); }
+		const matches = await verifyRecoveryKey(seed, { iv: cfg.iv, mac: cfg.mac });
+		if (!matches) return Response.json({ ok: false, error: "recovery key does not match SSSS config MAC" }, { status: 401 });
+
+		// 4. Fetch + decrypt the self-signing secret.
+		const ssR = await fetch(`${homeserver}/_matrix/client/v3/user/${ud}/account_data/m.cross_signing.self_signing`, { headers: authHeaders });
+		if (!ssR.ok) return Response.json({ ok: false, stage: "ss_secret", status: ssR.status }, { status: 502 });
+		const ssData = (await ssR.json()) as { encrypted?: Record<string, { iv: string; ciphertext: string; mac: string }> };
+		const encEntry = ssData.encrypted?.[def.key];
+		if (!encEntry) return Response.json({ ok: false, error: "self-signing secret not encrypted with this SSSS key" }, { status: 500 });
+		const ssPlain = await decryptSecret(seed, "m.cross_signing.self_signing", encEntry);
+		const ssSeedB64 = new TextDecoder().decode(ssPlain); // 43-char unpadded base64 of 32-byte seed
+
+		// 5. Build the device key doc + canonical JSON to sign. We use our
+		//    existing Olm account's identity_keys plus the algorithms +
+		//    keys + signatures (with ours) — same shape as /keys/upload sent.
+		const { account } = await this.loadAccount();
+		try {
+			const ids = JSON.parse(account.identity_keys()) as { curve25519: string; ed25519: string };
+			const unsignedDoc = {
+				user_id: userId,
+				device_id: deviceId,
+				algorithms: ["m.olm.v1.curve25519-aes-sha2", "m.megolm.v1.aes-sha2"],
+				keys: {
+					[`curve25519:${deviceId}`]: ids.curve25519,
+					[`ed25519:${deviceId}`]: ids.ed25519,
+				},
+			};
+			const ownSig = account.sign(canonicalJson(unsignedDoc));
+
+			// 6. Sign with the self-signing private key via Olm PkSigning.
+			// `init_with_seed` expects a raw Uint8Array (32 bytes), not the
+			// base64 string the SSSS plaintext is — decode first.
+			const seedBytes = b64decodeUnpadded(ssSeedB64);
+			const Olm = (await getOlm()) as any;
+			const pk = new Olm.PkSigning();
+			let ssPub: string;
+			let ssSig: string;
+			try {
+				ssPub = pk.init_with_seed(seedBytes);
+				ssSig = pk.sign(canonicalJson(unsignedDoc));
+			} finally {
+				pk.free();
+			}
+
+			// 7. Assemble signed key doc with both signatures.
+			const signedDoc = {
+				...unsignedDoc,
+				signatures: {
+					[userId]: {
+						[`ed25519:${deviceId}`]: ownSig,
+						[`ed25519:${ssPub}`]: ssSig,
+					},
+				},
+			};
+
+			// 8. Upload via /keys/signatures/upload (no UIA needed — the SSK
+			//    signature itself proves we hold the user's self-signing key).
+			const uploadR = await fetch(`${homeserver}/_matrix/client/v3/keys/signatures/upload`, {
+				method: "POST",
+				headers: authHeaders,
+				body: JSON.stringify({ [userId]: { [deviceId]: signedDoc } }),
+			});
+			const upBody = await uploadR.text();
+			return Response.json(
+				{ ok: uploadR.ok, status: uploadR.status, self_signing_pub: ssPub, response: tryParseJson(upBody) },
+				{ status: uploadR.ok ? 200 : 502 },
+			);
+		} finally {
+			account.free();
+		}
+	}
+
 	// Decrypt one m.olm.v1.curve25519-aes-sha2 ciphertext entry and return the
 	// inner plaintext (typically a stringified m.room_key event). If the inner
 	// event is an m.room_key, the new Megolm session is appended to the
@@ -319,6 +427,19 @@ export class OlmVault {
 			void Olm;
 		}
 	}
+}
+
+function tryParseJson(s: string): unknown {
+	try { return JSON.parse(s); } catch { return s; }
+}
+
+function b64decodeUnpadded(s: string): Uint8Array {
+	let std = s.replace(/-/g, "+").replace(/_/g, "/");
+	while (std.length % 4 !== 0) std += "=";
+	const bin = atob(std);
+	const out = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+	return out;
 }
 
 // Matrix canonical JSON: keys sorted, no whitespace, no \u escapes for

@@ -47,11 +47,6 @@
 //   [blockquote: exit code 1: tests failed]
 
 const STATUS_MAX_LEN = 200;
-const RECENT_LINES_VISIBLE = 4;
-// Older steps go into <blockquote expandable> ("Show more"). Generous cap
-// since the user can collapse the expandable; only the 4096-char Telegram
-// total bites us, and we cap that separately below.
-const MAX_TOTAL_LINES = 80;
 const MAX_RENDER_CHARS = 3800;
 
 export type Phase =
@@ -224,6 +219,150 @@ export function render(state: StatusState): string {
 	return renderActive(state);
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Focus-window rendering (2026-05-29 UI cleanup)
+//
+// Designed to make "what is the agent doing RIGHT NOW" instantly readable
+// without forcing the user to skim a 30-line tool log. Three tiers:
+//
+//   CURRENT (latest op): full command + ↳ output preview, indented under it
+//   RECENT (2 prior):    one-line each, basename paths, bash truncated
+//   OLDER (3+ ago):      collapsed into <blockquote expandable> with a
+//                        "[N earlier ops]" header. Errors and user
+//                        steers survive aggregation; everything else
+//                        compresses.
+//
+// Parsing is line-shape based — tool calls match TOOL_EMOJI_RE, tool
+// outputs match OUTPUT_RE, user/narration match NARRATION_RE. We pair an
+// output line with the preceding tool line so the renderer can show them
+// together (or, for non-current ops, drop the output).
+// ──────────────────────────────────────────────────────────────────────────
+
+const TOOL_EMOJI_RE = /^(🔧|📖|✍️|✏️|🔍|🌐|🧰) <code>([\s\S]*)<\/code>$/;
+const OUTPUT_RE = /^<i>(↳|✗) /;
+const NARRATION_RE = /^💬 /;
+
+type OpKind = "tool" | "narration" | "user" | "other";
+
+interface Op {
+	kind: OpKind;
+	line: string;
+	output?: string;
+	isError?: boolean;
+}
+
+function parseOps(lines: string[]): Op[] {
+	const ops: Op[] = [];
+	for (const line of lines) {
+		if (OUTPUT_RE.test(line)) {
+			const isErr = line.startsWith("<i>✗ ");
+			const last = ops[ops.length - 1];
+			if (last && last.kind === "tool") {
+				last.output = line;
+				last.isError = isErr;
+			} else {
+				ops.push({ kind: "other", line, isError: isErr });
+			}
+		} else if (NARRATION_RE.test(line)) {
+			ops.push({
+				kind: line.includes("You:") ? "user" : "narration",
+				line,
+			});
+		} else if (TOOL_EMOJI_RE.test(line)) {
+			ops.push({ kind: "tool", line });
+		} else {
+			ops.push({ kind: "other", line });
+		}
+	}
+	return ops;
+}
+
+// Trim a tool line for compressed rendering: basename for paths,
+// first-~60-chars for bash, leave short args alone. Used in the RECENT
+// + OLDER tiers; CURRENT keeps the full original line.
+const COMPRESS_TARGET = 60;
+function compressToolLine(line: string): string {
+	const m = TOOL_EMOJI_RE.exec(line);
+	if (!m) return line;
+	const emoji = m[1]!;
+	let content = m[2]!;
+	if (content.startsWith("/")) {
+		const parts = content.split("/");
+		content = parts[parts.length - 1] || content;
+	}
+	if (content.length > COMPRESS_TARGET) {
+		content = content.slice(0, COMPRESS_TARGET - 1) + "…";
+	}
+	return `${emoji} <code>${content}</code>`;
+}
+
+function renderOpsFocused(ops: Op[]): string[] {
+	if (ops.length === 0) return [];
+
+	// Window: last 3 ops shown inline (CURRENT + 2 RECENT). Everything
+	// before goes into the expandable.
+	const CURRENT_IDX = ops.length - 1;
+	const RECENT_WINDOW = 3;
+	const VISIBLE_START = Math.max(0, ops.length - RECENT_WINDOW);
+
+	const blocks: string[] = [];
+
+	const older = ops.slice(0, VISIBLE_START);
+	if (older.length > 0) {
+		const olderRendered: string[] = [];
+		for (const op of older) {
+			if (op.kind === "tool") {
+				olderRendered.push(compressToolLine(op.line));
+				// Errors survive even in OLDER; non-error outputs are
+				// dropped to keep the expandable scannable.
+				if (op.isError && op.output) olderRendered.push(op.output);
+			} else if (op.kind === "user") {
+				olderRendered.push(op.line);
+			} else if (op.kind === "other" && op.isError) {
+				olderRendered.push(op.line);
+			}
+			// drop: narration (assistant chatter) and non-error standalone outputs
+		}
+		if (olderRendered.length > 0) {
+			blocks.push(
+				`<blockquote expandable><i>${older.length} earlier op${older.length === 1 ? "" : "s"}</i><br>${olderRendered.join("<br>")}</blockquote>`,
+			);
+		}
+	}
+
+	for (let i = VISIBLE_START; i < ops.length; i++) {
+		const op = ops[i]!;
+		const isCurrent = i === CURRENT_IDX;
+		if (op.kind === "tool") {
+			if (isCurrent) {
+				// Full line + indented output under it
+				blocks.push(op.line);
+				if (op.output) blocks.push(`&nbsp;&nbsp;&nbsp;${op.output}`);
+			} else {
+				blocks.push(compressToolLine(op.line));
+				// Errors survive on non-current too — silent failures are
+				// the worst thing a focus window can hide.
+				if (op.isError && op.output) blocks.push(op.output);
+			}
+		} else if (op.kind === "user" || op.kind === "narration") {
+			blocks.push(op.line);
+		} else if (op.kind === "other") {
+			blocks.push(op.line);
+		}
+	}
+
+	return blocks;
+}
+
+// Smart cost formatting: $0.07 not $0.0781; sub-cent shown as "<$0.01"
+// instead of a sea of zeros. Used in the terminal header.
+export function formatCost(usd: number): string {
+	if (usd <= 0) return "";
+	if (usd < 0.01) return "<$0.01";
+	if (usd < 10) return `$${usd.toFixed(2)}`;
+	return `$${Math.round(usd)}`;
+}
+
 function renderActive(state: StatusState): string {
 	const elapsedSec = Math.max(0, Math.round((Date.now() - state.startedAt) / 1000));
 	const headerParts: string[] = [
@@ -236,6 +375,10 @@ function renderActive(state: StatusState): string {
 	const subtitle = renderSubtitle(state);
 	if (subtitle) blocks.push(subtitle);
 
+	// Thinking preview lives separately from the op log — it's the
+	// agent's *internal* state ("reading the codebase…"), not a tool
+	// call. Surface it under the header so the user sees direction
+	// during the gap between tool uses.
 	if (state.currentAction && state.currentAction.startsWith("<i>")) {
 		blocks.push(state.currentAction);
 	}
@@ -245,30 +388,40 @@ function renderActive(state: StatusState): string {
 	}
 
 	if (state.lines.length > 0) {
-		const recent = state.lines.slice(-RECENT_LINES_VISIBLE);
-		const older = state.lines.slice(0, Math.max(0, state.lines.length - RECENT_LINES_VISIBLE));
-		const trimmedOlder = older.slice(-Math.max(0, MAX_TOTAL_LINES - recent.length));
-		const dropped = older.length - trimmedOlder.length;
-
-		if (trimmedOlder.length > 0) {
-			const dropNote = dropped > 0 ? `\n<i>… ${dropped} earlier</i>` : "";
-			blocks.push(`<blockquote expandable>${trimmedOlder.join("\n")}${dropNote}</blockquote>`);
-		}
-		blocks.push(recent.join("\n"));
+		const ops = parseOps(state.lines);
+		const opBlocks = renderOpsFocused(ops);
+		if (opBlocks.length > 0) blocks.push(opBlocks.join("<br>"));
 	}
 
-	let out = blocks.join("\n\n");
+	// Matrix HTML treats source `\n` as whitespace, so use `<br><br>` between
+	// blocks. (Plain `\n` in the formatted_body collapses to spaces, which is
+	// why tool-call lines were appearing on one line in clients.)
+	let out = blocks.join("<br><br>");
 	if (out.length > MAX_RENDER_CHARS) out = out.slice(0, MAX_RENDER_CHARS - 1) + "…";
 	return out;
 }
 
 export function renderPlan(plan: PlanState): string {
 	const lines: string[] = [`<b>📋 Plan (${plan.done}/${plan.total})</b>`];
+	let currentMarked = false;
 	for (const item of plan.items) {
 		const escaped = escapeHtml(item.content);
-		lines.push(item.done ? `✓ <s>${escaped}</s>` : `◦ ${escaped}`);
+		if (item.done) {
+			lines.push(`✓ <s>${escaped}</s>`);
+		} else if (!currentMarked) {
+			// First not-done item is the "current focus" — highlight it
+			// so the user can spot where the agent is in the plan without
+			// scanning the rolling log.
+			lines.push(`► <b>${escaped}</b>`);
+			currentMarked = true;
+		} else {
+			lines.push(`◦ ${escaped}`);
+		}
 	}
-	return lines.join("\n");
+	// Plan items are stacked with <br> so the renderer puts each on its own
+	// line — using \n leaves them concatenated since Matrix HTML treats
+	// newlines as whitespace.
+	return lines.join("<br>");
 }
 
 function renderTerminal(state: StatusState): string {
@@ -279,7 +432,8 @@ function renderTerminal(state: StatusState): string {
 	const headerParts: string[] = [`${headerEmoji} <b>${headerLabel}</b>`, duration];
 	if (state.resultMeta) {
 		const m = state.resultMeta;
-		if (m.costUsd > 0) headerParts.push(`$${m.costUsd.toFixed(4)}`);
+		const costStr = formatCost(m.costUsd ?? 0);
+		if (costStr) headerParts.push(costStr);
 		const t = (m.inputTokens ?? 0) + (m.outputTokens ?? 0);
 		if (t > 0) headerParts.push(`${formatTokens(t)} tok`);
 	}
@@ -298,22 +452,17 @@ function renderTerminal(state: StatusState): string {
 		blocks.push(renderPlan(state.plan));
 	}
 
-	// Keep the rolling log (tool-calls, narration) visible after terminal so
-	// the reader can see what actually happened during the turn — same window
-	// as the in-progress render.
+	// Same focus window as the active render, so Done frames stay tidy:
+	// CURRENT op (last) expanded with its output, RECENT compressed, OLDER
+	// collapsed under an expandable. Plan items above it are the at-a-glance
+	// recap; if the user wants exact-command-by-command they tap to expand.
 	if (state.lines.length > 0) {
-		const recent = state.lines.slice(-RECENT_LINES_VISIBLE);
-		const older = state.lines.slice(0, Math.max(0, state.lines.length - RECENT_LINES_VISIBLE));
-		const trimmedOlder = older.slice(-Math.max(0, MAX_TOTAL_LINES - recent.length));
-		const dropped = older.length - trimmedOlder.length;
-		if (trimmedOlder.length > 0) {
-			const dropNote = dropped > 0 ? `\n<i>… ${dropped} earlier</i>` : "";
-			blocks.push(`<blockquote expandable>${trimmedOlder.join("\n")}${dropNote}</blockquote>`);
-		}
-		blocks.push(recent.join("\n"));
+		const ops = parseOps(state.lines);
+		const opBlocks = renderOpsFocused(ops);
+		if (opBlocks.length > 0) blocks.push(opBlocks.join("<br>"));
 	}
 
-	let out = blocks.join("\n\n");
+	let out = blocks.join("<br><br>");
 	if (out.length > MAX_RENDER_CHARS) out = out.slice(0, MAX_RENDER_CHARS - 1) + "…";
 	return out;
 }
@@ -327,6 +476,9 @@ export function truncate(s: string, n: number): string {
 	return s.slice(0, n - 1) + "…";
 }
 
+// Single dimmed subtitle line under the phase header — model, MCP/tool count
+// once we've seen claude-system, plus context % once we've seen
+// context-usage. Wrapped in <i> so it sits visually beneath the bold header.
 function renderSubtitle(state: StatusState): string {
 	const parts: string[] = [];
 	if (state.systemInfo) {
@@ -342,6 +494,8 @@ function renderSubtitle(state: StatusState): string {
 	return `<i>${escapeHtml(parts.join(" · "))}</i>`;
 }
 
+// "claude-sonnet-4-6" → "Sonnet 4.6"; "claude-opus-4-7" → "Opus 4.7"; leave
+// unfamiliar shapes alone.
 function prettyModel(m: string): string {
 	const match = m.match(/^claude-(sonnet|opus|haiku)-(\d+)-(\d+)/i);
 	if (!match) return m;
@@ -349,6 +503,7 @@ function prettyModel(m: string): string {
 	return `${family![0]!.toUpperCase() + family!.slice(1)} ${major}.${minor}`;
 }
 
+// 12345 → "12.3k". Avoids the "1234 tok" eye-strain shape.
 export function formatTokens(n: number): string {
 	if (n < 1000) return String(n);
 	if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	formatCost,
 	formatDuration,
 	formatToolUseLine,
 	parsePlan,
@@ -191,7 +192,9 @@ describe("render — terminal state", () => {
 		expect(out).toContain("🎉 <b>Done</b> · 9s");
 		expect(out).toContain("📋 Plan (2/3)");
 		expect(out).toContain("✓ <s>scaffold</s>");
-		expect(out).toContain("◦ test");
+		// First not-done item is marked as the current focus (►), not a
+		// pending bullet — matches the focus-window plan rendering.
+		expect(out).toContain("► <b>test</b>");
 	});
 
 	it("failed shows error + rolling log + plan", () => {
@@ -267,7 +270,7 @@ describe("parsePlan", () => {
 });
 
 describe("renderPlan", () => {
-	it("renders done items with strikethrough and undone with a bullet", () => {
+	it("renders done items with strikethrough and marks the first undone item as current focus", () => {
 		const html = renderPlan({
 			done: 1,
 			total: 2,
@@ -278,7 +281,23 @@ describe("renderPlan", () => {
 		});
 		expect(html).toContain("<b>📋 Plan (1/2)</b>");
 		expect(html).toContain("<s>do this</s>");
-		expect(html).toContain("◦ then this");
+		// First not-done = current ► (not a pending ◦)
+		expect(html).toContain("► <b>then this</b>");
+	});
+
+	it("only the FIRST not-done item gets the ► marker; the rest stay ◦", () => {
+		const html = renderPlan({
+			done: 0,
+			total: 3,
+			items: [
+				{ content: "alpha", done: false },
+				{ content: "beta", done: false },
+				{ content: "gamma", done: false },
+			],
+		});
+		expect(html).toContain("► <b>alpha</b>");
+		expect(html).toContain("◦ beta");
+		expect(html).toContain("◦ gamma");
 	});
 
 	it("escapes HTML in item content", () => {
@@ -311,7 +330,10 @@ describe("render — plan section", () => {
 		});
 		expect(out).toContain("📋 Plan (1/3)");
 		expect(out).toContain("<s>scaffold</s>");
-		expect(out).toContain("◦ wire it up");
+		// "wire it up" is the first not-done → marked as current focus.
+		expect(out).toContain("► <b>wire it up</b>");
+		// "test" stays as a pending bullet — only one ► per render.
+		expect(out).toContain("◦ test");
 	});
 });
 
@@ -334,5 +356,113 @@ describe("phaseToReactionEmoji", () => {
 		expect(phaseToReactionEmoji("EDITING")).toBe("✍️");
 		expect(phaseToReactionEmoji("DONE")).toBe("🎉");
 		expect(phaseToReactionEmoji("FAILED")).toBe("😭");
+	});
+});
+
+describe("render — focus window", () => {
+	const tool = (s: string) => `🔧 <code>${s}</code>`;
+	const read = (s: string) => `📖 <code>${s}</code>`;
+	const out = (s: string) => `<i>↳ ${s}</i>`;
+	const err = (s: string) => `<i>✗ ${s}</i>`;
+
+	it("expands the CURRENT op with its ↳ output, indented", () => {
+		const lines = [
+			read("/some/file.ts"),
+			out("file contents excerpt..."),
+			tool("git status"),
+			out("On branch main"),
+		];
+		const html = render({
+			startedAt: Date.now() - 5000,
+			stepCount: 2,
+			phase: "RUNNING",
+			lines,
+		});
+		// CURRENT (last tool) keeps both the command + its output line
+		expect(html).toContain("git status");
+		expect(html).toContain("On branch main");
+		// Output is indented (under the tool line)
+		expect(html).toMatch(/git status<\/code>.*?&nbsp;.*?On branch main/);
+	});
+
+	it("compresses RECENT tool lines (basename + truncation) and drops their non-error output", () => {
+		const lines = [
+			read("/home/user/.claude.json"),
+			out("470 some line content from the file"),
+			tool("ls -la /very/long/directory/path"),
+			tool("git status"),
+		];
+		const html = render({
+			startedAt: Date.now() - 5000,
+			stepCount: 3,
+			phase: "RUNNING",
+			lines,
+		});
+		// RECENT read line shows basename only — full path dropped
+		expect(html).toContain(".claude.json");
+		expect(html).not.toContain("/home/user/.claude.json");
+		// Non-error output on RECENT is dropped (only CURRENT keeps ↳ output)
+		expect(html).not.toContain("470 some line content");
+	});
+
+	it("collapses OLDER ops (4+ ago) into <blockquote expandable> with a count header", () => {
+		const lines = [
+			read("/file1"),
+			read("/file2"),
+			read("/file3"),
+			read("/file4"),
+			tool("ls"),
+			tool("pwd"),
+			tool("whoami"),
+		];
+		const html = render({
+			startedAt: Date.now() - 5000,
+			stepCount: 7,
+			phase: "RUNNING",
+			lines,
+		});
+		expect(html).toContain("<blockquote expandable>");
+		expect(html).toMatch(/<i>4 earlier ops?<\/i>/);
+		// The 3 most-recent ops are above the fold
+		expect(html).toContain("whoami");
+		expect(html).toContain("pwd");
+		expect(html).toContain("ls");
+	});
+
+	it("ERROR outputs survive even in RECENT and OLDER tiers (silent failures are the worst hide)", () => {
+		const lines = [
+			tool("rm -rf /"),
+			err("Operation not permitted"),
+			tool("ls"),
+			tool("pwd"),
+			tool("date"),
+		];
+		const html = render({
+			startedAt: Date.now() - 5000,
+			stepCount: 5,
+			phase: "RUNNING",
+			lines,
+		});
+		// rm error is at OLDER position but must still be visible
+		expect(html).toContain("Operation not permitted");
+	});
+});
+
+describe("formatCost", () => {
+	it("rounds to 2 decimals for normal range", () => {
+		expect(formatCost(0.07811774999999999)).toBe("$0.08");
+		expect(formatCost(0.92322625)).toBe("$0.92");
+	});
+	it("shows <$0.01 below one cent instead of $0.00", () => {
+		expect(formatCost(0.005)).toBe("<$0.01");
+		expect(formatCost(0.009)).toBe("<$0.01");
+	});
+	it("returns empty for zero/negative", () => {
+		expect(formatCost(0)).toBe("");
+		expect(formatCost(-1)).toBe("");
+	});
+	it("drops decimals once we're past $10", () => {
+		expect(formatCost(12.456)).toBe("$12");
+		expect(formatCost(1.42)).toBe("$1.42");
 	});
 });

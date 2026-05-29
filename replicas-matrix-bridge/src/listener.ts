@@ -35,6 +35,14 @@ export class MatrixListener {
 			await this.state.storage.setAlarm(Date.now() + 100);
 			return new Response("ok");
 		}
+		if (req.method === "POST" && url.pathname === "/reset") {
+			// Drop the since token so the next /sync starts cleanly. Used when
+			// the access token / device changes — the to_device queue on the
+			// new device starts fresh.
+			await this.state.storage.delete("since");
+			await this.state.storage.setAlarm(Date.now() + 100);
+			return new Response("ok");
+		}
 		if (req.method === "POST" && url.pathname === "/stop") {
 			await this.state.storage.deleteAlarm();
 			return new Response("ok");

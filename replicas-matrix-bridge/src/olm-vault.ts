@@ -51,6 +51,10 @@ export class OlmVault {
 	async fetch(req: Request): Promise<Response> {
 		const url = new URL(req.url);
 		try {
+			if (req.method === "POST" && url.pathname === "/reset") {
+				await this.state.storage.deleteAll();
+				return Response.json({ ok: true });
+			}
 			if (req.method === "POST" && url.pathname === "/bootstrap") return await this.bootstrap();
 			if (req.method === "GET" && url.pathname === "/identity") return await this.identity();
 			if (req.method === "POST" && url.pathname === "/upload-device") return await this.uploadDevice();

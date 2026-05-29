@@ -56,6 +56,14 @@ export default {
 			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));
 			return stub.fetch("https://vault/identity");
 		}
+		if (req.method === "POST" && url.pathname === "/admin/listener/reset") {
+			const stub = env.LISTENER.get(env.LISTENER.idFromName("global"));
+			return stub.fetch("https://listener/reset", { method: "POST" });
+		}
+		if (req.method === "POST" && url.pathname === "/admin/vault/reset") {
+			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));
+			return stub.fetch("https://vault/reset", { method: "POST" });
+		}
 		if (req.method === "POST" && url.pathname === "/admin/vault/bootstrap") {
 			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));
 			return stub.fetch("https://vault/bootstrap", { method: "POST" });

@@ -58,7 +58,7 @@ REPLICAS_MODEL_OVERRIDE = "claude-sonnet-4-6"
 REPLICAS_THINKING_OVERRIDE = "medium"
 # Bot device id on matrix.org (the device the MATRIX_ACCESS_TOKEN was minted
 # for). Used as the id in the Olm device-key upload + signature subject.
-MATRIX_DEVICE_ID = "5hFpeVVZb4"
+MATRIX_DEVICE_ID = "Ww3fWv0z7s"
 
 # Secrets (set via `wrangler secret put`):
 #   MATRIX_ACCESS_TOKEN  — `syt_…` from Beeper Desktop → Settings → Help & About → Show access token

@@ -251,6 +251,11 @@ export class ReplicaPoller {
 		let resultIsError = false;
 		let resultErrorMsg: string | null = null;
 		let pendingAssistantText: string | null = null;
+		// Track where the latest text-narration line landed so we can drop it
+		// before terminal — otherwise the user sees the same content twice
+		// (once truncated in the Done frame's 💬 line and once fully rendered
+		// as the markdown reply right under it).
+		let lastTextNarrationIdx: number | null = null;
 		let appended = false;
 
 		for (const ev of fresh) {
@@ -284,6 +289,7 @@ export class ReplicaPoller {
 						} else {
 							const narration = thinkingLine(block.text);
 							currentAction = narration;
+							lastTextNarrationIdx = lines.length;
 							lines.push(`💬 ${narration}`);
 							appended = true;
 							// Any assistant text means the agent is actively responding —
@@ -306,6 +312,14 @@ export class ReplicaPoller {
 		}
 
 		if (!resultText && sawResult && pendingAssistantText) resultText = pendingAssistantText;
+
+		// If we're about to send a final markdown reply that mirrors the last
+		// 💬 narration we pushed, drop the narration. Without this, the Done
+		// frame shows the response in italic narration AND the reply lands as
+		// a separate markdown bubble underneath — duplicate content.
+		if (sawResult && !resultIsError && resultText && lastTextNarrationIdx !== null) {
+			lines.splice(lastTextNarrationIdx, 1);
+		}
 
 		const writes: Record<string, unknown> = {
 			lines,

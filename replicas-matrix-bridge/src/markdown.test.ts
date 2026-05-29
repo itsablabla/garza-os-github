@@ -75,4 +75,43 @@ describe("markdownToTelegramHtml", () => {
 		expect(html).toContain("<i>italic</i>");
 		expect(html).toContain("<s>strike</s>");
 	});
+
+	it("renders ATX headers as <h1>-<h6>", () => {
+		expect(markdownToTelegramHtml("# Big")).toContain("<h1>Big</h1>");
+		expect(markdownToTelegramHtml("### Smaller")).toContain("<h3>Smaller</h3>");
+		expect(markdownToTelegramHtml("###### Smallest")).toContain("<h6>Smallest</h6>");
+	});
+
+	it("renders bullet lists as <ul><li>", () => {
+		const out = markdownToTelegramHtml("- one\n- two\n- three");
+		expect(out).toContain("<ul><li>one</li><li>two</li><li>three</li></ul>");
+	});
+
+	it("renders numbered lists as <ol><li>", () => {
+		const out = markdownToTelegramHtml("1. first\n2. second");
+		expect(out).toContain("<ol><li>first</li><li>second</li></ol>");
+	});
+
+	it("blank lines between paragraphs become <br><br>", () => {
+		expect(markdownToTelegramHtml("first\n\nsecond")).toBe("first<br><br>second");
+	});
+
+	it("the actual tools-list response shape renders cleanly", () => {
+		const md = [
+			"# Available Tools",
+			"",
+			"**Core (loaded):**",
+			"- Files: Read, Write, Edit",
+			"- Shell: Bash",
+			"",
+			"**Skills:**",
+			"- update-config",
+			"- replicas-agent",
+		].join("\n");
+		const html = markdownToTelegramHtml(md);
+		expect(html).toContain("<h1>Available Tools</h1>");
+		expect(html).toContain("<b>Core (loaded):</b>");
+		expect(html).toContain("<ul><li>Files: Read, Write, Edit</li><li>Shell: Bash</li></ul>");
+		expect(html).toContain("<ul><li>update-config</li><li>replicas-agent</li></ul>");
+	});
 });

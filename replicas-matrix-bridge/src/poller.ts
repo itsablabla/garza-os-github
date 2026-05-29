@@ -144,16 +144,28 @@ export class ReplicaPoller {
 		// running (status event live, no terminal yet). Don't reset — just
 		// update watch + inject a 💬 You: line, let the alarm chain pick up
 		// the agent's response.
+		//
+		// We ALSO gate on phase here. There's a race window between
+		// setTerminal (phase=DONE, 🎉 placed on the user's prompt) and
+		// pendingCleanup being set (which only happens after flushFinalReply
+		// finishes). A user who follow-ups in that ~1s window would otherwise
+		// fall into steering and inherit the previous turn's "🎉 Done · Ns"
+		// header on what's actually a fresh turn — visible as a premature
+		// done-emoji on the new prompt. Treating DONE/FAILED as terminal
+		// closes the gate immediately.
 		const statusEventId = await this.state.storage.get<string>("statusEventId");
 		const pendingCleanup = await this.state.storage.get<boolean>("pendingCleanup");
+		const priorPhase = await this.state.storage.get<Phase>("phase");
+		const isPostTerminal = priorPhase === "DONE" || priorPhase === "FAILED";
 		console.log(
-			`[poller] /watch arrived replica=${body.replicaId} ev=${body.startEventId} prior_replicaId=${prior?.replicaId ?? "none"} statusEventId=${statusEventId ?? "none"} pendingCleanup=${pendingCleanup ?? "false"}`,
+			`[poller] /watch arrived replica=${body.replicaId} ev=${body.startEventId} prior_replicaId=${prior?.replicaId ?? "none"} statusEventId=${statusEventId ?? "none"} pendingCleanup=${pendingCleanup ?? "false"} priorPhase=${priorPhase ?? "none"}`,
 		);
 		if (
 			prior &&
 			prior.replicaId === body.replicaId &&
 			statusEventId !== undefined &&
-			!pendingCleanup
+			!pendingCleanup &&
+			!isPostTerminal
 		) {
 			const lines = (await this.state.storage.get<string[]>("lines")) ?? [];
 			if (body.userText) {

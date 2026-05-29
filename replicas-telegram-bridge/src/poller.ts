@@ -131,13 +131,23 @@ export class ReplicaPoller {
 		// — just update the watch spec, drop a 💬 You: line into the rolling
 		// log so the user sees their steer landed, and let the existing alarm
 		// chain pick up the agent's response to the new input.
+		// Race-guard: between setTerminal (phase=DONE, 🎉 placed on the
+		// user's prompt) and pendingCleanup being set (only happens after
+		// flushFinalReply finishes), a follow-up that lands in the window
+		// would otherwise fall into steering and inherit the previous
+		// turn's "🎉 Done · Ns" header on a fresh turn — premature done
+		// emoji on the new prompt. Phase=DONE/FAILED closes the gate
+		// immediately even before pendingCleanup commits.
 		const statusMessageId = await this.state.storage.get<number>("statusMessageId");
 		const pendingCleanup = await this.state.storage.get<boolean>("pendingCleanup");
+		const priorPhase = await this.state.storage.get<Phase>("phase");
+		const isPostTerminal = priorPhase === "DONE" || priorPhase === "FAILED";
 		if (
 			prior &&
 			prior.replicaId === body.replicaId &&
 			statusMessageId !== undefined &&
-			!pendingCleanup
+			!pendingCleanup &&
+			!isPostTerminal
 		) {
 			const lines = (await this.state.storage.get<string[]>("lines")) ?? [];
 			if (body.userText) {

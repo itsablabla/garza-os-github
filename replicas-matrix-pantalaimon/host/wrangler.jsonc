@@ -1,0 +1,25 @@
+{
+	"name": "replicas-matrix-pantalaimon",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-05-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"containers": [
+		{
+			"class_name": "PantalaimonContainer",
+			"image": "registry.cloudflare.com/14adde85f76060c6edef6f3239d36e6a/replicas-matrix-pantalaimon:v1",
+			"max_instances": 1,
+			"instance_type": "basic"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "class_name": "PantalaimonContainer", "name": "PAN" }
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["PantalaimonContainer"]
+		}
+	]
+}

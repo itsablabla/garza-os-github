@@ -488,48 +488,25 @@ export class ReplicaPoller {
 				return;
 			}
 
-			// Persist the final reply text so subsequent alarm ticks can
-			// retry the send if this one fails — long turns occasionally drop
-			// the message mid-Promise.all, leaving the room with a Done frame
-			// but no answer. The cleanup alarm waits 30s, giving us many
-			// retry windows before storage gets wiped.
-			if (resultText) await this.state.storage.put("pendingFinalReply", resultText);
+			// Embed the final reply HTML directly in the Done frame instead
+			// of sending it as a separate message. Single message per turn
+			// means Beeper (and other bridges) can't drop "the second
+			// message" — there is no second message. Also kills the whole
+			// pendingFinalReply / retry / drain machinery: the body either
+			// shows up in the Done frame's edit or it doesn't, and the edit
+			// uses a stable txn id anyway so the homeserver dedupes retries.
+			const resultHtml = resultText
+				? markdownToHtml(resultText.slice(0, REPLY_MAX_LEN))
+				: undefined;
 
-			await this.setTerminal(watch, { kind: "done", durationSec: seconds });
+			await this.setTerminal(watch, {
+				kind: "done",
+				durationSec: seconds,
+				resultHtml,
+			});
 
-			await this.flushFinalReply(watch);
-
-			// Only mark for cleanup once the reply is confirmed delivered.
-			const stillPending = await this.state.storage.get<string>("pendingFinalReply");
-			if (!stillPending) {
-				await this.state.storage.put("pendingCleanup", true);
-				await this.state.storage.setAlarm(Date.now() + 30_000);
-			} else {
-				// Retry next alarm — short cadence so the user doesn't wait.
-				await this.state.storage.setAlarm(Date.now() + 2_000);
-			}
-			return;
-		}
-
-		// Even when no fresh claude-result is in this batch, a previous tick
-		// might have set sawResult but failed the send. Drain pendingFinalReply
-		// on every alarm tick so the retry actually fires. This branch is
-		// SELF-TERMINATING: once the drain succeeds we transition straight
-		// to the 30s cleanup alarm; while it's still failing we retry every
-		// 2s. We must NOT fall through to the active-poll ticker below
-		// because that would (a) keep re-editing the Done frame with an
-		// ever-increasing elapsed time and (b) reset the alarm to 180ms,
-		// canceling the proper cleanup transition entirely.
-		const pendingReply = await this.state.storage.get<string>("pendingFinalReply");
-		if (pendingReply) {
-			await this.flushFinalReply(watch);
-			const stillPending = await this.state.storage.get<string>("pendingFinalReply");
-			if (stillPending) {
-				await this.state.storage.setAlarm(Date.now() + 2_000);
-			} else {
-				await this.state.storage.put("pendingCleanup", true);
-				await this.state.storage.setAlarm(Date.now() + 30_000);
-			}
+			await this.state.storage.put("pendingCleanup", true);
+			await this.state.storage.setAlarm(Date.now() + 30_000);
 			return;
 		}
 
@@ -634,7 +611,12 @@ export class ReplicaPoller {
 
 	private async setTerminal(
 		watch: WatchSpec,
-		terminal: { kind: "done" | "failed"; durationSec: number; errorMsg?: string },
+		terminal: {
+			kind: "done" | "failed";
+			durationSec: number;
+			errorMsg?: string;
+			resultHtml?: string;
+		},
 	): Promise<void> {
 		const s = await this.loadState();
 		if (!s) return;
@@ -645,40 +627,6 @@ export class ReplicaPoller {
 		await this.unpinStatus(watch);
 		if (watch.startEventId) {
 			await this.swapReaction(watch, terminal.kind === "done" ? "🎉" : "😭");
-		}
-	}
-
-	private async sendFinalReply(watch: WatchSpec, text: string): Promise<boolean> {
-		const html = markdownToHtml(text.slice(0, REPLY_MAX_LEN));
-		// Stable txn id so retries hit Matrix's homeserver-side dedupe
-		// (the spec guarantees: same txn id from the same access token
-		// returns the same event_id, never a duplicate message). Without
-		// this, a transient fetch error after the server already accepted
-		// the send would cause the next retry tick to create a duplicate.
-		const txn = `final-${watch.replicaId}`;
-		try {
-			await sendMessage(matrixEnv(this.env), watch.roomId, html, { txnId: txn });
-			return true;
-		} catch (e) {
-			console.log(`[poller] sendFinalReply failed: ${e instanceof Error ? e.message : e}`);
-			return false;
-		}
-	}
-
-	// Drain the pendingFinalReply slot: try sending, clear on success.
-	// Delete-after-success is crash-safe — if the worker dies mid-send the
-	// slot survives and the next alarm tick retries. Duplicate sends on
-	// successful but transient-throwing fetches are prevented by the
-	// stable txn id in sendFinalReply (Matrix homeserver dedupe).
-	private async flushFinalReply(watch: WatchSpec): Promise<void> {
-		const pending = await this.state.storage.get<string>("pendingFinalReply");
-		if (!pending) return;
-		const ok = await this.sendFinalReply(watch, pending);
-		if (ok) {
-			await this.state.storage.delete("pendingFinalReply");
-			console.log(`[poller] pendingFinalReply flushed (len=${pending.length})`);
-		} else {
-			console.log(`[poller] pendingFinalReply retry will fire next alarm`);
 		}
 	}
 

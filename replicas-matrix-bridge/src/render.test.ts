@@ -448,6 +448,70 @@ describe("render — focus window", () => {
 	});
 });
 
+describe("Done frame — resultHtml embedding", () => {
+	it("embeds the result HTML below the op log so a single message carries the answer", () => {
+		const out = render({
+			startedAt: Date.now() - 56000,
+			stepCount: 0,
+			phase: "DONE",
+			lines: [],
+			terminal: {
+				kind: "done",
+				durationSec: 56,
+				resultHtml: "<p>Yes — found it. <b>Beeper MCP:</b> https://example.com</p>",
+			},
+		});
+		expect(out).toContain("🎉 <b>Done</b> · 56s");
+		expect(out).toContain("Yes — found it.");
+		expect(out).toContain("<b>Beeper MCP:</b>");
+		expect(out).toContain("https://example.com");
+	});
+
+	it("text-only Done frame is no longer empty — header + subtitle + body all in one message", () => {
+		const out = render({
+			startedAt: Date.now() - 18000,
+			stepCount: 0,
+			phase: "DONE",
+			lines: [],
+			systemInfo: { model: "claude-opus-4-7", mcpCount: 13, mcpActive: 7, toolCount: 181 },
+			resultMeta: { costUsd: 1.0222, inputTokens: 50, outputTokens: 320 },
+			terminal: {
+				kind: "done",
+				durationSec: 18,
+				resultHtml: "<p>Did I find what?</p>",
+			},
+		});
+		// Header has the new cost format
+		expect(out).toContain("$1.02");
+		expect(out).not.toContain("$1.0222");
+		// Subtitle is present
+		expect(out).toContain("Opus 4.7");
+		expect(out).toContain("7/13 MCP");
+		// Body is embedded — the user actually SEES the answer in the Done frame
+		expect(out).toContain("Did I find what?");
+	});
+
+	it("failed turn never embeds resultHtml — only the errorMsg", () => {
+		const out = render({
+			startedAt: Date.now() - 8000,
+			stepCount: 0,
+			phase: "FAILED",
+			lines: [],
+			terminal: {
+				kind: "failed",
+				durationSec: 8,
+				errorMsg: "agent error: rate limited",
+				// Even if a caller accidentally passes resultHtml on a failed
+				// turn, it must NOT appear (we keep the failure surface clean).
+				resultHtml: "<p>This should not appear.</p>",
+			},
+		});
+		expect(out).toContain("❌ <b>Failed</b>");
+		expect(out).toContain("agent error: rate limited");
+		expect(out).not.toContain("This should not appear");
+	});
+});
+
 describe("formatCost", () => {
 	it("rounds to 2 decimals for normal range", () => {
 		expect(formatCost(0.07811774999999999)).toBe("$0.08");

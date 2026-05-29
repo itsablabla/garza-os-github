@@ -47,7 +47,10 @@
 //   [blockquote: exit code 1: tests failed]
 
 const STATUS_MAX_LEN = 200;
-const MAX_RENDER_CHARS = 3800;
+// Matrix events cap around 64KB; keep well under that since clients vary.
+// Set generously because terminal frames now embed the full result body
+// instead of sending it as a separate message (single-message turns).
+const MAX_RENDER_CHARS = 30_000;
 
 export type Phase =
 	| "STARTING"
@@ -100,7 +103,16 @@ export interface StatusState {
 	systemInfo?: SystemInfo;
 	resultMeta?: ResultMeta;
 	contextUsage?: ContextUsage;
-	terminal?: { kind: "done" | "failed"; durationSec: number; errorMsg?: string };
+	terminal?: {
+		kind: "done" | "failed";
+		durationSec: number;
+		errorMsg?: string;
+		// Pre-rendered HTML of the agent's final reply. When set,
+		// renderTerminal embeds it inline below the focus-window op log
+		// so the user gets one complete message per turn (no separate
+		// markdown-reply message that Beeper/bridges can drop).
+		resultHtml?: string;
+	};
 }
 
 export function parsePlan(text: string): PlanState | null {
@@ -460,6 +472,14 @@ function renderTerminal(state: StatusState): string {
 		const ops = parseOps(state.lines);
 		const opBlocks = renderOpsFocused(ops);
 		if (opBlocks.length > 0) blocks.push(opBlocks.join("<br>"));
+	}
+
+	// Embed the agent's final reply directly in the Done frame. Single
+	// message per turn — Beeper and other bridges can't drop a "second
+	// message" if there is no second message. Sits below the focus-window
+	// log so reading order is past → present → answer.
+	if (isDone && state.terminal!.resultHtml) {
+		blocks.push(state.terminal!.resultHtml);
 	}
 
 	let out = blocks.join("<br><br>");

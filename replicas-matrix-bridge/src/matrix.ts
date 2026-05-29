@@ -41,7 +41,17 @@ async function call(
 	});
 	const text = await r.text();
 	if (!r.ok) {
-		throw new MatrixError(r.status, text.slice(0, 400), path);
+		// Extract retry_after_ms from M_LIMIT_EXCEEDED bodies so callers can
+		// honor the homeserver's backoff hint instead of dumb-retrying into a
+		// rate limit storm.
+		let retryAfterMs: number | undefined;
+		if (r.status === 429) {
+			try {
+				const parsed = JSON.parse(text) as { retry_after_ms?: number };
+				if (typeof parsed.retry_after_ms === "number") retryAfterMs = parsed.retry_after_ms;
+			} catch {}
+		}
+		throw new MatrixError(r.status, text.slice(0, 400), path, retryAfterMs);
 	}
 	if (!text) return {};
 	try {
@@ -55,11 +65,13 @@ export class MatrixError extends Error {
 	status: number;
 	bodyPrefix: string;
 	path: string;
-	constructor(status: number, bodyPrefix: string, path: string) {
+	retryAfterMs?: number;
+	constructor(status: number, bodyPrefix: string, path: string, retryAfterMs?: number) {
 		super(`matrix ${path} ${status}: ${bodyPrefix}`);
 		this.status = status;
 		this.bodyPrefix = bodyPrefix;
 		this.path = path;
+		this.retryAfterMs = retryAfterMs;
 	}
 }
 

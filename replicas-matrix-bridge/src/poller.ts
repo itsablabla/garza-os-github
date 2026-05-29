@@ -1,6 +1,6 @@
 import type { Env } from "./index";
 import { markdownToTelegramHtml as markdownToHtml } from "./markdown";
-import { editMessage, react, redact, sendMessage, typing, unpin, pin } from "./matrix";
+import { editMessage, MatrixError, react, redact, sendMessage, typing, unpin, pin } from "./matrix";
 import {
 	escapeHtml,
 	formatToolUseLine,
@@ -75,8 +75,12 @@ const FIRST_POLL_DELAY_MS = 80;
 const ACTIVE_POLL_INTERVAL_MS = 180;
 const BACKOFF_POLL_INTERVAL_MS = 3000;
 const MAX_WATCH_DURATION_MS = 30 * 60 * 1000;
-const EDIT_MIN_INTERVAL_MS = 500;
-const TICKER_REFRESH_MS = 1500;
+// 1500ms ticker was too aggressive — matrix.org's per-room send rate cap
+// kicked in on long turns, causing M_LIMIT_EXCEEDED and the dreaded
+// fragmented-status-frame regression in group rooms. 3000ms gives the
+// homeserver breathing room while still feeling live.
+const EDIT_MIN_INTERVAL_MS = 1000;
+const TICKER_REFRESH_MS = 3000;
 const TYPING_INTERVAL_MS = 25_000;
 const REPLY_MAX_LEN = 16_000; // Matrix doesn't cap message length the way Telegram does (~16KB safe)
 
@@ -581,6 +585,17 @@ export class ReplicaPoller {
 		const isTerminal = s.terminal !== undefined;
 		if (!isTerminal && statusEventId !== undefined && since < EDIT_MIN_INTERVAL_MS) return;
 
+		// Honor matrix.org's per-room rate limit. When we hit 429 the server
+		// hands us a retry_after_ms; respect it instead of dumb-retrying
+		// every alarm tick. The "until" timestamp is stored in DO storage so
+		// it survives ticks. Terminal renders skip the gate (the Done frame
+		// is the load-bearing one — it's worth queueing past the limit if
+		// needed; the homeserver will accept it on the next allowed slot).
+		if (!isTerminal) {
+			const rlUntil = (await this.state.storage.get<number>("rateLimitedUntil")) ?? 0;
+			if (Date.now() < rlUntil) return;
+		}
+
 		await this.state.storage.put({ lastRendered: text, lastEditAt: Date.now() });
 
 		if (statusEventId !== undefined) {
@@ -588,6 +603,17 @@ export class ReplicaPoller {
 				await editMessage(matrixEnv(this.env), watch.roomId, statusEventId, text);
 				return;
 			} catch (e) {
+				// 429 from matrix.org: park the renderer for retry_after_ms
+				// and do NOT fall through to sendMessage. The fallback used
+				// to create a fresh bubble per failed edit, fragmenting the
+				// status frame into N separate messages — that's what the
+				// "wonky group chats" symptom was.
+				if (e instanceof MatrixError && e.status === 429) {
+					const waitMs = Math.max(1_000, e.retryAfterMs ?? 5_000);
+					await this.state.storage.put("rateLimitedUntil", Date.now() + waitMs);
+					console.log(`[poller] editMessage 429 — backing off ${waitMs}ms`);
+					return;
+				}
 				console.log(`[poller] editMessage failed: ${e instanceof Error ? e.message : e}`);
 			}
 		}
@@ -605,6 +631,12 @@ export class ReplicaPoller {
 				}
 			}
 		} catch (e) {
+			if (e instanceof MatrixError && e.status === 429) {
+				const waitMs = Math.max(1_000, e.retryAfterMs ?? 5_000);
+				await this.state.storage.put("rateLimitedUntil", Date.now() + waitMs);
+				console.log(`[poller] sendMessage 429 — backing off ${waitMs}ms`);
+				return;
+			}
 			console.log(`[poller] sendMessage failed: ${e instanceof Error ? e.message : e}`);
 		}
 	}

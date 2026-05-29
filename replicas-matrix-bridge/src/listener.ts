@@ -75,6 +75,34 @@ export class MatrixListener {
 		// avoid re-processing everything ever sent in joined rooms.
 		if (!since) return;
 
+		// Drain to_device events before timeline so any m.room_key shares
+		// land in the live keystore before we try to decrypt this batch's
+		// encrypted room messages.
+		const toDevice = resp.to_device?.events ?? [];
+		for (const ev of toDevice) {
+			if (ev.type !== "m.room.encrypted") continue;
+			if (ev.content?.algorithm !== "m.olm.v1.curve25519-aes-sha2") continue;
+			const senderKey = (ev.content as { sender_key?: string }).sender_key;
+			if (!senderKey) continue;
+			const ourId = await this.ourCurve25519();
+			const entry = ev.content.ciphertext?.[ourId];
+			if (!entry?.body || entry.type === undefined) continue;
+			try {
+				const stub = this.env.OLM_VAULT.get(this.env.OLM_VAULT.idFromName("global"));
+				const r = await stub.fetch("https://vault/decrypt-todevice", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ senderCurve25519: senderKey, ciphertext: { type: entry.type, body: entry.body } }),
+				});
+				const j = (await r.json()) as { ok?: boolean; captured?: boolean };
+				console.log(
+					`[listener] to_device sender=${senderKey.slice(0, 12)}… type=${entry.type} ok=${j.ok} captured=${j.captured}`,
+				);
+			} catch (e) {
+				console.log(`[listener] to_device decrypt failed: ${e instanceof Error ? e.message : e}`);
+			}
+		}
+
 		const invited = resp.rooms?.invite ?? {};
 		for (const roomId of Object.keys(invited)) {
 			console.log(`[listener] auto-join invite ${roomId}`);
@@ -129,6 +157,7 @@ export class MatrixListener {
 	}
 
 	private cachedKeys: MegolmSessionKey[] | undefined;
+	private cachedCurve25519: string | undefined;
 
 	private megolmKeys(): MegolmSessionKey[] {
 		if (this.cachedKeys === undefined) {
@@ -136,6 +165,32 @@ export class MatrixListener {
 			console.log(`[listener] loaded ${this.cachedKeys.length} Megolm session keys`);
 		}
 		return this.cachedKeys;
+	}
+
+	private async ourCurve25519(): Promise<string> {
+		if (this.cachedCurve25519) return this.cachedCurve25519;
+		const stub = this.env.OLM_VAULT.get(this.env.OLM_VAULT.idFromName("global"));
+		const r = await stub.fetch("https://vault/identity");
+		const j = (await r.json()) as { identity_keys?: { curve25519?: string } };
+		this.cachedCurve25519 = j.identity_keys?.curve25519 ?? "";
+		return this.cachedCurve25519;
+	}
+
+	// Live keystore lookup: ask the OlmVault for a Megolm session_key captured
+	// via /sendToDevice. Falls back to the static import.
+	private async findKey(roomId: string, sessionId: string, keys: MegolmSessionKey[]): Promise<string | undefined> {
+		const fromImport = findSessionKey(keys, roomId, sessionId);
+		if (fromImport) return fromImport;
+		try {
+			const stub = this.env.OLM_VAULT.get(this.env.OLM_VAULT.idFromName("global"));
+			const r = await stub.fetch(
+				`https://vault/lookup?room=${encodeURIComponent(roomId)}&session=${encodeURIComponent(sessionId)}`,
+			);
+			const j = (await r.json()) as { found?: boolean; session_key?: string | null };
+			return j.found && j.session_key ? j.session_key : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 
 	private async tryDecrypt(
@@ -148,7 +203,7 @@ export class MatrixListener {
 		const sessionId = content.session_id as string | undefined;
 		const ciphertext = content.ciphertext as string | undefined;
 		if (!sessionId || !ciphertext) return undefined;
-		const sessionKey = findSessionKey(keys, roomId, sessionId);
+		const sessionKey = await this.findKey(roomId, sessionId, keys);
 		if (!sessionKey) {
 			console.log(`[listener] no key for room=${roomId} session=${sessionId.slice(0, 16)}…`);
 			return undefined;

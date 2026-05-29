@@ -241,6 +241,19 @@ export interface SyncResponse {
 		invite?: Record<string, unknown>;
 		join?: Record<string, JoinedRoomSync>;
 	};
+	to_device?: { events?: ToDeviceEvent[] };
+	device_one_time_keys_count?: Record<string, number>;
+}
+
+export interface ToDeviceEvent {
+	type?: string;
+	sender?: string;
+	content?: {
+		algorithm?: string;
+		sender_key?: string;
+		ciphertext?: Record<string, { type?: 0 | 1; body?: string }>;
+		[k: string]: unknown;
+	};
 }
 
 export interface JoinedRoomSync {
@@ -279,6 +292,9 @@ export async function sync(
 		},
 		presence: { types: [] },
 		account_data: { types: [] },
+		// We want every Olm-encrypted to-device event so we can decrypt
+		// m.room_key shares and keep up with Megolm rotation live.
+		to_device: { types: ["m.room.encrypted"] },
 	});
 	const params = new URLSearchParams();
 	params.set("timeout", String(timeoutMs));

@@ -113,6 +113,9 @@ export class ReplicaPoller {
 		// the agent's response.
 		const statusEventId = await this.state.storage.get<string>("statusEventId");
 		const pendingCleanup = await this.state.storage.get<boolean>("pendingCleanup");
+		console.log(
+			`[poller] /watch arrived replica=${body.replicaId} ev=${body.startEventId} prior_replicaId=${prior?.replicaId ?? "none"} statusEventId=${statusEventId ?? "none"} pendingCleanup=${pendingCleanup ?? "false"}`,
+		);
 		if (
 			prior &&
 			prior.replicaId === body.replicaId &&

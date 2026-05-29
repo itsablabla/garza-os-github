@@ -226,13 +226,16 @@ function renderActive(state: StatusState): string {
 		const dropped = older.length - trimmedOlder.length;
 
 		if (trimmedOlder.length > 0) {
-			const dropNote = dropped > 0 ? `\n<i>… ${dropped} earlier</i>` : "";
-			blocks.push(`<blockquote expandable>${trimmedOlder.join("\n")}${dropNote}</blockquote>`);
+			const dropNote = dropped > 0 ? `<br><i>… ${dropped} earlier</i>` : "";
+			blocks.push(`<blockquote expandable>${trimmedOlder.join("<br>")}${dropNote}</blockquote>`);
 		}
-		blocks.push(recent.join("\n"));
+		blocks.push(recent.join("<br>"));
 	}
 
-	let out = blocks.join("\n\n");
+	// Matrix HTML treats source `\n` as whitespace, so use `<br><br>` between
+	// blocks. (Plain `\n` in the formatted_body collapses to spaces, which is
+	// why tool-call lines were appearing on one line in clients.)
+	let out = blocks.join("<br><br>");
 	if (out.length > MAX_RENDER_CHARS) out = out.slice(0, MAX_RENDER_CHARS - 1) + "…";
 	return out;
 }
@@ -243,7 +246,10 @@ export function renderPlan(plan: PlanState): string {
 		const escaped = escapeHtml(item.content);
 		lines.push(item.done ? `✓ <s>${escaped}</s>` : `◦ ${escaped}`);
 	}
-	return lines.join("\n");
+	// Plan items are stacked with <br> so the renderer puts each on its own
+	// line — using \n leaves them concatenated since Matrix HTML treats
+	// newlines as whitespace.
+	return lines.join("<br>");
 }
 
 function renderTerminal(state: StatusState): string {
@@ -272,13 +278,13 @@ function renderTerminal(state: StatusState): string {
 		const trimmedOlder = older.slice(-Math.max(0, MAX_TOTAL_LINES - recent.length));
 		const dropped = older.length - trimmedOlder.length;
 		if (trimmedOlder.length > 0) {
-			const dropNote = dropped > 0 ? `\n<i>… ${dropped} earlier</i>` : "";
-			blocks.push(`<blockquote expandable>${trimmedOlder.join("\n")}${dropNote}</blockquote>`);
+			const dropNote = dropped > 0 ? `<br><i>… ${dropped} earlier</i>` : "";
+			blocks.push(`<blockquote expandable>${trimmedOlder.join("<br>")}${dropNote}</blockquote>`);
 		}
-		blocks.push(recent.join("\n"));
+		blocks.push(recent.join("<br>"));
 	}
 
-	let out = blocks.join("\n\n");
+	let out = blocks.join("<br><br>");
 	if (out.length > MAX_RENDER_CHARS) out = out.slice(0, MAX_RENDER_CHARS - 1) + "…";
 	return out;
 }

@@ -15,12 +15,16 @@ export async function handleMatrixMessage(
 	const key = `room:${roomId}`;
 	const seenKey = `seen:${roomId}:${eventId}`;
 	const seen = await env.MAP.get(seenKey);
-	if (seen) return;
+	if (seen) {
+		console.log(`[dispatch] DEDUPE skip room=${roomId} ev=${eventId}`);
+		return;
+	}
 	await env.MAP.put(seenKey, "1", { expirationTtl: 600 });
 
 	const ackP = react(matrixEnvShape(env), roomId, eventId, "👀").catch(() => "");
 
 	const existing = await env.MAP.get(key);
+	console.log(`[dispatch] proceed room=${roomId} ev=${eventId} existing=${existing ?? "none"} text=${JSON.stringify(text.slice(0, 50))}`);
 	let replicaId: string | null = null;
 	let spawnedFresh = false;
 

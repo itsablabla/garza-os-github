@@ -54,11 +54,18 @@ export class ReplicaPoller {
 		if (req.method === "POST" && url.pathname === "/watch") {
 			const body = (await req.json()) as WatchSpec;
 			await this.state.storage.put("watch", body);
-			await this.state.storage.put("lastSeenCount", 0);
+			// Snapshot the current event count so a follow-up message in an
+			// existing replica doesn't re-broadcast prior turns' final replies as
+			// the answer to the new message. For a fresh spawn this is usually
+			// 0; for a follow-up it's whatever the replica had accumulated from
+			// previous turns.
+			const baseline = await this.snapshotEventCount(body.replicaId);
+			await this.state.storage.put("lastSeenCount", baseline);
 			await this.state.storage.put("statusLines", [] as string[]);
 			await this.state.storage.put("startedAt", Date.now());
 			await this.state.storage.delete("statusMessageId");
 			await this.state.storage.delete("pendingCleanup");
+			console.log(`[poller] /watch replica=${body.replicaId} baseline=${baseline}`);
 			// Open the status message immediately so the user sees activity right
 			// after the bot's 👀 reaction, before the first /history poll.
 			await this.appendStatus("🤔 <i>Starting…</i>");
@@ -71,6 +78,28 @@ export class ReplicaPoller {
 			return new Response("ok");
 		}
 		return new Response("not found", { status: 404 });
+	}
+
+	private async snapshotEventCount(replicaId: string): Promise<number> {
+		try {
+			const r = await fetch(
+				`${this.env.REPLICAS_API_BASE}/replica/${replicaId}/history?limit=1`,
+				{
+					headers: {
+						Authorization: `Bearer ${this.env.REPLICAS_API_KEY}`,
+						"Replicas-Org-Id": this.env.REPLICAS_ORG_ID,
+					},
+				},
+			);
+			if (!r.ok) return 0;
+			const body = (await r.json()) as HistoryResponse & { total?: number };
+			// Prefer total when the API returns it (cheaper than fetching the
+			// full list); fall back to events.length when not.
+			if (typeof body.total === "number") return body.total;
+			return (body.events ?? []).length;
+		} catch {
+			return 0;
+		}
 	}
 
 	private async appendStatus(line: string): Promise<void> {

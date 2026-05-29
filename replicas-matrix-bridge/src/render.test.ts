@@ -551,22 +551,44 @@ describe("Done frame — result is its own message block", () => {
 });
 
 describe("renderUsageWindows", () => {
-	it("renders 5h + 7d token totals with the 🪙 anchor", () => {
+	it("renders % left for both windows when quotas are configured", () => {
+		// 47k consumed against a 5M quota → 99% left.
+		// 215k consumed against a 100M quota → 100% left (rounds up).
 		const out = render({
 			startedAt: Date.now() - 5000,
 			stepCount: 0,
 			phase: "STARTING",
 			lines: [],
-			usageWindows: { tok5h: 47_000, tok7d: 215_000, cost5h: 0.42, cost7d: 1.92 },
+			usageWindows: {
+				tok5h: 47_000,
+				tok7d: 215_000,
+				cost5h: 0,
+				cost7d: 0,
+				pct5hLeft: 99,
+				pct7dLeft: 100,
+			},
 		});
 		expect(out).toContain("🪙");
-		expect(out).toContain("5h:");
-		expect(out).toContain("47k tok");
-		expect(out).toContain("7d:");
-		expect(out).toContain("215k tok");
+		expect(out).toContain("5h: 99% left");
+		expect(out).toContain("7d: 100% left");
+		// No raw token figure in the rendered fragment when % is present.
+		expect(out).not.toContain("47k tok");
 	});
 
-	it("hides the usage line when both windows are zero", () => {
+	it("falls back to absolute tokens when quotas are not configured", () => {
+		const out = render({
+			startedAt: Date.now() - 5000,
+			stepCount: 0,
+			phase: "STARTING",
+			lines: [],
+			usageWindows: { tok5h: 47_000, tok7d: 215_000, cost5h: 0, cost7d: 0 },
+		});
+		expect(out).toContain("🪙");
+		expect(out).toContain("5h: 47k tok");
+		expect(out).toContain("7d: 215k tok");
+	});
+
+	it("hides the usage line when both windows are zero and no quota set", () => {
 		const out = render({
 			startedAt: Date.now() - 5000,
 			stepCount: 0,
@@ -577,7 +599,24 @@ describe("renderUsageWindows", () => {
 		expect(out).not.toContain("🪙");
 	});
 
-	it("formats M (millions) for very large token totals", () => {
+	it("clamps to 0% left when consumption exceeds quota", () => {
+		const out = render({
+			startedAt: Date.now() - 5000,
+			stepCount: 0,
+			phase: "STARTING",
+			lines: [],
+			usageWindows: {
+				tok5h: 6_000_000,
+				tok7d: 0,
+				cost5h: 0,
+				cost7d: 0,
+				pct5hLeft: 0,
+			},
+		});
+		expect(out).toContain("5h: 0% left");
+	});
+
+	it("formats M (millions) for very large absolute token totals in fallback", () => {
 		const out = render({
 			startedAt: Date.now() - 5000,
 			stepCount: 0,

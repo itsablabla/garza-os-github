@@ -1016,7 +1016,16 @@ export class ReplicaPoller {
 				}
 			}
 			if (tok5h > 0 || tok7d > 0) {
-				usageWindows = { tok5h, tok7d, cost5h, cost7d };
+				// Compute % left against the env-configured quotas. When a
+				// quota is zero/unset, leave the pct field undefined and the
+				// renderer falls back to absolute tokens for that window.
+				const quota5h = parseInt(this.env.USAGE_QUOTA_5H_TOK ?? "0", 10) || 0;
+				const quota7d = parseInt(this.env.USAGE_QUOTA_7D_TOK ?? "0", 10) || 0;
+				const pct5hLeft =
+					quota5h > 0 ? Math.max(0, Math.round((1 - tok5h / quota5h) * 100)) : undefined;
+				const pct7dLeft =
+					quota7d > 0 ? Math.max(0, Math.round((1 - tok7d / quota7d) * 100)) : undefined;
+				usageWindows = { tok5h, tok7d, cost5h, cost7d, pct5hLeft, pct7dLeft };
 			}
 		} catch {}
 

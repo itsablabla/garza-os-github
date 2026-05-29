@@ -118,15 +118,19 @@ export interface SessionTotals {
 }
 
 // Rolling-window usage aggregates computed from the per-org usage log
-// kept in KV (`usage:org`). Surfaced in the subtitle instead of per-turn
-// cost — because these are subscription plans (Claude Max, OpenAI Pro)
-// and absolute $ doesn't matter to the user; what matters is how much
-// they've consumed in the 5h reset window and 7d sliding window.
+// kept in KV (`usage:org`). Surfaced in the subtitle as percentage of
+// quota REMAINING (not absolute consumed) — what matters for a
+// subscription plan (Claude Max, OpenAI Pro) is how much room is left
+// in the 5h reset window and the weekly view, not the absolute cost.
+// Quotas come from env vars (USAGE_QUOTA_{5H,7D}_TOK); when a quota is
+// zero, that window's pct field is undefined and the renderer hides it.
 export interface UsageWindows {
 	tok5h: number;
 	tok7d: number;
 	cost5h: number;
 	cost7d: number;
+	pct5hLeft?: number; // 0..100, computed from quota5h - tok5h when quota > 0
+	pct7dLeft?: number; // 0..100, computed from quota7d - tok7d when quota > 0
 }
 
 export interface StatusState {
@@ -748,13 +752,23 @@ export function formatTokens(n: number): string {
 	return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
-// Render the 5h + 7d rolling token usage as a single subtitle fragment.
-// This is what matters for subscription plans (Claude Max / OpenAI Pro):
-// "what have I burned in the 5h reset window and this week."
+// Render the 5h + 7d rolling usage as a single subtitle fragment.
+// What matters for subscription plans (Claude Max / OpenAI Pro) is the
+// percentage of quota REMAINING — not absolute consumed tokens, which
+// the user has to mentally divide against their plan's published limit.
+// When both quotas are unset (env vars at 0) we fall back to absolute
+// tokens so the row is still informational; when only one quota is set
+// we render that one as %, the other as absolute.
 export function renderUsageWindows(u: UsageWindows | undefined): string {
 	if (!u) return "";
-	if (u.tok5h === 0 && u.tok7d === 0) return "";
-	return `🪙 5h: ${formatTokens(u.tok5h)} tok · 7d: ${formatTokens(u.tok7d)} tok`;
+	if (u.tok5h === 0 && u.tok7d === 0 && u.pct5hLeft === undefined && u.pct7dLeft === undefined) {
+		return "";
+	}
+	const seg5h =
+		u.pct5hLeft !== undefined ? `5h: ${u.pct5hLeft}% left` : `5h: ${formatTokens(u.tok5h)} tok`;
+	const seg7d =
+		u.pct7dLeft !== undefined ? `7d: ${u.pct7dLeft}% left` : `7d: ${formatTokens(u.tok7d)} tok`;
+	return `🪙 ${seg5h} · ${seg7d}`;
 }
 
 export function formatDuration(seconds: number): string {

@@ -25,6 +25,12 @@ export interface Env {
 	// out of band and stashed here). Used by the listener to decrypt
 	// m.room.encrypted events whose session_id we hold.
 	MATRIX_MEGOLM_KEYS_JSON?: string;
+	// Subscription-plan token quotas for the 5h reset window + weekly
+	// view in the status pane subtitle. Parsed as ints; "0" or unset
+	// hides the corresponding window. Defaults configured in
+	// wrangler.toml for the Claude Max $200 plan; override per-account.
+	USAGE_QUOTA_5H_TOK?: string;
+	USAGE_QUOTA_7D_TOK?: string;
 }
 
 export { ReplicaPoller } from "./poller";

@@ -59,6 +59,13 @@ REPLICAS_THINKING_OVERRIDE = "medium"
 # Bot device id on matrix.org (the device the MATRIX_ACCESS_TOKEN was minted
 # for). Used as the id in the Olm device-key upload + signature subject.
 MATRIX_DEVICE_ID = "Ww3fWv0z7s"
+# Subscription-plan quotas for the 🪙 row in the status pane subtitle.
+# Defaults are mid-range estimates for Claude Max $200 (~250–1000 Sonnet
+# messages × ~10k tok/msg per 5h window; ~480–960 hrs/wk × ~115k tok/hr
+# for the weekly view). Override to match your actual plan; set to "0" to
+# hide a window. Values are total token budgets in absolute tokens.
+USAGE_QUOTA_5H_TOK = "5000000"
+USAGE_QUOTA_7D_TOK = "100000000"
 
 # Secrets (set via `wrangler secret put`):
 #   MATRIX_ACCESS_TOKEN  — `syt_…` from Beeper Desktop → Settings → Help & About → Show access token

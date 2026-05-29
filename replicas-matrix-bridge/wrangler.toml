@@ -3,6 +3,14 @@ main = "src/index.ts"
 compatibility_date = "2026-05-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Bundle the vendored @matrix-org/olm WASM (~150KB) as a Workers module so
+# we can run Olm 1:1 decryption for /sendToDevice m.room_key events. This
+# is the live-key-sharing path that lets the bridge keep up with Megolm
+# session rotation without manual re-imports.
+rules = [
+  { type = "CompiledWasm", globs = ["**/olm.wasm"], fallthrough = false },
+]
+
 # KV namespace for (matrix-roomId) -> replicaId mapping + idempotency.
 # Create with: wrangler kv:namespace create MAP
 [[kv_namespaces]]

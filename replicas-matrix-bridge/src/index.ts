@@ -49,6 +49,26 @@ export default {
 			return stub.fetch("https://listener/debug");
 		}
 
+		if (req.method === "GET" && url.pathname === "/debug/olm") {
+			try {
+				const { getOlm } = await import("./olm-init");
+				const Olm = await getOlm();
+				const acc = new Olm.Account();
+				acc.create();
+				const ids = acc.identity_keys();
+				acc.free();
+				return new Response(
+					JSON.stringify({ ok: true, library_version: Olm.get_library_version(), identity_keys: JSON.parse(ids) }),
+					{ headers: { "Content-Type": "application/json" } },
+				);
+			} catch (e) {
+				return new Response(
+					JSON.stringify({ ok: false, error: e instanceof Error ? `${e.name}: ${e.message}` : String(e), stack: e instanceof Error ? e.stack : undefined }),
+					{ status: 500, headers: { "Content-Type": "application/json" } },
+				);
+			}
+		}
+
 		if (req.method === "GET" && url.pathname.startsWith("/debug/watcher/")) {
 			const replicaId = url.pathname.slice("/debug/watcher/".length);
 			if (!replicaId) return new Response("missing replica id", { status: 400 });

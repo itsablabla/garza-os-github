@@ -35,6 +35,10 @@ interface WatchSpec {
 	roomId: string;
 	startEventId?: string;
 	userText?: string;
+	// Event id of the dispatch-side 👀 ack reaction. Threaded through so the
+	// poller can redact it when it places the terminal 🎉/😭 — otherwise
+	// both stack on the user's prompt.
+	ackReactionId?: string;
 }
 
 interface HistoryEvent {
@@ -138,7 +142,12 @@ export class ReplicaPoller {
 					.slice(0, 200);
 				lines.push(`💬 <i>You: ${escaped}</i>`);
 			}
-			await this.state.storage.put({ watch: body, lines, lastRendered: "" });
+			const steerWrites: Record<string, unknown> = { watch: body, lines, lastRendered: "" };
+			// Re-point reactionEventId at the NEW prompt's 👀 so terminal
+			// places the final emoji on whatever message the user just sent
+			// (and redacts that 👀, not the prior phase emoji).
+			if (body.ackReactionId) steerWrites.reactionEventId = body.ackReactionId;
+			await this.state.storage.put(steerWrites);
 			console.log(`[poller] /watch steer replica=${body.replicaId} ev=${body.startEventId}`);
 			await this.renderAndSend();
 			return new Response("ok");
@@ -156,7 +165,7 @@ export class ReplicaPoller {
 			"plan",
 		]);
 		const baseline = await baselineP;
-		await this.state.storage.put({
+		const seed: Record<string, unknown> = {
 			watch: body,
 			lastSeenCount: baseline,
 			lines: [],
@@ -164,7 +173,12 @@ export class ReplicaPoller {
 			phase: "STARTING",
 			currentAction: "",
 			startedAt: Date.now(),
-		});
+		};
+		// Seed reactionEventId with the dispatch-side 👀 so the first
+		// swapReaction (terminal) redacts it. Without this the 👀 hangs
+		// around forever next to the 🎉.
+		if (body.ackReactionId) seed.reactionEventId = body.ackReactionId;
+		await this.state.storage.put(seed);
 		console.log(`[poller] /watch replica=${body.replicaId} baseline=${baseline}`);
 
 		await this.renderAndSend();

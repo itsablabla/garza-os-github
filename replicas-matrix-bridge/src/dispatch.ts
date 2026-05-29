@@ -21,6 +21,8 @@ export async function handleMatrixMessage(
 	}
 	await env.MAP.put(seenKey, "1", { expirationTtl: 600 });
 
+	// Capture the 👀 ack reaction id so the watcher can redact it later when
+	// it swaps in the terminal emoji — otherwise both stack on the prompt.
 	const ackP = react(matrixEnvShape(env), roomId, eventId, "👀").catch(() => "");
 
 	const existing = await env.MAP.get(key);
@@ -28,11 +30,11 @@ export async function handleMatrixMessage(
 	let replicaId: string | null = null;
 	let spawnedFresh = false;
 
+	// Run send + spawn in parallel with the ack so the user sees activity
+	// fast, then await ackP at the end so we can forward the reaction id
+	// to the watcher (it needs the id to redact the 👀 before placing 🎉).
 	if (existing) {
-		const [followUp] = await Promise.all([
-			sendFollowUp(existing, text, env, roomId, eventId),
-			startWatcher(env, existing, roomId, eventId, text),
-		]);
+		const followUp = await sendFollowUp(existing, text, env, roomId, eventId);
 		if (followUp.ok) {
 			replicaId = existing;
 		} else if (followUp.gone) {
@@ -45,7 +47,10 @@ export async function handleMatrixMessage(
 		spawnedFresh = true;
 	}
 
-	await ackP;
+	const ackReactionId = await ackP;
+	if (replicaId) {
+		await startWatcher(env, replicaId, roomId, eventId, text, ackReactionId);
+	}
 
 	if (!replicaId) {
 		console.log(`[dispatch] no replica for room=${roomId} ev=${eventId}`);
@@ -102,9 +107,7 @@ async function createReplica(
 	if (!r.ok) return null;
 	const json = (await r.json()) as ReplicaCreateResponse;
 	const replicaId = json.replica?.id ?? json.id ?? null;
-	if (replicaId) {
-		await startWatcher(env, replicaId, roomId, eventId, text);
-	}
+	// Caller does the startWatcher with the awaited ack reaction id.
 	return replicaId;
 }
 
@@ -114,6 +117,7 @@ async function startWatcher(
 	roomId: string,
 	eventId: string,
 	text: string,
+	ackReactionId?: string,
 ): Promise<void> {
 	const stub = env.WATCHER.get(env.WATCHER.idFromName(replicaId));
 	await stub
@@ -125,6 +129,7 @@ async function startWatcher(
 				roomId,
 				startEventId: eventId,
 				userText: text,
+				ackReactionId: ackReactionId || undefined,
 			}),
 		})
 		.catch(() => {});

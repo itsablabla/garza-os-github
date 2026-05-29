@@ -58,28 +58,42 @@ if [[ -z "${CHAT_ID:-}" ]]; then
   exit 3
 fi
 
-# Telegram caps sendMessage body at 4096 chars. Chunk safely.
-chunk() {
-  local text="$1"
-  while [[ ${#text} -gt 0 ]]; do
-    printf '%s\n' "${text:0:$MAX_LEN}"
-    text="${text:$MAX_LEN}"
-  done
-}
-
 send_one() {
   local body="$1"
   local args=(--data-urlencode "chat_id=$CHAT_ID" --data-urlencode "text=$body")
   if [[ -n "${THREAD_ID:-}" ]]; then
     args+=(--data-urlencode "message_thread_id=$THREAD_ID")
   fi
-  curl -sS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" "${args[@]}" \
-    | grep -q '"ok":true' || {
-      err "sendMessage failed"
-      return 1
-    }
+  local resp
+  resp=$(curl -sS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" "${args[@]}")
+  if echo "$resp" | grep -q '"ok":true'; then
+    return 0
+  fi
+  # Telegram rate limit: {"ok":false,"error_code":429,"parameters":{"retry_after":N}}
+  local retry
+  retry=$(echo "$resp" | grep -oE '"retry_after":[0-9]+' | head -1 | cut -d: -f2)
+  if [[ -n "$retry" ]]; then
+    sleep "$((retry + 1))"
+    curl -sS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" "${args[@]}" \
+      | grep -q '"ok":true' && return 0
+  fi
+  err "sendMessage failed: $(echo "$resp" | head -c 300)"
+  return 1
 }
 
-while IFS= read -r piece; do
-  send_one "$piece"
-done < <(chunk "$MSG")
+# Telegram caps sendMessage at 4096 chars but accepts embedded newlines in a
+# single body. Send the whole message as one call when it fits; only split
+# into MAX_LEN chunks (with a small inter-chunk pause to respect the
+# 1 msg/sec per chat rate limit) when the text is genuinely too long.
+if [[ ${#MSG} -le $MAX_LEN ]]; then
+  send_one "$MSG"
+else
+  text="$MSG"
+  first=1
+  while [[ ${#text} -gt 0 ]]; do
+    [[ $first -eq 0 ]] && sleep 1
+    send_one "${text:0:$MAX_LEN}"
+    text="${text:$MAX_LEN}"
+    first=0
+  done
+fi

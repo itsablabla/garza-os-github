@@ -217,55 +217,63 @@ export class ReplicaPoller {
 			!pendingCleanup &&
 			!isPostTerminal
 		) {
-			const lines = (await this.state.storage.get<string[]>("lines")) ?? [];
-			let segmentStartLine =
-				(await this.state.storage.get<number>("segmentStartLine")) ?? 0;
-			// Seal-on-steer: when the current segment has *any* content,
-			// seal it (final-edit with "▶️ continues" tail) and start a
-			// new message that opens with the 💬 You: line. Each steered
-			// prompt is a clear narrative boundary, so always splitting on
-			// steer matches the "more calls = more blocks" intuition. If
-			// the current segment is empty (steered before any tool ran),
-			// just push the 💬 line into the existing segment — no seal.
-			if (SEGMENT_TOOL_CAP > 0 && lines.length > segmentStartLine) {
-				const priorState = await this.loadState();
-				if (priorState) await this.sealCurrentSegment(priorState);
-				segmentStartLine = lines.length;
-			}
-			if (body.userText) {
-				const escaped = body.userText
-					.replace(/&/g, "&amp;")
-					.replace(/</g, "&lt;")
-					.replace(/>/g, "&gt;")
-					.slice(0, 200);
-				lines.push(`💬 <i>You: ${escaped}</i>`);
-			}
-			const steerWrites: Record<string, unknown> = {
-				watch: body,
-				lines,
-				lastRendered: "",
-				segmentStartLine,
-			};
-			// Re-point reactionEventId at the NEW prompt's 👀 so terminal
-			// places the final emoji on whatever message the user just sent
-			// (and redacts that 👀, not the prior phase emoji).
-			//
-			// BEFORE overwriting, redact the prior reactionEventId (the prior
-			// prompt's 👀). Otherwise it stays orphaned forever — never
-			// redacted, never replaced — leaving a stale 👀 on the old prompt
-			// after the final 🎉 lands on the new one. Strict "one emoji at a
-			// time" invariant: each prompt converges to exactly one reaction.
-			if (body.ackReactionId) {
-				const priorReactionId = await this.state.storage.get<string>("reactionEventId");
-				if (priorReactionId && priorReactionId !== body.ackReactionId) {
-					redact(matrixEnv(this.env), body.roomId, priorReactionId, "steering: prior prompt finished")
-						.catch((e) => console.log(`[poller] steering redact prior 👀 failed: ${e instanceof Error ? e.message : e}`));
+			// Steer-race protection (audit finding #1): the DO is
+			// single-threaded but `await` yields. alarmInner does
+			// fetch() on Replicas /history which can yield for 100s of
+			// ms — during that window a steer /watch can race the
+			// alarm's read-modify-write on `lines`. Wrap the steer's
+			// state mutation in blockConcurrencyWhile so the alarm's
+			// in-flight body completes before we touch `lines`, and
+			// the final `lines` array reflects BOTH the tool events
+			// the alarm just projected AND the steer's 💬 You: line.
+			await this.state.blockConcurrencyWhile(async () => {
+				const lines = (await this.state.storage.get<string[]>("lines")) ?? [];
+				let segmentStartLine =
+					(await this.state.storage.get<number>("segmentStartLine")) ?? 0;
+				// Seal-on-steer: when the current segment has any content,
+				// seal it (final-edit with "▶️ continues" tail) and start
+				// a new message that opens with the 💬 You: line. Each
+				// steered prompt is a clear narrative boundary, so always
+				// splitting on steer matches the "more calls = more blocks"
+				// intuition. If the current segment is empty (steered
+				// before any tool ran), just push the 💬 line into the
+				// existing segment — no seal.
+				if (SEGMENT_TOOL_CAP > 0 && lines.length > segmentStartLine) {
+					const priorState = await this.loadState();
+					if (priorState) await this.sealCurrentSegment(priorState);
+					segmentStartLine = lines.length;
 				}
-				steerWrites.reactionEventId = body.ackReactionId;
-			}
-			await this.state.storage.put(steerWrites);
-			console.log(`[poller] /watch steer replica=${body.replicaId} ev=${body.startEventId}`);
-			await this.renderAndSend();
+				if (body.userText) {
+					const escaped = body.userText
+						.replace(/&/g, "&amp;")
+						.replace(/</g, "&lt;")
+						.replace(/>/g, "&gt;")
+						.slice(0, 200);
+					lines.push(`💬 <i>You: ${escaped}</i>`);
+				}
+				const steerWrites: Record<string, unknown> = {
+					watch: body,
+					lines,
+					lastRendered: "",
+					segmentStartLine,
+				};
+				// Re-point reactionEventId at the NEW prompt's 👀 so
+				// terminal places the final emoji on whatever message
+				// the user just sent (and redacts that 👀, not the prior
+				// phase emoji). BEFORE overwriting, redact the prior
+				// reactionEventId — otherwise it stays orphaned forever.
+				if (body.ackReactionId) {
+					const priorReactionId = await this.state.storage.get<string>("reactionEventId");
+					if (priorReactionId && priorReactionId !== body.ackReactionId) {
+						redact(matrixEnv(this.env), body.roomId, priorReactionId, "steering: prior prompt finished")
+							.catch((e) => console.log(`[poller] steering redact prior 👀 failed: ${e instanceof Error ? e.message : e}`));
+					}
+					steerWrites.reactionEventId = body.ackReactionId;
+				}
+				await this.state.storage.put(steerWrites);
+				console.log(`[poller] /watch steer replica=${body.replicaId} ev=${body.startEventId}`);
+				await this.renderAndSend();
+			});
 			return new Response("ok");
 		}
 
@@ -885,6 +893,38 @@ export class ReplicaPoller {
 			}
 		}
 
+		// Audit finding #6: cap unbounded lines[] growth on thinking-
+		// heavy turns. Long planning sessions push hundreds of `💬`
+		// narration lines that bloat the serialized state on every alarm
+		// tick (~180ms cadence). Cap at LINES_HARD_CAP entries from the
+		// current segment by dropping the OLDEST `💬 …` / `↳ …` lines
+		// first — tool lifecycle entries (🔄/✅/❌) and the `💬 You:`
+		// steer markers are preserved because the renderer and the
+		// toolLineIndex map depend on them.
+		const LINES_HARD_CAP = 300;
+		if (lines.length - segmentStartLine > LINES_HARD_CAP) {
+			const isProtected = (l: string): boolean =>
+				l.startsWith("🔄 ") || l.startsWith("✅ ") || l.startsWith("❌ ") ||
+				l.startsWith("💬 <i>You:");
+			let i = segmentStartLine;
+			let dropped = 0;
+			while (i < lines.length && lines.length - segmentStartLine > LINES_HARD_CAP) {
+				if (!isProtected(lines[i]!)) {
+					lines.splice(i, 1);
+					dropped++;
+					// Shift any toolLineIndex pointer that referenced a
+					// later line down by one. Tool entries at or after i
+					// stay where they are; their stored index decrements.
+					for (const [id, idx] of Object.entries(toolLineIndex)) {
+						if (idx > i) toolLineIndex[id] = idx - 1;
+					}
+				} else {
+					i += 1;
+				}
+			}
+			if (dropped > 0) console.log(`[poller] lines cap: dropped ${dropped} non-tool lines from segment`);
+		}
+
 		const writes: Record<string, unknown> = {
 			lines,
 			phase,
@@ -1239,8 +1279,18 @@ export class ReplicaPoller {
 				allOk = false;
 			}
 			if (replyEventId && !(await present(replyEventId))) {
-				console.log(`[poller] verify: replyEventId ${replyEventId.slice(0, 16)}… missing from room=${watch.roomId}`);
+				console.log(`[poller] verify: replyEventId ${replyEventId.slice(0, 16)}… missing from room=${watch.roomId} — re-sending`);
 				allOk = false;
+				// Audit finding #4: don't just log — actually recover.
+				// sendReplyAsOwnBlock uses txnId=reply-${startEventId} so
+				// Matrix dedupes if the send did actually land but the
+				// /event/{id} lookup raced. The reply HTML is stashed in
+				// "lastResultHtml" during setTerminal for this exact case.
+				const html = await this.state.storage.get<string>("lastResultHtml");
+				if (html) {
+					await this.state.storage.delete("replyEventId");
+					await this.sendReplyAsOwnBlock(watch, html);
+				}
 			}
 			return allOk;
 		} catch (e) {
@@ -1429,19 +1479,40 @@ export class ReplicaPoller {
 		// renderAndSend / unpinStatus / swapReaction left phase=FAILED in
 		// storage but pendingCleanup unset, and the alarm chain would
 		// tick the Failed pane forever without ever entering the cleanup
-		// branch. Empirically observed today on the main Jada DM
-		// (`!MuDFIwCLjwWtsZbcmc:matrix.org`) — a 15-minute ticker on a
-		// frozen Failed frame. Setting cleanup directives atomically
-		// here means even a partial setTerminal still tears down cleanly.
-		await this.state.storage.put({
+		// branch (observed today on the main Jada DM).
+		const atomicWrites: Record<string, unknown> = {
 			phase: s.phase,
 			pendingCleanup: true,
-		});
+		};
+		// Stash the result HTML so verifyTurnDelivered() can recover a
+		// missing reply by re-sending with the stable txn id. Without
+		// this, the reply HTML lives only in the transient terminal
+		// object on this call's stack frame.
+		if (terminal.resultHtml) atomicWrites.lastResultHtml = terminal.resultHtml;
+		await this.state.storage.put(atomicWrites);
 		await this.state.storage.setAlarm(Date.now() + 30_000);
-		await this.renderAndSend(s);
-		await this.unpinStatus(watch);
+		// Audit finding #7: wrap each remaining step in its own try/catch
+		// so they always run independently. Without this, a thrown
+		// renderAndSend left unpinStatus + swapReaction unrun — meaning
+		// the user kept their 👀 ack reaction forever (no 🎉/😭) and the
+		// status message stayed pinned. Now each step logs locally and
+		// the rest of the cleanup still fires.
+		try {
+			await this.renderAndSend(s);
+		} catch (e) {
+			console.log(`[poller] setTerminal renderAndSend failed: ${e instanceof Error ? e.message : e}`);
+		}
+		try {
+			await this.unpinStatus(watch);
+		} catch (e) {
+			console.log(`[poller] setTerminal unpinStatus failed: ${e instanceof Error ? e.message : e}`);
+		}
 		if (watch.startEventId) {
-			await this.swapReaction(watch, terminal.kind === "done" ? "🎉" : "😭");
+			try {
+				await this.swapReaction(watch, terminal.kind === "done" ? "🎉" : "😭");
+			} catch (e) {
+				console.log(`[poller] setTerminal swapReaction failed: ${e instanceof Error ? e.message : e}`);
+			}
 		}
 	}
 

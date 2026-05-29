@@ -111,18 +111,30 @@ export class MatrixListener {
 				}
 				try {
 					const { plaintext } = await decryptMegolm(sessionKey, ciphertext);
-					const inner = JSON.parse(plaintext) as { type?: string; content?: { msgtype?: string; body?: string } };
-					if (inner.type !== "m.room.message" || inner.content?.msgtype !== "m.text" || !inner.content.body) {
+					const inner = JSON.parse(plaintext) as {
+						type?: string;
+						content?: Record<string, unknown>;
+					};
+					const innerMsgtype = inner.content?.msgtype as string | undefined;
+					const innerBody = inner.content?.body as string | undefined;
+					if (inner.type !== "m.room.message" || innerMsgtype !== "m.text" || !innerBody) {
 						skipped += 1;
 						continue;
 					}
-					const synthetic = { content: ev.content as Record<string, unknown> };
+					// Audit finding #8: shouldHandleMessage reads m.mentions
+					// + formatted_body from content. The OUTER ev.content is
+					// the encrypted wrapper (algorithm/ciphertext/session_id),
+					// so passing it here means mention detection never sees
+					// the decrypted mention list. Pass the DECRYPTED inner
+					// content so multi-user encrypted rooms apply mention
+					// gates correctly.
+					const synthetic = { content: inner.content ?? {} };
 					const shouldDispatch = await this.shouldHandleMessage(body.roomId, synthetic);
 					if (!shouldDispatch) {
 						skipped += 1;
 						continue;
 					}
-					await this.dispatchMessage(body.roomId, ev.event_id, inner.content.body);
+					await this.dispatchMessage(body.roomId, ev.event_id, innerBody);
 					dispatched += 1;
 				} catch (e) {
 					console.log(`[recover-room] decrypt fail: ${e instanceof Error ? e.message : e}`);
@@ -415,11 +427,30 @@ export class MatrixListener {
 		sender: string,
 		senderKey: string | undefined,
 	): Promise<void> {
-		const dedupKey = `key-request:${roomId}:${sessionId}`;
-		const lastAt = (await this.state.storage.get<number>(dedupKey)) ?? 0;
+		// Audit finding #2: dedup window is 5 minutes, but the prior
+		// implementation stored `key-request:{room}:{session}` → ts which
+		// accumulated unbounded over time as Megolm sessions rotate (the
+		// dedupKey was never deleted). Bucket the key by 5-minute window
+		// so a stale bucket is naturally abandoned and a piggy-back
+		// cleanup keeps storage bounded.
 		const now = Date.now();
-		if (now - lastAt < 5 * 60 * 1000) return;
+		const BUCKET_MS = 5 * 60 * 1000;
+		const bucket = Math.floor(now / BUCKET_MS);
+		const dedupKey = `key-request:${roomId}:${sessionId}:${bucket}`;
+		const seen = await this.state.storage.get<number>(dedupKey);
+		if (seen) return; // already requested in the current 5-min bucket
 		await this.state.storage.put(dedupKey, now);
+		// Piggy-back cleanup: walk key-request:* prefix and delete any
+		// entry whose bucket is more than 2 buckets old. Bounded work
+		// because the prefix is small per DO.
+		try {
+			const prior = await this.state.storage.list({ prefix: "key-request:" });
+			for (const k of prior.keys()) {
+				const parts = k.split(":");
+				const b = parseInt(parts[parts.length - 1] ?? "0", 10);
+				if (b > 0 && bucket - b > 2) await this.state.storage.delete(k);
+			}
+		} catch { /* best-effort */ }
 
 		const requestId = `kr-${now}-${Math.random().toString(36).slice(2, 10)}`;
 		const ourDeviceId = this.env.MATRIX_DEVICE_ID ?? "Ww3fWv0z7s";

@@ -81,7 +81,18 @@ export async function handleMatrixMessage(
 		await watcherP;
 		if (followUp.ok) {
 			replicaId = existing;
-		} else if (followUp.gone) {
+		} else {
+			// Any non-ok response (including the explicit `gone` 404/410 and
+			// every other failure mode — 429, 5xx, network blip, etc.) falls
+			// through to fresh-spawn. Prior behavior dropped non-gone failures
+			// silently: 👀 was already on the prompt, but no replica was
+			// reachable and replicaId stayed null, so the user got a 👀 ack
+			// with no answer ever — the bot looked like it was thinking
+			// forever. Safer to lose the existing chat state than the user's
+			// message.
+			console.log(
+				`[dispatch] sendFollowUp failed for existing=${existing} gone=${followUp.gone} — respawning`,
+			);
 			env.WATCHER.get(env.WATCHER.idFromName(existing))
 				.fetch("https://watcher/cancel", { method: "POST" })
 				.catch(() => {});

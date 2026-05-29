@@ -116,6 +116,25 @@ export default {
 			return stub.fetch("https://watcher/debug", { method: "GET" });
 		}
 
+		if (req.method === "POST" && url.pathname.startsWith("/admin/watcher/") && url.pathname.endsWith("/cancel")) {
+			const replicaId = url.pathname.slice("/admin/watcher/".length, -"/cancel".length);
+			if (!replicaId) return new Response("missing replica id", { status: 400 });
+			const stub = env.WATCHER.get(env.WATCHER.idFromName(replicaId));
+			return stub.fetch("https://watcher/cancel", { method: "POST" });
+		}
+
+		if (req.method === "GET" && url.pathname.startsWith("/debug/roomname/")) {
+			const roomId = decodeURIComponent(url.pathname.slice("/debug/roomname/".length));
+			if (!roomId) return new Response("missing room id", { status: 400 });
+			const encoded = encodeURIComponent(roomId);
+			const r = await fetch(
+				`${env.MATRIX_HOMESERVER}/_matrix/client/v3/rooms/${encoded}/state/m.room.name/`,
+				{ headers: { Authorization: `Bearer ${env.MATRIX_ACCESS_TOKEN}` } },
+			);
+			const body = await r.text();
+			return new Response(body, { status: r.status, headers: { "Content-Type": "application/json" } });
+		}
+
 		if (req.method === "POST" && url.pathname === "/dispatch") {
 			const body = (await req.json()) as DispatchBody;
 			ctx.waitUntil(handleMatrixMessage(env, body.roomId, body.eventId, body.body));

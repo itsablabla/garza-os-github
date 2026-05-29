@@ -154,16 +154,19 @@ describe("render — active state", () => {
 
 describe("render — terminal state", () => {
 	it("done keeps the rolling log below the Done header", () => {
+		// Lines now ship with a 🔄/✅/❌ lifecycle prefix (see PR #14 in
+		// the bridges thread). Lines that have any lifecycle prefix mark
+		// the turn as non-text-only so the rolling log is preserved.
 		const out = render({
 			startedAt: Date.now() - 14000,
 			stepCount: 6,
 			phase: "EDITING",
-			lines: ["🔧 <code>ls</code>", "📖 src/index.ts"],
+			lines: ["✅ 🔧 <code>ls</code>", "✅ 📖 src/index.ts"],
 			terminal: { kind: "done", durationSec: 14 },
 		});
 		expect(out).toContain("🎉 <b>Done</b> · 14s");
 		expect(out).toContain("🔧 <code>ls</code>");
-		expect(out).toContain("📖 src/index.ts");
+		expect(out).toContain("src/index.ts");
 	});
 
 	it("done with no rolling content is just the header", () => {

@@ -63,6 +63,11 @@ export type Phase =
 	| "RUNNING"
 	| "TESTING"
 	| "SHIPPING"
+	// Anthropic upstream rate-limited the agent — Replicas emits
+	// claude-rate_limit_event. Surfaced as a distinct phase so the
+	// frozen status frame is legible ("waiting on Anthropic, not
+	// hung").
+	| "RATE_LIMITED"
 	| "DONE"
 	| "FAILED";
 
@@ -88,12 +93,28 @@ export interface ResultMeta {
 	costUsd: number;
 	inputTokens: number;
 	outputTokens: number;
+	// stop_reason from Replicas' claude-result. Surfaced on the Done
+	// header when it's anything other than "end_turn" so silent
+	// truncation (max_tokens etc.) is impossible to miss.
+	stopReason?: string;
+	// Count of tools the agent tried that were blocked by a permission
+	// hook. Pulled from claude-result.permission_denials[].length.
+	denials?: number;
 }
 
 export interface ContextUsage {
 	pct: number;
 	totalTokens: number;
 	maxTokens: number;
+}
+
+// Per-room totals accumulated across all turns in a steered
+// conversation. Kept in KV under `session:${roomId}`. Surfaced in the
+// subtitle once it's > 1 turn so the user sees cumulative spend.
+export interface SessionTotals {
+	costUsd: number;
+	steps: number;
+	turns: number;
 }
 
 export interface StatusState {
@@ -107,6 +128,18 @@ export interface StatusState {
 	systemInfo?: SystemInfo;
 	resultMeta?: ResultMeta;
 	contextUsage?: ContextUsage;
+	// Timestamp of the last NEW Replicas event we projected. When the
+	// alarm finds no new events for >5s and we're not in cleanup, the
+	// header gets a "· idle Ns" tail so the user can distinguish
+	// "waiting on Claude" from "actually frozen".
+	lastEventAt?: number;
+	// Deduped basenames of files the agent has touched via Read /
+	// Edit / Write / NotebookEdit. Rendered as a footer.
+	filesTouched?: string[];
+	// Per-room session totals (accumulated across steered turns). Only
+	// surfaced once turnCount > 1, so a single-turn conversation looks
+	// the same as before.
+	sessionTotals?: SessionTotals;
 	terminal?: {
 		kind: "done" | "failed";
 		durationSec: number;
@@ -149,6 +182,7 @@ const PHASE_EMOJI: Record<Phase, string> = {
 	RUNNING: "🔧",
 	TESTING: "🧪",
 	SHIPPING: "🚢",
+	RATE_LIMITED: "⏸",
 	DONE: "🎉",
 	FAILED: "❌",
 };
@@ -160,6 +194,7 @@ const PHASE_LABEL: Record<Phase, string> = {
 	RUNNING: "Running",
 	TESTING: "Testing",
 	SHIPPING: "Shipping",
+	RATE_LIMITED: "Rate-limited",
 	DONE: "Done",
 	FAILED: "Failed",
 };
@@ -244,6 +279,68 @@ export function formatCost(usd: number): string {
 	return `$${Math.round(usd)}`;
 }
 
+// Render the context-window usage as a tiny 10-segment bar plus the
+// percentage, e.g. `📊 ctx ▰▰▰▱▱▱▱▱▱▱ 28%`. When usage is >=85%, the
+// `📊` becomes `⚠️` so the user sees context exhaustion approaching
+// (OpenACP pattern). Returns "" when there's no usage data to show.
+export function renderContextUsage(usage: ContextUsage | undefined): string {
+	if (!usage || usage.pct <= 0) return "";
+	const pct = Math.round(usage.pct);
+	const segments = 10;
+	const filled = Math.min(segments, Math.max(0, Math.round((pct / 100) * segments)));
+	const bar = "▰".repeat(filled) + "▱".repeat(segments - filled);
+	const icon = pct >= 85 ? "⚠️" : "📊";
+	return `${icon} ctx ${bar} ${pct}%`;
+}
+
+// "📂 Files: foo.ts, bar.ts, baz.ts (+3 more)" footer. Basename-only;
+// dedupes and shows up to 6 names before collapsing the tail count.
+export function renderFilesTouched(files: string[] | undefined): string {
+	if (!files || files.length === 0) return "";
+	const VISIBLE = 6;
+	const basenames = files.map((p) => {
+		const parts = p.split("/");
+		return parts[parts.length - 1] || p;
+	});
+	const head = basenames.slice(0, VISIBLE).map(escapeHtml).join(", ");
+	const more = basenames.length > VISIBLE ? ` <i>(+${basenames.length - VISIBLE} more)</i>` : "";
+	return `📂 <b>Files:</b> ${head}${more}`;
+}
+
+// Human label for Anthropic's stop_reason. Only the unusual ones get
+// surfaced — `end_turn` returns "" so the happy path stays clean.
+export function stopReasonLabel(stop?: string): string {
+	switch (stop) {
+		case "end_turn":
+			return "";
+		case "max_tokens":
+			return "⚠️ cut off (max_tokens)";
+		case "tool_use":
+			return "⏸ stopped at tool_use";
+		case "pause_turn":
+			return "⏸ paused";
+		case "stop_sequence":
+			return "⏹ stop sequence";
+		case undefined:
+		case null:
+		case "":
+			return "";
+		default:
+			return `⏹ ${stop}`;
+	}
+}
+
+// Short elapsed-time format for per-tool tags: 0.4s / 12s / 1:24.
+export function formatToolElapsed(ms: number): string {
+	if (ms < 0) return "";
+	const sec = ms / 1000;
+	if (sec < 10) return `${sec.toFixed(1)}s`;
+	if (sec < 60) return `${Math.round(sec)}s`;
+	const m = Math.floor(sec / 60);
+	const s = Math.round(sec % 60);
+	return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 // Scan `lines` for the 🔄 / ✅ / ❌ lifecycle prefixes and tally a
 // "📋 Tools (M/N)" header line. Stateless — relies on the prefixes the
 // poller writes when it pairs each tool_use to its later tool_result.
@@ -267,13 +364,47 @@ export function renderToolsHeader(lines: string[]): string {
 	return `📋 <b>Tools (${done}/${total})</b>${allComplete}`;
 }
 
+// Per OpenACP: a long thinking phase that never makes a tool call
+// looks frozen at "Planning · 0s" forever. After 60s, prefix the label
+// with "Still …"; ticker is allowed to keep running until 180s, after
+// which the poller stops forcing re-renders (handled in the alarm
+// loop). The "Still …" label survives past 180s — it's just the
+// elapsed-time counter that freezes.
+const THINKING_STILL_THRESHOLD_MS = 60_000;
+
 function renderActive(state: StatusState): string {
-	const elapsedSec = Math.max(0, Math.round((Date.now() - state.startedAt) / 1000));
+	const elapsedMs = Math.max(0, Date.now() - state.startedAt);
+	const elapsedSec = Math.round(elapsedMs / 1000);
+
+	// "Still planning…" prefix when the phase has stalled — only applies
+	// while no tools have been called yet. As soon as a tool runs the
+	// label drops back to the normal "Planning" / "Running" etc.
+	const isThinkingPhase = state.phase === "STARTING" || state.phase === "PLANNING";
+	const isStuckThinking =
+		isThinkingPhase &&
+		state.stepCount === 0 &&
+		elapsedMs >= THINKING_STILL_THRESHOLD_MS;
+	const labelText = isStuckThinking
+		? `Still ${PHASE_LABEL[state.phase].toLowerCase()}…`
+		: PHASE_LABEL[state.phase];
+
 	const headerParts: string[] = [
-		`${PHASE_EMOJI[state.phase]} <b>${PHASE_LABEL[state.phase]}</b>`,
+		`${PHASE_EMOJI[state.phase]} <b>${labelText}</b>`,
 	];
 	if (state.stepCount > 0) headerParts.push(`step ${state.stepCount}`);
 	headerParts.push(formatDuration(elapsedSec));
+
+	// Idle indicator: if the last projected event was >5s ago AND we're
+	// in an active phase, append "· idle Ns". Distinguishes "waiting on
+	// the LLM" from "actually frozen / network dead".
+	if (state.lastEventAt !== undefined) {
+		const idleMs = Date.now() - state.lastEventAt;
+		if (idleMs >= 5_000) {
+			const idleSec = Math.round(idleMs / 1000);
+			headerParts.push(`<i>idle ${idleSec}s</i>`);
+		}
+	}
+
 	const blocks: string[] = [headerParts.join(" · ")];
 
 	const subtitle = renderSubtitle(state);
@@ -315,6 +446,12 @@ function renderActive(state: StatusState): string {
 		blocks.push(recent.join("<br>"));
 	}
 
+	// Files-touched footer: deduped basenames of Read/Edit/Write/
+	// NotebookEdit targets, at the bottom of the active frame so the user
+	// has an at-a-glance "what is this turn working on" anchor.
+	const filesFooter = renderFilesTouched(state.filesTouched);
+	if (filesFooter) blocks.push(filesFooter);
+
 	// Matrix HTML treats source `\n` as whitespace, so use `<br><br>` between
 	// blocks. (Plain `\n` in the formatted_body collapses to spaces, which is
 	// why tool-call lines were appearing on one line in clients.)
@@ -352,13 +489,27 @@ function renderTerminal(state: StatusState): string {
 	const headerEmoji = isDone ? PHASE_EMOJI.DONE : PHASE_EMOJI.FAILED;
 	const headerLabel = isDone ? PHASE_LABEL.DONE : PHASE_LABEL.FAILED;
 	const headerParts: string[] = [`${headerEmoji} <b>${headerLabel}</b>`, duration];
+	let stopReasonAccent = "";
+	let denialsBadge = "";
 	if (state.resultMeta) {
 		const m = state.resultMeta;
 		const costStr = formatCost(m.costUsd ?? 0);
 		if (costStr) headerParts.push(costStr);
 		const t = (m.inputTokens ?? 0) + (m.outputTokens ?? 0);
 		if (t > 0) headerParts.push(`${formatTokens(t)} tok`);
+
+		// Stop-reason accent — only when it's something OTHER than the
+		// normal end_turn. Surfaces silent truncations (`max_tokens` etc.)
+		// that today look exactly like a clean finish.
+		stopReasonAccent = stopReasonLabel(m.stopReason);
+		// Denials badge — "🔐 N blocked" goes on the Done header so the
+		// reader sees that the agent tried things and got told no.
+		if (m.denials && m.denials > 0) {
+			denialsBadge = `🔐 ${m.denials} blocked`;
+		}
 	}
+	if (stopReasonAccent) headerParts.push(stopReasonAccent);
+	if (denialsBadge) headerParts.push(denialsBadge);
 	const headerLine = headerParts.join(" · ");
 
 	const blocks: string[] = [headerLine];
@@ -370,29 +521,45 @@ function renderTerminal(state: StatusState): string {
 		blocks.push(`<blockquote>${escapeHtml(state.terminal!.errorMsg.slice(0, 400))}</blockquote>`);
 	}
 
-	if (state.plan) {
-		blocks.push(renderPlan(state.plan));
-	}
+	// Compact Done for text-only turns — when there were no tools at
+	// all, skip the plan / Tools / rolling-log / files-footer sections
+	// entirely. The Done frame becomes header + subtitle + (embedded
+	// body) which is exactly the right shape for "Jada, what's 2+2?"
+	// style conversation turns.
+	const hasAnyToolPrefix = state.lines.some(
+		(l) => l.startsWith("🔄 ") || l.startsWith("✅ ") || l.startsWith("❌ "),
+	);
+	const isTextOnly = isDone && !hasAnyToolPrefix && !state.plan;
 
-	// "📋 Tools (M/N) ✅" header — same as renderActive. On the Done frame
-	// this is a permanent at-a-glance recap of how many tools ran.
-	const toolsHeader = renderToolsHeader(state.lines);
-	if (toolsHeader) blocks.push(toolsHeader);
-
-	// Keep the rolling log (tool-calls, narration) visible after terminal so
-	// the reader can see what actually happened during the turn — same
-	// window as the in-progress render. Tool calls are the showpiece; the
-	// answer body sits below them.
-	if (state.lines.length > 0) {
-		const recent = state.lines.slice(-RECENT_LINES_VISIBLE);
-		const older = state.lines.slice(0, Math.max(0, state.lines.length - RECENT_LINES_VISIBLE));
-		const trimmedOlder = older.slice(-Math.max(0, MAX_TOTAL_LINES - recent.length));
-		const dropped = older.length - trimmedOlder.length;
-		if (trimmedOlder.length > 0) {
-			const dropNote = dropped > 0 ? `<br><i>… ${dropped} earlier</i>` : "";
-			blocks.push(`<blockquote expandable>${trimmedOlder.join("<br>")}${dropNote}</blockquote>`);
+	if (!isTextOnly) {
+		if (state.plan) {
+			blocks.push(renderPlan(state.plan));
 		}
-		blocks.push(recent.join("<br>"));
+
+		// "📋 Tools (M/N) ✅" header — same as renderActive. On the Done frame
+		// this is a permanent at-a-glance recap of how many tools ran.
+		const toolsHeader = renderToolsHeader(state.lines);
+		if (toolsHeader) blocks.push(toolsHeader);
+
+		// Keep the rolling log (tool-calls, narration) visible after terminal so
+		// the reader can see what actually happened during the turn — same
+		// window as the in-progress render. Tool calls are the showpiece; the
+		// answer body sits below them.
+		if (state.lines.length > 0) {
+			const recent = state.lines.slice(-RECENT_LINES_VISIBLE);
+			const older = state.lines.slice(0, Math.max(0, state.lines.length - RECENT_LINES_VISIBLE));
+			const trimmedOlder = older.slice(-Math.max(0, MAX_TOTAL_LINES - recent.length));
+			const dropped = older.length - trimmedOlder.length;
+			if (trimmedOlder.length > 0) {
+				const dropNote = dropped > 0 ? `<br><i>… ${dropped} earlier</i>` : "";
+				blocks.push(`<blockquote expandable>${trimmedOlder.join("<br>")}${dropNote}</blockquote>`);
+			}
+			blocks.push(recent.join("<br>"));
+		}
+
+		// Files-touched footer in the Done frame — same as renderActive.
+		const filesFooter = renderFilesTouched(state.filesTouched);
+		if (filesFooter) blocks.push(filesFooter);
 	}
 
 	// Embed the agent's final reply directly in the Done frame. Single
@@ -428,11 +595,28 @@ function renderSubtitle(state: StatusState): string {
 		if (s.mcpCount > 0) parts.push(`${s.mcpActive}/${s.mcpCount} MCP`);
 		if (s.toolCount > 0) parts.push(`${s.toolCount} tools`);
 	}
+	// Cumulative session totals (when more than one turn in this room) —
+	// surfaces "across the conversation" cost + steps so the user has
+	// running visibility into total spend.
+	if (state.sessionTotals && state.sessionTotals.turns > 1) {
+		const t = state.sessionTotals;
+		const costStr = formatCost(t.costUsd);
+		if (costStr) parts.push(`session ${costStr} · ${t.steps} steps · ${t.turns} turns`);
+		else parts.push(`session ${t.steps} steps · ${t.turns} turns`);
+	}
+	// The plain `ctx N%` line stays — keeps the at-a-glance number.
 	if (state.contextUsage && state.contextUsage.pct > 0) {
 		parts.push(`ctx ${Math.round(state.contextUsage.pct)}%`);
 	}
-	if (parts.length === 0) return "";
-	return `<i>${escapeHtml(parts.join(" · "))}</i>`;
+	const lines: string[] = [];
+	if (parts.length > 0) lines.push(`<i>${escapeHtml(parts.join(" · "))}</i>`);
+
+	// Context bar on its own line below the dimmed subtitle when ctx > 0
+	// — too wide to fit comfortably alongside the model/MCP info.
+	const ctxBar = renderContextUsage(state.contextUsage);
+	if (ctxBar) lines.push(`<i>${ctxBar}</i>`);
+
+	return lines.join("<br>");
 }
 
 // "claude-sonnet-4-6" → "Sonnet 4.6"; "claude-opus-4-7" → "Opus 4.7"; leave
@@ -471,6 +655,8 @@ export function phaseToReactionEmoji(phase: Phase): string {
 		case "TESTING":
 		case "SHIPPING":
 			return "👨‍💻";
+		case "RATE_LIMITED":
+			return "⏸";
 		case "DONE":
 			return "🎉";
 		case "FAILED":

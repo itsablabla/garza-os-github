@@ -3,6 +3,7 @@ import { markdownToTelegramHtml as markdownToHtml } from "./markdown";
 import { editMessage, MatrixError, react, redact, sendMessage, typing, unpin, pin } from "./matrix";
 import {
 	escapeHtml,
+	formatToolElapsed,
 	formatToolUseLine,
 	parsePlan,
 	phaseFor,
@@ -207,9 +208,16 @@ export class ReplicaPoller {
 			"lastTypingAt",
 			"lastEditAt",
 			"plan",
-			// Per-turn tool lifecycle tracker — wipe so the next turn doesn't
-			// inherit stale tool_use_id → line mappings.
+			// Per-turn tool lifecycle + visibility tracker — wipe so the
+			// next turn doesn't inherit stale tool_use_id mappings, tool
+			// metadata, or the touched-files list.
 			"toolLineIndex",
+			"toolStartedAt",
+			"toolNameById",
+			"toolDiffById",
+			"filesTouched",
+			"lastEventAt",
+			"phaseBeforeRateLimit",
 		]);
 		const baseline = await baselineP;
 		const seed: Record<string, unknown> = {
@@ -221,6 +229,16 @@ export class ReplicaPoller {
 			currentAction: "",
 			startedAt: Date.now(),
 		};
+		// #14 — load any prior cumulative session totals for this room so
+		// the second-and-later turn's subtitle shows running totals from
+		// the first edit.
+		try {
+			const sessKey = `session:${body.roomId}`;
+			const prior = await this.env.MAP.get<import("./render").SessionTotals>(sessKey, {
+				type: "json",
+			});
+			if (prior && prior.turns > 0) seed.sessionTotals = prior;
+		} catch {}
 		// Seed reactionEventId with the dispatch-side 👀 so the first
 		// swapReaction (terminal) redacts it. Without this the 👀 hangs
 		// around forever next to the 🎉.
@@ -330,6 +348,42 @@ export class ReplicaPoller {
 		let contextUsage = (await this.state.storage.get<import("./render").ContextUsage>("contextUsage")) ?? null;
 		let resultMeta = (await this.state.storage.get<import("./render").ResultMeta>("resultMeta")) ?? null;
 
+		// Per-tool start timestamps for #2 (elapsed time on each completed
+		// tool line). Keyed by tool_use.id, value is Date.now() when the
+		// tool_use was projected. Cleared one-shot when the tool_result
+		// lands so a stray duplicate result can't re-time the line.
+		const toolStartedAt =
+			(await this.state.storage.get<Record<string, number>>("toolStartedAt")) ?? {};
+
+		// Per-tool name (Read / Edit / Write / Bash / Task / mcp__…) so the
+		// tool_result handler can decide whether to compute diff stats.
+		const toolNameById =
+			(await this.state.storage.get<Record<string, string>>("toolNameById")) ?? {};
+
+		// Per-tool diff stats (#3): pre-computed at tool_use time from the
+		// block's input (Edit: old_string vs new_string line delta; Write /
+		// NotebookEdit: lines added). Surfaced as a "(+12 −3)" suffix when
+		// the result lands successfully.
+		const toolDiffById =
+			(await this.state.storage.get<Record<string, string>>("toolDiffById")) ?? {};
+
+		// Deduped basenames of files the agent has touched, for #9 footer.
+		const filesTouched =
+			(await this.state.storage.get<string[]>("filesTouched")) ?? [];
+		const filesTouchedSet = new Set(filesTouched);
+
+		// #11 idle indicator — bumped to Date.now() whenever we project ANY
+		// new event from /history. The render layer reads this and shows
+		// "· idle Ns" once 5s have passed without a refresh.
+		let lastEventAt = (await this.state.storage.get<number>("lastEventAt")) ?? Date.now();
+
+		// #7 rate-limited phase. When a claude-rate_limit_event arrives we
+		// stash the prior phase here so we can revert on the next agent
+		// event. (Otherwise the frame would stay "Rate-limited" past the
+		// actual upstream throttle.)
+		let phaseBeforeRateLimit =
+			(await this.state.storage.get<Phase>("phaseBeforeRateLimit")) ?? null;
+
 		let sawResult = false;
 		let resultText: string | null = null;
 		let resultIsError = false;
@@ -345,7 +399,18 @@ export class ReplicaPoller {
 		for (const ev of fresh) {
 			const t = ev.type ?? "";
 			const content = ev.payload?.message?.content ?? [];
+			// #11 — bump the last-event timestamp on every projected
+			// Replicas event so the renderer can decide when to show
+			// the "idle Ns" tail in the header.
+			lastEventAt = Date.now();
 			if (t === "claude-assistant") {
+				// #7 — if we were in RATE_LIMITED and the agent is talking
+				// again, the throttle has lifted. Revert to whatever phase
+				// we were in before the rate-limit event hit.
+				if (phase === "RATE_LIMITED" && phaseBeforeRateLimit !== null) {
+					phase = phaseBeforeRateLimit;
+					phaseBeforeRateLimit = null;
+				}
 				for (const block of content) {
 					if (block.type === "thinking" && block.thinking) {
 						currentAction = thinkingLine(block.thinking);
@@ -354,20 +419,56 @@ export class ReplicaPoller {
 						const cmd =
 							typeof block.input?.command === "string" ? (block.input.command as string) : undefined;
 						phase = phaseFor(block.name ?? "tool", cmd);
-						const line = formatToolUseLine(
-							block.name ?? "tool",
+						const toolName = block.name ?? "tool";
+						let line = formatToolUseLine(
+							toolName,
 							(block.input ?? {}) as Record<string, unknown>,
 						);
+
+						// #12 minimal subagent visibility — when Claude
+						// launches a Task subagent, render the line with the
+						// label bolded so it stands out from regular tool
+						// calls. (Full nested rendering needs Replicas to
+						// expose parent_tool_use_id, which it doesn't today.)
+						if (toolName === "Task") {
+							const desc =
+								typeof block.input?.description === "string"
+									? ` ${block.input.description as string}`
+									: "";
+							line = `🧰 <b>Task</b>${desc ? `: ${desc}` : ""}`;
+						}
+
 						currentAction = line;
 						// Emit with a 🔄 lifecycle prefix to show "running".
 						// The matching tool_result will swap this in place
-						// to ✅ on success or ❌ on error. Record the row
-						// index by the Anthropic tool_use.id so the pairing
-						// survives across alarm ticks.
+						// to ✅ on success or ❌ on error.
 						const renderedLine = `🔄 ${line}`;
 						const newIdx = lines.length;
 						lines.push(renderedLine);
-						if (block.id) toolLineIndex[block.id] = newIdx;
+
+						if (block.id) {
+							toolLineIndex[block.id] = newIdx;
+							// #2 record start time for elapsed tag
+							toolStartedAt[block.id] = Date.now();
+							// #3 stash name so result handler knows whether
+							// to compute diff stats
+							toolNameById[block.id] = toolName;
+							// #3 pre-compute diff stats from input (cheap;
+							// the data we need is right here at emit time)
+							const diff = computeDiffStats(toolName, block.input);
+							if (diff) toolDiffById[block.id] = diff;
+						}
+
+						// #9 track touched files for the footer
+						const fp =
+							typeof block.input?.file_path === "string"
+								? (block.input.file_path as string)
+								: undefined;
+						if (fp && !filesTouchedSet.has(fp)) {
+							filesTouchedSet.add(fp);
+							filesTouched.push(fp);
+						}
+
 						stepCount += 1;
 						appended = true;
 					} else if (block.type === "text" && block.text) {
@@ -403,12 +504,31 @@ export class ReplicaPoller {
 				// Capture cost + token meta for the Done header.
 				const usage = (ev.payload as { usage?: { input_tokens?: number; output_tokens?: number } })?.usage ?? {};
 				const cost = (ev.payload as { total_cost_usd?: number })?.total_cost_usd ?? 0;
-				if (cost > 0 || usage.input_tokens || usage.output_tokens) {
+				// #6 stop_reason for silent-truncation visibility.
+				const stopReason =
+					(ev.payload as { stop_reason?: string })?.stop_reason ?? undefined;
+				// #8 count of permission denials for the badge.
+				const denialsArr =
+					(ev.payload as { permission_denials?: unknown[] })?.permission_denials;
+				const denials = Array.isArray(denialsArr) ? denialsArr.length : 0;
+				if (cost > 0 || usage.input_tokens || usage.output_tokens || stopReason || denials) {
 					resultMeta = {
 						costUsd: cost,
 						inputTokens: usage.input_tokens ?? 0,
 						outputTokens: usage.output_tokens ?? 0,
+						stopReason,
+						denials: denials || undefined,
 					};
+					appended = true;
+				}
+			} else if (t === "claude-rate_limit_event") {
+				// #7 surface upstream Anthropic rate-limit pauses as a
+				// distinct phase so the frame stops looking frozen. We
+				// stash the prior phase so the next agent event can
+				// revert us cleanly.
+				if (phase !== "RATE_LIMITED") {
+					phaseBeforeRateLimit = phase;
+					phase = "RATE_LIMITED";
 					appended = true;
 				}
 			} else if (t === "claude-system") {
@@ -452,19 +572,40 @@ export class ReplicaPoller {
 						// OpenACP "each tool ticks live" UX. We find the row by
 						// tool_use_id via the toolLineIndex we built when the
 						// tool_use was first projected.
-						if (block.tool_use_id && toolLineIndex[block.tool_use_id] !== undefined) {
-							const idx = toolLineIndex[block.tool_use_id]!;
+						const tuId = block.tool_use_id;
+						if (tuId && toolLineIndex[tuId] !== undefined) {
+							const idx = toolLineIndex[tuId]!;
 							if (idx >= 0 && idx < lines.length) {
 								const newPrefix = isErr ? "❌ " : "✅ ";
 								const before = lines[idx]!;
 								if (before.startsWith("🔄 ")) {
-									lines[idx] = newPrefix + before.slice("🔄 ".length);
+									let after = newPrefix + before.slice("🔄 ".length);
+
+									// #2 append elapsed time tag based on
+									// when the tool_use was projected.
+									const startedAt = toolStartedAt[tuId];
+									if (startedAt) {
+										const elapsedTag = formatToolElapsed(Date.now() - startedAt);
+										if (elapsedTag) after += ` <i>(${elapsedTag})</i>`;
+									}
+
+									// #3 append diff stats on successful
+									// Edit / Write / NotebookEdit results.
+									if (!isErr) {
+										const diff = toolDiffById[tuId];
+										if (diff) after += ` <i>${diff}</i>`;
+									}
+
+									lines[idx] = after;
 									appended = true;
 								}
 							}
-							// One-shot: clear so a malformed second result for
-							// the same tool_use_id can't keep flipping the row.
-							delete toolLineIndex[block.tool_use_id];
+							// One-shot cleanup so a duplicate or out-of-order
+							// result can't re-fire on the same row.
+							delete toolLineIndex[tuId];
+							delete toolStartedAt[tuId];
+							delete toolNameById[tuId];
+							delete toolDiffById[tuId];
 						}
 
 						const raw = block.content;
@@ -511,7 +652,14 @@ export class ReplicaPoller {
 			currentAction,
 			lastSeenCount: events.length,
 			toolLineIndex,
+			toolStartedAt,
+			toolNameById,
+			toolDiffById,
+			filesTouched,
+			lastEventAt,
 		};
+		if (phaseBeforeRateLimit !== null) writes.phaseBeforeRateLimit = phaseBeforeRateLimit;
+		else await this.state.storage.delete("phaseBeforeRateLimit");
 		if (plan) writes.plan = plan;
 		if (systemInfo) writes.systemInfo = systemInfo;
 		if (contextUsage) writes.contextUsage = contextUsage;
@@ -548,6 +696,31 @@ export class ReplicaPoller {
 				? markdownToHtml(resultText.slice(0, REPLY_MAX_LEN))
 				: undefined;
 
+			// #14 — accumulate session totals in KV. Each Done bumps
+			// `session:${roomId}` with this turn's cost/steps; surfaces
+			// in the subtitle when turns > 1. Best-effort: a failed KV
+			// put doesn't block the Done frame.
+			try {
+				const sessKey = `session:${watch.roomId}`;
+				const prior = await this.env.MAP.get<import("./render").SessionTotals>(sessKey, {
+					type: "json",
+				});
+				const turnCost = resultMeta?.costUsd ?? 0;
+				const next: import("./render").SessionTotals = {
+					costUsd: (prior?.costUsd ?? 0) + turnCost,
+					steps: (prior?.steps ?? 0) + stepCount,
+					turns: (prior?.turns ?? 0) + 1,
+				};
+				await this.env.MAP.put(sessKey, JSON.stringify(next), {
+					expirationTtl: 60 * 60 * 24 * 30, // 30 days
+				});
+				await this.state.storage.put("sessionTotals", next);
+			} catch (e) {
+				console.log(
+					`[poller] session totals update failed: ${e instanceof Error ? e.message : e}`,
+				);
+			}
+
 			await this.setTerminal(watch, {
 				kind: "done",
 				durationSec: seconds,
@@ -561,7 +734,20 @@ export class ReplicaPoller {
 
 		const lastEditAt = (await this.state.storage.get<number>("lastEditAt")) ?? 0;
 		const tickerStale = Date.now() - lastEditAt >= TICKER_REFRESH_MS;
-		if (appended || currentAction || tickerStale) {
+
+		// #1 — hard 3-min ticker stop. When the phase has stalled in
+		// STARTING/PLANNING without making a single tool call, stop
+		// forcing re-renders past 180s. The "Still planning…" header
+		// freezes at whatever elapsed-time count it was on; the ticker
+		// resumes the instant a real event lands (appended === true).
+		const elapsedFromStart = Date.now() - startedAt;
+		const inLongThinking =
+			(phase === "STARTING" || phase === "PLANNING") &&
+			stepCount === 0 &&
+			elapsedFromStart > 3 * 60_000;
+		const allowTicker = !inLongThinking;
+
+		if (appended || currentAction || (tickerStale && allowTicker)) {
 			await this.renderAndSend();
 		}
 		await this.state.storage.setAlarm(Date.now() + ACTIVE_POLL_INTERVAL_MS);
@@ -594,6 +780,9 @@ export class ReplicaPoller {
 			"systemInfo",
 			"contextUsage",
 			"resultMeta",
+			"filesTouched",
+			"lastEventAt",
+			"sessionTotals",
 		])) as Map<string, unknown>;
 		const watch = snap.get("watch") as WatchSpec | undefined;
 		if (!watch) return null;
@@ -609,6 +798,9 @@ export class ReplicaPoller {
 			systemInfo: (snap.get("systemInfo") as SystemInfo | undefined) ?? undefined,
 			contextUsage: (snap.get("contextUsage") as ContextUsage | undefined) ?? undefined,
 			resultMeta: (snap.get("resultMeta") as ResultMeta | undefined) ?? undefined,
+			filesTouched: (snap.get("filesTouched") as string[] | undefined) ?? undefined,
+			lastEventAt: (snap.get("lastEventAt") as number | undefined) ?? undefined,
+			sessionTotals: (snap.get("sessionTotals") as import("./render").SessionTotals | undefined) ?? undefined,
 		};
 	}
 
@@ -787,6 +979,36 @@ export class ReplicaPoller {
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// #3 — compute "(+12 −3)" stats from a tool_use input. Done at emit
+// time (cheap) and stashed in toolDiffById for use when the result lands.
+// Returns "" when the tool has no diffable shape.
+function computeDiffStats(toolName: string, input: Record<string, unknown> | undefined): string {
+	if (!input) return "";
+	const linesOf = (s: unknown): number =>
+		typeof s === "string" ? s.split("\n").length : 0;
+
+	if (toolName === "Edit" || toolName === "NotebookEdit") {
+		const before = linesOf(input.old_string);
+		const after = linesOf(input.new_string);
+		// Edit can be additive, removal, or replacement. We surface net
+		// add/remove from line-count comparison (cheap approximation;
+		// fine for the "at a glance" UX).
+		const added = Math.max(0, after - before);
+		const removed = Math.max(0, before - after);
+		if (added === 0 && removed === 0) return "";
+		const parts: string[] = [];
+		if (added > 0) parts.push(`+${added}`);
+		if (removed > 0) parts.push(`−${removed}`);
+		return `(${parts.join(" ")})`;
+	}
+	if (toolName === "Write") {
+		const n = linesOf(input.content);
+		if (n === 0) return "";
+		return `(+${n})`;
+	}
+	return "";
 }
 
 function replicasHeaders(env: Env): HeadersInit {

@@ -75,12 +75,12 @@ const FIRST_POLL_DELAY_MS = 80;
 const ACTIVE_POLL_INTERVAL_MS = 180;
 const BACKOFF_POLL_INTERVAL_MS = 3000;
 const MAX_WATCH_DURATION_MS = 30 * 60 * 1000;
-// 1500ms ticker was too aggressive — matrix.org's per-room send rate cap
-// kicked in on long turns, causing M_LIMIT_EXCEEDED and the dreaded
-// fragmented-status-frame regression in group rooms. 3000ms gives the
-// homeserver breathing room while still feeling live.
-const EDIT_MIN_INTERVAL_MS = 1000;
-const TICKER_REFRESH_MS = 3000;
+// matrix.org's per-room send rate is roughly 30/min (one every 2s).
+// 1000ms edits were tripping M_LIMIT_EXCEEDED on long turns, fragmenting
+// the status frame. 2000ms / 4000ms ticker keeps us safely under the
+// limit while still feeling live for the user.
+const EDIT_MIN_INTERVAL_MS = 2000;
+const TICKER_REFRESH_MS = 4000;
 const TYPING_INTERVAL_MS = 25_000;
 const REPLY_MAX_LEN = 16_000; // Matrix doesn't cap message length the way Telegram does (~16KB safe)
 
@@ -599,22 +599,35 @@ export class ReplicaPoller {
 		await this.state.storage.put({ lastRendered: text, lastEditAt: Date.now() });
 
 		if (statusEventId !== undefined) {
-			try {
-				await editMessage(matrixEnv(this.env), watch.roomId, statusEventId, text);
-				return;
-			} catch (e) {
-				// 429 from matrix.org: park the renderer for retry_after_ms
-				// and do NOT fall through to sendMessage. The fallback used
-				// to create a fresh bubble per failed edit, fragmenting the
-				// status frame into N separate messages — that's what the
-				// "wonky group chats" symptom was.
-				if (e instanceof MatrixError && e.status === 429) {
-					const waitMs = Math.max(1_000, e.retryAfterMs ?? 5_000);
-					await this.state.storage.put("rateLimitedUntil", Date.now() + waitMs);
-					console.log(`[poller] editMessage 429 — backing off ${waitMs}ms`);
+			// Terminal edits (Done / Failed) MUST land — the embedded
+			// result body lives inside this frame and the user has no
+			// other path to the answer. So terminal renders retry on 429
+			// inline (up to ~24s total worst case) instead of deferring
+			// to the next alarm tick, which would be a cleanup wipe.
+			// Non-terminal renders defer and let the next tick try.
+			const maxAttempts = isTerminal ? 4 : 1;
+			for (let attempt = 0; attempt < maxAttempts; attempt++) {
+				try {
+					await editMessage(matrixEnv(this.env), watch.roomId, statusEventId, text);
 					return;
+				} catch (e) {
+					if (e instanceof MatrixError && e.status === 429) {
+						const waitMs = Math.min(8_000, Math.max(500, e.retryAfterMs ?? 1_500));
+						if (isTerminal && attempt + 1 < maxAttempts) {
+							console.log(`[poller] editMessage 429 attempt ${attempt + 1} (TERMINAL), retry in ${waitMs}ms`);
+							await sleep(waitMs);
+							continue;
+						}
+						// Non-terminal: park for the next tick. Do NOT fall
+						// through to sendMessage — that fragmenting fallback
+						// was the source of the multi-bubble group-chat bug.
+						await this.state.storage.put("rateLimitedUntil", Date.now() + waitMs);
+						console.log(`[poller] editMessage 429 — backing off ${waitMs}ms`);
+						return;
+					}
+					console.log(`[poller] editMessage failed: ${e instanceof Error ? e.message : e}`);
+					break;
 				}
-				console.log(`[poller] editMessage failed: ${e instanceof Error ? e.message : e}`);
 			}
 		}
 		try {

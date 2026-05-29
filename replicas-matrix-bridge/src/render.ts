@@ -145,6 +145,17 @@ export interface StatusState {
 	// the rolling log carries a live `· Ns` elapsed counter that ticks
 	// on every render — so a long-running tool never looks frozen.
 	activeToolStartedAt?: number;
+	// Index into `lines` where the CURRENT editable segment starts. Lines
+	// before this index belong to earlier sealed segments (each its own
+	// Matrix message). The renderer only includes `lines.slice(start)` in
+	// the active frame so a long turn renders as N separate messages
+	// instead of one giant rolling log. Undefined / 0 == no segmentation
+	// (single-message-per-turn legacy behavior).
+	segmentStartLine?: number;
+	// When true, the current render is the FINAL render of a segment that
+	// is about to be sealed. The renderer appends a "▶️ continues below"
+	// tail so the user knows this isn't the live edit anymore.
+	sealing?: boolean;
 	terminal?: {
 		kind: "done" | "failed";
 		durationSec: number;
@@ -448,11 +459,19 @@ function renderActive(state: StatusState): string {
 		blocks.push(renderPlan(state.plan));
 	}
 
+	// Slice to the current segment first. Lines before segmentStartLine
+	// belong to earlier sealed segments (each rendered to its own
+	// frozen Matrix message). The active frame only shows the live
+	// segment's lines — and the tools header counts THIS segment's
+	// tool calls, not the cumulative total across sealed predecessors.
+	const segStart = state.segmentStartLine ?? 0;
+	const segmentLines = segStart > 0 ? state.lines.slice(segStart) : state.lines;
+
 	// "📋 Tools (M/N) ✅" header — live completion count derived from the
 	// 🔄 / ✅ / ❌ lifecycle prefixes the poller writes on each tool line.
 	// Sits above the rolling log so the user sees "how many tools done" at
 	// a glance before reading the individual lines.
-	const toolsHeader = renderToolsHeader(state.lines);
+	const toolsHeader = renderToolsHeader(segmentLines);
 	if (toolsHeader) blocks.push(toolsHeader);
 
 	// Live-elapsed tail on the latest in-flight tool. Find the LAST 🔄
@@ -460,18 +479,18 @@ function renderActive(state: StatusState): string {
 	// the user can see a long-running tool actively timing instead of
 	// staring at a static "🔄 e2b__run_code" forever. Only mutates a
 	// shallow clone — the array in state stays as-is.
-	let lines = state.lines;
-	if (state.activeToolStartedAt !== undefined && state.lines.length > 0) {
+	let lines = segmentLines;
+	if (state.activeToolStartedAt !== undefined && segmentLines.length > 0) {
 		const toolElapsed = Math.max(0, Math.round((Date.now() - state.activeToolStartedAt) / 1000));
 		let lastRunning = -1;
-		for (let i = state.lines.length - 1; i >= 0; i--) {
-			if (state.lines[i].startsWith("🔄 ")) {
+		for (let i = segmentLines.length - 1; i >= 0; i--) {
+			if (segmentLines[i].startsWith("🔄 ")) {
 				lastRunning = i;
 				break;
 			}
 		}
 		if (lastRunning >= 0) {
-			lines = state.lines.slice();
+			lines = segmentLines.slice();
 			lines[lastRunning] = `${lines[lastRunning]} <i>· ${formatDuration(toolElapsed)}</i>`;
 		}
 	}
@@ -498,6 +517,12 @@ function renderActive(state: StatusState): string {
 	// has an at-a-glance "what is this turn working on" anchor.
 	const filesFooter = renderFilesTouched(state.filesTouched);
 	if (filesFooter) blocks.push(filesFooter);
+
+	// Seal tail: when this is the FINAL render of a segment before the
+	// poller starts a new message, append a "▶️ continues" marker so the
+	// reader knows this isn't the live edit anymore. Followed by a fresh
+	// Matrix message that becomes the new editable segment.
+	if (state.sealing) blocks.push(`<i>▶️ continues in next message…</i>`);
 
 	// Matrix HTML treats source `\n` as whitespace, so use `<br><br>` between
 	// blocks. (Plain `\n` in the formatted_body collapses to spaces, which is
@@ -568,12 +593,18 @@ function renderTerminal(state: StatusState): string {
 		blocks.push(`<blockquote>${escapeHtml(state.terminal!.errorMsg.slice(0, 400))}</blockquote>`);
 	}
 
+	// Terminal renders only the CURRENT segment's log (same slicing as
+	// renderActive). Earlier sealed segments are already on screen as
+	// their own Matrix messages and don't need to be re-included here.
+	const termSegStart = state.segmentStartLine ?? 0;
+	const termSegLines = termSegStart > 0 ? state.lines.slice(termSegStart) : state.lines;
+
 	// Compact Done for text-only turns — when there were no tools at
 	// all, skip the plan / Tools / rolling-log / files-footer sections
 	// entirely. The Done frame becomes header + subtitle + (embedded
 	// body) which is exactly the right shape for "Jada, what's 2+2?"
 	// style conversation turns.
-	const hasAnyToolPrefix = state.lines.some(
+	const hasAnyToolPrefix = termSegLines.some(
 		(l) => l.startsWith("🔄 ") || l.startsWith("✅ ") || l.startsWith("❌ "),
 	);
 	const isTextOnly = isDone && !hasAnyToolPrefix && !state.plan;
@@ -585,16 +616,16 @@ function renderTerminal(state: StatusState): string {
 
 		// "📋 Tools (M/N) ✅" header — same as renderActive. On the Done frame
 		// this is a permanent at-a-glance recap of how many tools ran.
-		const toolsHeader = renderToolsHeader(state.lines);
+		const toolsHeader = renderToolsHeader(termSegLines);
 		if (toolsHeader) blocks.push(toolsHeader);
 
 		// Keep the rolling log (tool-calls, narration) visible after terminal so
 		// the reader can see what actually happened during the turn — same
 		// window as the in-progress render. Tool calls are the showpiece; the
 		// answer body sits below them.
-		if (state.lines.length > 0) {
-			const recent = state.lines.slice(-RECENT_LINES_VISIBLE);
-			const older = state.lines.slice(0, Math.max(0, state.lines.length - RECENT_LINES_VISIBLE));
+		if (termSegLines.length > 0) {
+			const recent = termSegLines.slice(-RECENT_LINES_VISIBLE);
+			const older = termSegLines.slice(0, Math.max(0, termSegLines.length - RECENT_LINES_VISIBLE));
 			const trimmedOlder = older.slice(-Math.max(0, MAX_TOTAL_LINES - recent.length));
 			const dropped = older.length - trimmedOlder.length;
 			if (trimmedOlder.length > 0) {

@@ -89,6 +89,14 @@ const MAX_WATCH_DURATION_MS = 30 * 60 * 1000;
 const EDIT_MIN_INTERVAL_MS = 2000;
 const TICKER_REFRESH_MS = 4000;
 
+// Per-segment tool cap. When the current editable segment has accumulated
+// this many tool_use lines, seal it (one final render with "▶️ continues"
+// tail) and start a new message for the next tool. So a 30-tool turn
+// renders as ~3 messages instead of one wall of scroll. Also triggers on
+// every Task subagent invocation regardless of count, since that's the
+// clearest "new context" boundary. Disabled when set to 0.
+const SEGMENT_TOOL_CAP = 12;
+
 // Char-delta edit gate (n3d1117/chatgpt-telegram-bot pattern, see
 // docs/acp-telegram-status-research.md). On non-terminal renders with no
 // phase transition, skip the edit if the rendered text length changed by
@@ -263,6 +271,7 @@ export class ReplicaPoller {
 			"lastEventAt",
 			"phaseBeforeRateLimit",
 			"activeToolStartedAt",
+			"segmentStartLine",
 			// Per-turn throttle bookkeeping — wipe so a fresh turn starts
 			// fast even if the prior turn ratcheted the backoff bonus up.
 			"backoffBonusMs",
@@ -410,6 +419,11 @@ export class ReplicaPoller {
 		let stepCount = (snap.get("stepCount") as number | undefined) ?? 0;
 		let currentAction = (snap.get("currentAction") as string | undefined) ?? "";
 		let plan = (snap.get("plan") as PlanState | undefined) ?? null;
+		// Segment offset into `lines[]`. Lines before this index belong to
+		// earlier sealed (frozen) Matrix messages. The active render only
+		// shows `lines.slice(segmentStartLine)` so a long turn renders as
+		// N separate messages instead of one giant rolling log.
+		let segmentStartLine = (await this.state.storage.get<number>("segmentStartLine")) ?? 0;
 		// Per-tool lifecycle tracker: tool_use.id → index in `lines`. When the
 		// matching tool_result lands later, we use this to find and mutate the
 		// `🔄 …` status prefix in place (→ `✅ …` or `❌ …`). Matches the
@@ -515,6 +529,40 @@ export class ReplicaPoller {
 									? ` ${block.input.description as string}`
 									: "";
 							line = `🧰 <b>Task</b>${desc ? `: ${desc}` : ""}`;
+						}
+
+						// Segment-seal trigger. Two cases force the current
+						// editable segment to seal (final-edit with
+						// "▶️ continues" tail) and start a new Matrix message
+						// for the next tool call:
+						//   (a) Task subagent — clearest "new context" boundary
+						//   (b) Tools-in-segment ≥ SEGMENT_TOOL_CAP — caps the
+						//       size of a single message so a 30-tool turn
+						//       renders as multiple messages.
+						const toolsInSegment = lines.length - segmentStartLine;
+						const shouldSeal =
+							SEGMENT_TOOL_CAP > 0 &&
+							((toolName === "Task" && toolsInSegment > 0) ||
+								toolsInSegment >= SEGMENT_TOOL_CAP);
+						if (shouldSeal) {
+							await this.sealCurrentSegment({
+								userText: watch.userText,
+								startedAt,
+								stepCount,
+								phase,
+								currentAction,
+								lines,
+								plan: plan ?? undefined,
+								systemInfo: systemInfo ?? undefined,
+								contextUsage: contextUsage ?? undefined,
+								resultMeta: resultMeta ?? undefined,
+								filesTouched,
+								lastEventAt,
+								activeToolStartedAt,
+								segmentStartLine,
+							});
+							// New segment starts at the line we're about to push.
+							segmentStartLine = lines.length;
 						}
 
 						currentAction = line;
@@ -751,6 +799,7 @@ export class ReplicaPoller {
 			toolDiffById,
 			filesTouched,
 			lastEventAt,
+			segmentStartLine,
 		};
 		if (phaseBeforeRateLimit !== null) writes.phaseBeforeRateLimit = phaseBeforeRateLimit;
 		else await this.state.storage.delete("phaseBeforeRateLimit");
@@ -875,6 +924,7 @@ export class ReplicaPoller {
 			"lastEventAt",
 			"sessionTotals",
 			"activeToolStartedAt",
+			"segmentStartLine",
 		])) as Map<string, unknown>;
 		const watch = snap.get("watch") as WatchSpec | undefined;
 		if (!watch) return null;
@@ -894,7 +944,47 @@ export class ReplicaPoller {
 			lastEventAt: (snap.get("lastEventAt") as number | undefined) ?? undefined,
 			sessionTotals: (snap.get("sessionTotals") as import("./render").SessionTotals | undefined) ?? undefined,
 			activeToolStartedAt: (snap.get("activeToolStartedAt") as number | undefined) ?? undefined,
+			segmentStartLine: (snap.get("segmentStartLine") as number | undefined) ?? undefined,
 		};
+	}
+
+	/**
+	 * Force a final render of the current editable segment with a
+	 * "▶️ continues" tail, then clear statusEventId + bypass the throttle
+	 * gates so the next renderAndSend sends a fresh message that becomes
+	 * the new editable segment.
+	 *
+	 * Called inline from the tool_use handler when the segment-seal
+	 * trigger fires (Task subagent or tools-in-segment >= cap). The
+	 * caller is responsible for bumping segmentStartLine afterward.
+	 */
+	private async sealCurrentSegment(state: StatusState): Promise<void> {
+		const watch = await this.state.storage.get<WatchSpec>("watch");
+		if (!watch) return;
+		const statusEventId = await this.state.storage.get<string>("statusEventId");
+		// Nothing to seal if we haven't even sent the first frame yet.
+		if (!statusEventId) return;
+		const sealedState: StatusState = { ...state, sealing: true };
+		const text = render(sealedState);
+		try {
+			await editMessage(matrixEnv(this.env), watch.roomId, statusEventId, text);
+		} catch (e) {
+			console.log(`[poller] seal final-edit failed: ${e instanceof Error ? e.message : e}`);
+			// Best-effort — still start a new segment so we don't pile
+			// more onto the same message.
+		}
+		// Forget the prior statusEventId so the next render goes through
+		// the sendMessage path and creates a fresh editable message.
+		// Reset edit-gate bookkeeping (lastRendered length, phase) so the
+		// new segment's first render isn't suppressed by char-delta logic.
+		await this.state.storage.delete([
+			"statusEventId",
+			"lastRendered",
+			"lastRenderedLen",
+			"lastEditedPhase",
+			"pinned",
+		]);
+		console.log(`[poller] sealed segment ${statusEventId.slice(0, 12)}…, starting new`);
 	}
 
 	private async renderAndSend(state?: StatusState): Promise<void> {

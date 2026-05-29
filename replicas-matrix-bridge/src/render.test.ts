@@ -188,6 +188,42 @@ describe("render — active state", () => {
 		expect(out).toMatch(/🔄 🧰 <code>e2b__run_code<\/code> <i>· [78]s<\/i>/);
 	});
 
+	it("segmentStartLine slices the rolling log to the current segment", () => {
+		const lines = [
+			"🔧 <code>step 0 (sealed)</code>",
+			"🔧 <code>step 1 (sealed)</code>",
+			"🔧 <code>step 2 (sealed)</code>",
+			"🔧 <code>step 3 (current)</code>",
+			"🔧 <code>step 4 (current)</code>",
+		];
+		const out = render({
+			startedAt: Date.now() - 10_000,
+			stepCount: 5,
+			phase: "RUNNING",
+			lines,
+			segmentStartLine: 3,
+		});
+		expect(out).toContain("step 3 (current)");
+		expect(out).toContain("step 4 (current)");
+		// Lines before segmentStartLine were rendered in earlier (sealed)
+		// Matrix messages — they must NOT re-appear in the active frame.
+		expect(out).not.toContain("step 0 (sealed)");
+		expect(out).not.toContain("step 1 (sealed)");
+		expect(out).not.toContain("step 2 (sealed)");
+	});
+
+	it("sealing flag appends a '▶️ continues' tail", () => {
+		const out = render({
+			startedAt: Date.now() - 10_000,
+			stepCount: 12,
+			phase: "RUNNING",
+			lines: ["🔧 <code>last-tool-in-segment</code>"],
+			sealing: true,
+		});
+		expect(out).toContain("continues");
+		expect(out).toContain("▶️");
+	});
+
 	it("activeToolStartedAt does NOT mutate completed ✅ lines", () => {
 		const out = render({
 			startedAt: Date.now() - 30_000,

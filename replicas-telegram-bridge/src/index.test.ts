@@ -303,12 +303,11 @@ describe("helpers", () => {
 		expect(out.endsWith("\n\nhi")).toBe(true);
 	});
 
-	it("prefixWithRoutingHeader tells the agent the poller surfaces everything and forbids legacy helpers", () => {
+	it("prefixWithRoutingHeader tells the agent the poller will surface tools + final reply", () => {
 		const out = prefixWithRoutingHeader(tgMessage(), "do a thing");
 		expect(out).toContain("external poller");
-		expect(out).toContain("Durable Object");
-		expect(out).toContain("Do NOT call tg-reply.sh");
-		expect(out).toContain("HTML formatting");
+		expect(out).toContain("Telegram");
+		expect(out).toContain("Markdown");
 	});
 
 	it("replicaName slugifies sender", () => {

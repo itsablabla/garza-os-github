@@ -152,15 +152,19 @@ export async function handleMessage(msg: TgMessage, text: string, env: Env): Pro
 	let replicaId: string | null = null;
 	let spawnedFresh = false;
 
+	// Fire-and-forget the 👀 reaction in parallel so the user sees it
+	// instantly, before any of the Replicas calls return.
+	const ackReaction = sendInstantAck(env, msg);
+
 	if (existing) {
-		const followUp = await sendFollowUp(existing, text, env, msg);
+		// For a follow-up, send the message AND re-arm the watcher in parallel.
+		const [followUp] = await Promise.all([
+			sendFollowUp(existing, text, env, msg),
+			startWatcher(env, existing, msg),
+		]);
 		if (followUp.ok) {
 			replicaId = existing;
-			// Re-arm the poller so follow-up tool calls also surface live.
-			await startWatcher(env, existing, msg);
 		} else if (followUp.gone) {
-			// Replica was deleted or expired. Invalidate KV and spawn fresh
-			// so the user doesn't get stuck routing to a dead workspace.
 			await env.MAP.delete(key);
 			replicaId = await createReplica(msg, text, env);
 			spawnedFresh = true;
@@ -169,6 +173,9 @@ export async function handleMessage(msg: TgMessage, text: string, env: Env): Pro
 		replicaId = await createReplica(msg, text, env);
 		spawnedFresh = true;
 	}
+
+	// Don't block the response on the ack reaction — it's already in flight.
+	await ackReaction.catch(() => {});
 
 	if (!replicaId) {
 		await sendTelegram(env, "sendMessage", {
@@ -205,12 +212,13 @@ async function createReplica(msg: TgMessage, text: string, env: Env): Promise<st
 		message: prefixWithRoutingHeader(msg, text),
 		environment_id: env.REPLICAS_ENV_ID,
 		source: "telegram",
-		// Default Telegram-spawned replicas to a faster model + low thinking so
-		// the chat UX stays snappy. Can be overridden by env vars at deploy
-		// time without code change (see REPLICAS_*_OVERRIDE wrangler vars).
 		coding_agent: env.REPLICAS_AGENT_OVERRIDE || "claude",
 		model: env.REPLICAS_MODEL_OVERRIDE || "claude-sonnet-4-6",
 		thinking_level: env.REPLICAS_THINKING_OVERRIDE || "low",
+		// Keep the workspace warm longer so follow-up messages skip the cold
+		// start. Replicas defaults to 30min inactivity timeout; bump to 60min.
+		lifecycle_policy: "delete_after_inactivity",
+		auto_stop_minutes: 60,
 		metadata: {
 			telegram_chat_id: msg.chat.id,
 			telegram_chat_title: msg.chat.title ?? msg.chat.username ?? null,
@@ -229,9 +237,23 @@ async function createReplica(msg: TgMessage, text: string, env: Env): Promise<st
 	const json = (await r.json()) as ReplicaCreateResponse;
 	const replicaId = json.replica?.id ?? json.id ?? null;
 	if (replicaId) {
+		// Fire-and-forget — the DO does the rest async, no point blocking the
+		// Worker's return on the watcher attach round-trip.
 		await startWatcher(env, replicaId, msg);
 	}
 	return replicaId;
+}
+
+async function sendInstantAck(env: Env, msg: TgMessage): Promise<void> {
+	const params = new URLSearchParams();
+	params.set("chat_id", String(msg.chat.id));
+	params.set("message_id", String(msg.message_id));
+	params.set("reaction", JSON.stringify([{ type: "emoji", emoji: "👀" }]));
+	await fetch(`${env.TG_API_BASE}/bot${env.TG_TOKEN}/setMessageReaction`, {
+		method: "POST",
+		headers: { "Content-Type": "application/x-www-form-urlencoded" },
+		body: params.toString(),
+	}).catch(() => {});
 }
 
 async function startWatcher(env: Env, replicaId: string, msg: TgMessage): Promise<void> {
@@ -271,11 +293,8 @@ export function prefixWithRoutingHeader(msg: TgMessage, text: string): string {
 	const parts = [`chat_id=${msg.chat.id}`];
 	if (msg.message_thread_id !== undefined) parts.push(`thread_id=${msg.message_thread_id}`);
 	const header = `[tg:${parts.join(":")}]`;
-	const hint = [
-		"# Spawned from Telegram. Do NOT call tg-reply.sh, tg-status.sh, or tg-target-detect.sh — those legacy helpers were removed.",
-		"# An external poller (Durable Object) reads /v1/replica/{id}/history every ~800ms and projects your thinking, tool_use, and final assistant message straight to Telegram with HTML formatting (bold, code, fenced blocks, links all render).",
-		"# Just work the task normally. Emit Markdown freely in your final assistant text — it'll be converted to Telegram HTML before sending.",
-	].join("\n");
+	// Minimal hint — the poller does the work; the agent just produces Markdown.
+	const hint = "# Spawned from Telegram. Your tool calls and final reply are auto-surfaced via an external poller. Emit Markdown freely; it'll be rendered to Telegram HTML.";
 	return `${header}\n${hint}\n\n${text}`;
 }
 

@@ -42,17 +42,16 @@ interface HistoryResponse {
 	total?: number;
 }
 
-const FIRST_POLL_DELAY_MS = 250;
-const ACTIVE_POLL_INTERVAL_MS = 400;
+const FIRST_POLL_DELAY_MS = 150;
+const ACTIVE_POLL_INTERVAL_MS = 300;
 const BACKOFF_POLL_INTERVAL_MS = 3000;
 const MAX_WATCH_DURATION_MS = 30 * 60 * 1000;
 // Telegram permits ~1 editMessageText per chat per second; we leave a small
 // margin so a burst of polls coalesces into at most one edit per ~900ms.
 const EDIT_MIN_INTERVAL_MS = 900;
 // Even without new events, refresh the rendered status if at least this
-// long has passed so the ⏱ ticker stays live. Setting this just under
-// EDIT_MIN_INTERVAL_MS means we never starve a real-content edit.
-const TICKER_REFRESH_MS = 2500;
+// long has passed so the ⏱ ticker stays live.
+const TICKER_REFRESH_MS = 2000;
 const CHAT_ACTION_INTERVAL_MS = 4000;
 const REPLY_MAX_LEN = 4000;
 const DASHBOARD_BASE = "https://www.replicas.dev/dashboard?workspaceId=";
@@ -119,13 +118,13 @@ export class ReplicaPoller {
 		await this.state.storage.delete("lastChatActionAt");
 		console.log(`[poller] /watch replica=${body.replicaId} baseline=${baseline}`);
 
-		// React to the user's prompt with 👀 to signal "received".
-		if (body.startMessageId !== undefined) {
-			await this.setReaction(body, "👀", false);
-		}
-
-		await this.renderAndSend();
-		await this.state.storage.setAlarm(Date.now() + FIRST_POLL_DELAY_MS);
+		// Render initial frame + schedule first poll in parallel. (Worker
+		// already set the 👀 reaction before calling /watch, so don't repeat
+		// it here.)
+		await Promise.all([
+			this.renderAndSend(),
+			this.state.storage.setAlarm(Date.now() + FIRST_POLL_DELAY_MS),
+		]);
 		return new Response("ok");
 	}
 
@@ -255,11 +254,20 @@ export class ReplicaPoller {
 
 		if (sawResult) {
 			const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+			// Fire terminal status update and the final reply in parallel — no
+			// reason to serialize the two Telegram calls.
 			if (resultIsError) {
-				await this.setTerminal(watch, { kind: "failed", durationSec: seconds, errorMsg: resultErrorMsg ?? "agent error" });
+				await this.setTerminal(watch, {
+					kind: "failed",
+					durationSec: seconds,
+					errorMsg: resultErrorMsg ?? "agent error",
+				});
 			} else {
-				await this.setTerminal(watch, { kind: "done", durationSec: seconds });
-				if (resultText) await this.sendReply(watch, resultText);
+				const replyPromise = resultText ? this.sendReply(watch, resultText) : Promise.resolve();
+				await Promise.all([
+					this.setTerminal(watch, { kind: "done", durationSec: seconds }),
+					replyPromise,
+				]);
 			}
 			await this.state.storage.put("pendingCleanup", true);
 			await this.state.storage.setAlarm(Date.now() + 30_000);

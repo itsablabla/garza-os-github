@@ -10,6 +10,17 @@ compatibility_flags = ["nodejs_compat"]
 binding = "MAP"
 id = "e2e3107ab55b4c8ab4bb6a66a3f02329"
 
+# Durable Object that polls /v1/replica/{id}/history every ~2s and surfaces
+# thinking + tool_use + claude-result events to Telegram. One DO instance per
+# replica id.
+[[durable_objects.bindings]]
+name = "WATCHER"
+class_name = "ReplicaPoller"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ReplicaPoller"]
+
 # Secrets (do NOT commit values). Set with:
 #   wrangler secret put TG_TOKEN
 #   wrangler secret put TG_WEBHOOK_SECRET

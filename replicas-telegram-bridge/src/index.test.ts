@@ -23,12 +23,32 @@ function mockKv() {
 	};
 }
 
-function mockEnv(overrides: Partial<Env> = {}): { env: Env; store: Map<string, string> } {
+function mockEnv(overrides: Partial<Env> = {}): {
+	env: Env;
+	store: Map<string, string>;
+	watcherCalls: Array<{ name: string; url: string; body: string }>;
+} {
 	const { kv, store } = mockKv();
+	const watcherCalls: Array<{ name: string; url: string; body: string }> = [];
+	const watcher = {
+		idFromName: (name: string) => ({ toString: () => name }),
+		get: (id: unknown) => ({
+			fetch: async (url: string, init?: RequestInit) => {
+				watcherCalls.push({
+					name: (id as { toString: () => string }).toString(),
+					url,
+					body: (init?.body as string) ?? "",
+				});
+				return new Response("ok");
+			},
+		}),
+	} as unknown as DurableObjectNamespace;
 	return {
 		store,
+		watcherCalls,
 		env: {
 			MAP: kv,
+			WATCHER: watcher,
 			TG_TOKEN: "test-tg-token",
 			TG_WEBHOOK_SECRET: "test-secret",
 			REPLICAS_API_KEY: "test-replicas-key",
@@ -159,6 +179,23 @@ describe("handleMessage", () => {
 		expect(store.get("chat:555:thread:main")).toBe("rep-1");
 	});
 
+	it("attaches the Durable Object watcher to a freshly spawned replica", async () => {
+		const { env, watcherCalls } = mockEnv();
+		mockFetch({
+			"api.example/v1/replica": () =>
+				new Response(JSON.stringify({ replica: { id: "rep-watch" } }), { status: 200 }),
+			"tg.example": () => new Response("{}", { status: 200 }),
+		});
+
+		await handleMessage(tgMessage(), "track this", env);
+
+		const watchCall = watcherCalls.find((c) => c.url.endsWith("/watch"));
+		expect(watchCall).toBeDefined();
+		expect(watchCall!.name).toBe("rep-watch");
+		const watchBody = JSON.parse(watchCall!.body);
+		expect(watchBody).toMatchObject({ replicaId: "rep-watch", chatId: 555 });
+	});
+
 	it("sends a follow-up message when a replica already exists", async () => {
 		const { env, store } = mockEnv();
 		store.set("chat:555:thread:main", "rep-existing");
@@ -266,12 +303,10 @@ describe("helpers", () => {
 		expect(out.endsWith("\n\nhi")).toBe(true);
 	});
 
-	it("prefixWithRoutingHeader includes both status and reply helpers + reference doc", () => {
+	it("prefixWithRoutingHeader tells the agent the poller surfaces everything", () => {
 		const out = prefixWithRoutingHeader(tgMessage(), "do a thing");
-		expect(out).toContain("tg-status.sh");
-		expect(out).toContain("tg-reply.sh");
-		expect(out).toContain("tg-target-detect.sh");
-		expect(out).toContain("TELEGRAM_REPLY.md");
+		expect(out).toContain("external poller");
+		expect(out).toContain("Durable Object");
 	});
 
 	it("replicaName slugifies sender", () => {

@@ -1,5 +1,6 @@
 export interface Env {
 	MAP: KVNamespace;
+	WATCHER: DurableObjectNamespace;
 	TG_TOKEN: string;
 	TG_WEBHOOK_SECRET: string;
 	REPLICAS_API_KEY: string;
@@ -9,6 +10,8 @@ export interface Env {
 	TG_API_BASE: string;
 	REPLICA_TTL_SECONDS: string;
 }
+
+export { ReplicaPoller } from "./poller";
 
 interface TgChat {
 	id: number;
@@ -100,6 +103,8 @@ export async function handleMessage(msg: TgMessage, text: string, env: Env): Pro
 		const followUp = await sendFollowUp(existing, text, env, msg);
 		if (followUp.ok) {
 			replicaId = existing;
+			// Re-arm the poller so follow-up tool calls also surface live.
+			await startWatcher(env, existing, msg);
 		} else if (followUp.gone) {
 			// Replica was deleted or expired. Invalidate KV and spawn fresh
 			// so the user doesn't get stuck routing to a dead workspace.
@@ -163,7 +168,29 @@ async function createReplica(msg: TgMessage, text: string, env: Env): Promise<st
 
 	if (!r.ok) return null;
 	const json = (await r.json()) as ReplicaCreateResponse;
-	return json.replica?.id ?? json.id ?? null;
+	const replicaId = json.replica?.id ?? json.id ?? null;
+	if (replicaId) {
+		await startWatcher(env, replicaId, msg);
+	}
+	return replicaId;
+}
+
+async function startWatcher(env: Env, replicaId: string, msg: TgMessage): Promise<void> {
+	if (!env.WATCHER) return;
+	const id = env.WATCHER.idFromName(replicaId);
+	const stub = env.WATCHER.get(id);
+	await stub
+		.fetch("https://watcher/watch", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				replicaId,
+				chatId: msg.chat.id,
+				threadId: msg.message_thread_id,
+				startMessageId: msg.message_id,
+			}),
+		})
+		.catch(() => {});
 }
 
 async function sendFollowUp(
@@ -184,13 +211,8 @@ export function prefixWithRoutingHeader(msg: TgMessage, text: string): string {
 	const parts = [`chat_id=${msg.chat.id}`];
 	if (msg.message_thread_id !== undefined) parts.push(`thread_id=${msg.message_thread_id}`);
 	const header = `[tg:${parts.join(":")}]`;
-	const hint = [
-		"# Spawned from Telegram. Stream live status with `bash ~/.replicas/bin/tg-status.sh \"🤔 …\"`",
-		"# (edits one message in place — use it before each thinking step / tool call).",
-		"# Send final result / blocker as a new message with `bash ~/.replicas/bin/tg-reply.sh \"…\"`.",
-		"# First: `echo \"<this prompt's first line>\" | bash ~/.replicas/bin/tg-target-detect.sh` to cache the chat target.",
-		"# Full protocol: `~/.replicas/TELEGRAM_REPLY.md`.",
-	].join("\n");
+	const hint =
+		"# Spawned from Telegram. Your thinking, tool calls, and final reply are surfaced to the user automatically by an external poller (Durable Object) — just work the task normally and your final assistant message becomes the Telegram reply.";
 	return `${header}\n${hint}\n\n${text}`;
 }
 

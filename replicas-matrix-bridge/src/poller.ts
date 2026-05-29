@@ -405,6 +405,23 @@ export class ReplicaPoller {
 		}
 
 		const pendingCleanup = snap.get("pendingCleanup") as boolean | undefined;
+		// Orphan detection: if phase is already terminal (DONE/FAILED)
+		// but pendingCleanup was somehow never set, treat as orphan and
+		// force cleanup. This catches the scenario where setTerminal's
+		// post-phase work threw an exception and the caller's
+		// pendingCleanup directive never landed — empirically observed
+		// today on a Failed frame that ticked for 15 minutes. setTerminal
+		// itself now writes pendingCleanup atomically (so this branch
+		// shouldn't ever trip), but it's free defense-in-depth.
+		const phaseFromSnap = snap.get("phase") as Phase | undefined;
+		const isTerminal = phaseFromSnap === "DONE" || phaseFromSnap === "FAILED";
+		if (isTerminal && !pendingCleanup) {
+			console.log(`[poller] orphan terminal detected phase=${phaseFromSnap} — forcing cleanup`);
+			await this.state.storage.put("pendingCleanup", true);
+			await this.unpinStatus(watch);
+			await this.state.storage.deleteAll();
+			return;
+		}
 		if (pendingCleanup) {
 			// Pre-cleanup delivery verification — confirm both the Done
 			// frame edit and the reply message landed in the room. If
@@ -1406,7 +1423,21 @@ export class ReplicaPoller {
 		if (!s) return;
 		s.terminal = terminal;
 		s.phase = terminal.kind === "done" ? "DONE" : "FAILED";
-		await this.state.storage.put("phase", s.phase);
+		// Persist phase + pendingCleanup + the cleanup alarm AS A SINGLE
+		// atomic write at the top, BEFORE any rendering / unpin / reaction
+		// work that could throw. Prior to this, an exception in
+		// renderAndSend / unpinStatus / swapReaction left phase=FAILED in
+		// storage but pendingCleanup unset, and the alarm chain would
+		// tick the Failed pane forever without ever entering the cleanup
+		// branch. Empirically observed today on the main Jada DM
+		// (`!MuDFIwCLjwWtsZbcmc:matrix.org`) — a 15-minute ticker on a
+		// frozen Failed frame. Setting cleanup directives atomically
+		// here means even a partial setTerminal still tears down cleanly.
+		await this.state.storage.put({
+			phase: s.phase,
+			pendingCleanup: true,
+		});
+		await this.state.storage.setAlarm(Date.now() + 30_000);
 		await this.renderAndSend(s);
 		await this.unpinStatus(watch);
 		if (watch.startEventId) {

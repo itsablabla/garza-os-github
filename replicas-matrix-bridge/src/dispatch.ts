@@ -1,5 +1,5 @@
 import type { Env } from "./index";
-import { react } from "./matrix";
+import { react, sendMessage } from "./matrix";
 
 interface ReplicaCreateResponse {
 	replica?: { id: string };
@@ -30,15 +30,30 @@ export async function handleMatrixMessage(
 	let replicaId: string | null = null;
 	let spawnedFresh = false;
 
-	// Run send + spawn while the 👀 react is in flight. We DO NOT await ackP
-	// before starting the watcher — the ack id is only needed at the terminal
-	// emoji swap, which is many seconds away. Fire-and-forget: once ackP
-	// resolves, PATCH the watcher with the id so swapReaction can redact it.
+	// Optimistic path: kick off the initial "Starting · 0s" status frame and
+	// the Replicas spawn/follow-up in parallel — and for follow-ups, start
+	// the watcher in parallel with sendFollowUp. The user sees activity in
+	// ~150ms instead of waiting on the 1.5s POST /replica roundtrip.
+	const initialFrameP = sendMessage(
+		matrixEnvShape(env),
+		roomId,
+		`🤔 <b>Starting</b> · 0s`,
+		{ replyTo: eventId },
+	).catch(() => "");
+
 	if (existing) {
-		const followUp = await sendFollowUp(existing, text, env, roomId, eventId);
+		// Watcher fires in parallel with sendFollowUp. If the follow-up turns
+		// out to be `gone` (replica expired), we'll cancel and respawn.
+		const followUpP = sendFollowUp(existing, text, env, roomId, eventId);
+		const watcherP = startWatcher(env, existing, roomId, eventId, text, undefined, undefined);
+		const followUp = await followUpP;
+		await watcherP;
 		if (followUp.ok) {
 			replicaId = existing;
 		} else if (followUp.gone) {
+			env.WATCHER.get(env.WATCHER.idFromName(existing))
+				.fetch("https://watcher/cancel", { method: "POST" })
+				.catch(() => {});
 			await env.MAP.delete(key);
 			replicaId = await createReplica(env, roomId, eventId, text);
 			spawnedFresh = true;
@@ -48,9 +63,24 @@ export async function handleMatrixMessage(
 		spawnedFresh = true;
 	}
 
+	const initialFrameId = await initialFrameP;
+
 	if (replicaId) {
 		const settledReplicaId = replicaId;
-		await startWatcher(env, settledReplicaId, roomId, eventId, text, undefined);
+		// For fresh spawns the watcher hasn't started yet. For follow-ups we
+		// already started it above and just need to forward the initial frame
+		// + ack ids — same /ack endpoint already handles that.
+		if (spawnedFresh) {
+			await startWatcher(env, settledReplicaId, roomId, eventId, text, undefined, initialFrameId || undefined);
+		} else if (initialFrameId) {
+			env.WATCHER.get(env.WATCHER.idFromName(settledReplicaId))
+				.fetch("https://watcher/ack", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ initialStatusEventId: initialFrameId }),
+				})
+				.catch(() => {});
+		}
 		// Background: forward the ack reaction id once the react call lands.
 		ackP
 			.then((id) => {
@@ -131,6 +161,7 @@ async function startWatcher(
 	eventId: string,
 	text: string,
 	ackReactionId?: string,
+	initialStatusEventId?: string,
 ): Promise<void> {
 	const stub = env.WATCHER.get(env.WATCHER.idFromName(replicaId));
 	await stub
@@ -143,6 +174,7 @@ async function startWatcher(
 				startEventId: eventId,
 				userText: text,
 				ackReactionId: ackReactionId || undefined,
+				initialStatusEventId: initialStatusEventId || undefined,
 			}),
 		})
 		.catch(() => {});

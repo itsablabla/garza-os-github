@@ -39,6 +39,10 @@ interface WatchSpec {
 	// poller can redact it when it places the terminal 🎉/😭 — otherwise
 	// both stack on the user's prompt.
 	ackReactionId?: string;
+	// Event id of the initial "Starting · 0s" frame dispatch pre-sent in
+	// parallel with the Replicas spawn. The poller adopts it as its
+	// statusEventId so subsequent renders edit instead of sending fresh.
+	initialStatusEventId?: string;
 }
 
 interface HistoryEvent {
@@ -94,12 +98,21 @@ export class ReplicaPoller {
 			return this.handleCancel();
 		}
 		if (req.method === "POST" && url.pathname === "/ack") {
-			// Late-arriving dispatch-side 👀 reaction id. Stored here so the
-			// terminal swapReaction can redact it instead of stacking emojis.
-			const body = (await req.json()) as { ackReactionId?: string };
-			if (body.ackReactionId) {
-				await this.state.storage.put("reactionEventId", body.ackReactionId);
+			// Late-arriving dispatch-side ids. The 👀 reaction id is stored so
+			// the terminal swapReaction can redact it instead of stacking
+			// emojis. The initial status frame id is adopted as statusEventId
+			// when dispatch pre-sent a "Starting · 0s" frame in parallel with
+			// the Replicas spawn — subsequent renders will edit rather than
+			// send fresh.
+			const body = (await req.json()) as { ackReactionId?: string; initialStatusEventId?: string };
+			const writes: Record<string, unknown> = {};
+			if (body.ackReactionId) writes.reactionEventId = body.ackReactionId;
+			if (body.initialStatusEventId) {
+				const existing = await this.state.storage.get<string>("statusEventId");
+				// Only adopt if we haven't already started editing a frame.
+				if (!existing) writes.statusEventId = body.initialStatusEventId;
 			}
+			if (Object.keys(writes).length > 0) await this.state.storage.put(writes);
 			return new Response("ok");
 		}
 		if (req.method === "GET" && url.pathname === "/debug") {
@@ -187,6 +200,10 @@ export class ReplicaPoller {
 		// swapReaction (terminal) redacts it. Without this the 👀 hangs
 		// around forever next to the 🎉.
 		if (body.ackReactionId) seed.reactionEventId = body.ackReactionId;
+		// Adopt the pre-sent "Starting · 0s" frame as our statusEventId so
+		// subsequent renders edit it rather than sending fresh — dispatch
+		// fires this in parallel with Replicas spawn for a fast TTFB.
+		if (body.initialStatusEventId) seed.statusEventId = body.initialStatusEventId;
 		await this.state.storage.put(seed);
 		console.log(`[poller] /watch replica=${body.replicaId} baseline=${baseline}`);
 

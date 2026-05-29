@@ -53,6 +53,24 @@ export class ReplicaPoller {
 		const url = new URL(req.url);
 		if (req.method === "POST" && url.pathname === "/watch") {
 			const body = (await req.json()) as WatchSpec;
+			// Idempotency: if /watch fires twice for the exact same Telegram
+			// message (Cloudflare KV race or Telegram webhook retry can both
+			// cause this), just refresh the watch spec and bail. Otherwise we'd
+			// reset the rolling status log mid-poll and orphan the already-sent
+			// "🤔 Starting…" message, producing duplicate "✅ Done" frames.
+			const prior = await this.state.storage.get<WatchSpec>("watch");
+			if (
+				prior &&
+				prior.replicaId === body.replicaId &&
+				prior.startMessageId !== undefined &&
+				prior.startMessageId === body.startMessageId
+			) {
+				console.log(
+					`[poller] /watch dedupe replica=${body.replicaId} msg=${body.startMessageId}`,
+				);
+				return new Response("ok");
+			}
+
 			await this.state.storage.put("watch", body);
 			// Snapshot the current event count so a follow-up message in an
 			// existing replica doesn't re-broadcast prior turns' final replies as

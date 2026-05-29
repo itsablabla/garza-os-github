@@ -131,6 +131,12 @@ export interface UsageWindows {
 	cost7d: number;
 	pct5hLeft?: number; // 0..100, computed from quota5h - tok5h when quota > 0
 	pct7dLeft?: number; // 0..100, computed from quota7d - tok7d when quota > 0
+	// Real Anthropic Claude Max 5h reset timestamp (ms epoch). When set,
+	// the renderer surfaces "resets in 1h 18m" — actual data from the
+	// claude-rate_limit_event payload, not an estimate. Allows the user
+	// to know when their plan window flips without relying on local
+	// clock-aligned guesses.
+	resetsAt?: number;
 }
 
 export interface StatusState {
@@ -752,6 +758,21 @@ export function formatTokens(n: number): string {
 	return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
+// Format ms-until-reset as "1h 18m" / "23m" / "45s" — used by the 🪙 row
+// to surface Anthropic's actual reset window from the rate_limit_event.
+export function formatUntil(ms: number): string {
+	if (ms <= 0) return "now";
+	const sec = Math.floor(ms / 1000);
+	if (sec < 60) return `${sec}s`;
+	const min = Math.floor(sec / 60);
+	if (min < 60) return `${min}m`;
+	const hr = Math.floor(min / 60);
+	const remMin = min % 60;
+	if (hr < 24) return remMin > 0 ? `${hr}h ${remMin}m` : `${hr}h`;
+	const d = Math.floor(hr / 24);
+	return `${d}d`;
+}
+
 // Render the 5h + 7d rolling usage as a single subtitle fragment.
 // What matters for subscription plans (Claude Max / OpenAI Pro) is the
 // percentage of quota REMAINING — not absolute consumed tokens, which
@@ -759,16 +780,44 @@ export function formatTokens(n: number): string {
 // When both quotas are unset (env vars at 0) we fall back to absolute
 // tokens so the row is still informational; when only one quota is set
 // we render that one as %, the other as absolute.
+//
+// The 5h reset clock comes from Anthropic's claude-rate_limit_event
+// payload — actual ground truth — appended as "· resets in 1h 18m"
+// when known. The % left for the 5h window stays bridge-side estimate
+// (Replicas doesn't expose Anthropic's remaining-tokens header) and
+// gets tagged "(est)" to be honest about the source.
 export function renderUsageWindows(u: UsageWindows | undefined): string {
 	if (!u) return "";
-	if (u.tok5h === 0 && u.tok7d === 0 && u.pct5hLeft === undefined && u.pct7dLeft === undefined) {
+	if (
+		u.tok5h === 0 &&
+		u.tok7d === 0 &&
+		u.pct5hLeft === undefined &&
+		u.pct7dLeft === undefined &&
+		!u.resetsAt
+	) {
 		return "";
 	}
-	const seg5h =
-		u.pct5hLeft !== undefined ? `5h: ${u.pct5hLeft}% left` : `5h: ${formatTokens(u.tok5h)} tok`;
-	const seg7d =
-		u.pct7dLeft !== undefined ? `7d: ${u.pct7dLeft}% left` : `7d: ${formatTokens(u.tok7d)} tok`;
-	return `🪙 ${seg5h} · ${seg7d}`;
+	let seg5h: string;
+	if (u.pct5hLeft !== undefined) {
+		seg5h = `5h: ${u.pct5hLeft}% left (est)`;
+	} else if (u.tok5h > 0) {
+		seg5h = `5h: ${formatTokens(u.tok5h)} tok`;
+	} else {
+		seg5h = "5h";
+	}
+	if (u.resetsAt) {
+		const remaining = u.resetsAt - Date.now();
+		if (remaining > 0) seg5h += ` · resets in ${formatUntil(remaining)}`;
+	}
+	let seg7d: string;
+	if (u.pct7dLeft !== undefined) {
+		seg7d = `7d: ${u.pct7dLeft}% left (est)`;
+	} else if (u.tok7d > 0) {
+		seg7d = `7d: ${formatTokens(u.tok7d)} tok`;
+	} else {
+		seg7d = "";
+	}
+	return seg7d ? `🪙 ${seg5h} · ${seg7d}` : `🪙 ${seg5h}`;
 }
 
 export function formatDuration(seconds: number): string {

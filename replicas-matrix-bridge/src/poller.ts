@@ -506,6 +506,12 @@ export class ReplicaPoller {
 		let activeToolStartedAt =
 			(await this.state.storage.get<number>("activeToolStartedAt")) ?? undefined;
 
+		// Real Anthropic Claude Max 5h reset timestamp (ms epoch) parsed
+		// from rate_limit_event payloads. Used by the subtitle to render
+		// "resets in 1h 18m" — actual data from Anthropic, not an estimate.
+		let rateLimitResetsAt =
+			(await this.state.storage.get<number>("rateLimitResetsAt")) ?? undefined;
+
 		let sawResult = false;
 		let resultText: string | null = null;
 		let resultIsError = false;
@@ -684,14 +690,27 @@ export class ReplicaPoller {
 					appended = true;
 				}
 			} else if (t === "claude-rate_limit_event") {
-				// #7 surface upstream Anthropic rate-limit pauses as a
-				// distinct phase so the frame stops looking frozen. We
-				// stash the prior phase so the next agent event can
-				// revert us cleanly.
-				if (phase !== "RATE_LIMITED") {
-					phaseBeforeRateLimit = phase;
-					phase = "RATE_LIMITED";
-					appended = true;
+				// Real Anthropic rate-limit signal: `rate_limit_info` carries
+				// {status, rateLimitType, resetsAt, isUsingOverage, overageStatus}.
+				//   status=allowed  → headroom remaining; just refresh resetsAt
+				//   status=rejected → cap hit; surface as RATE_LIMITED phase
+				//   isUsingOverage  → consuming overage tokens; surface too
+				// Prior bridge code unconditionally flipped phase on every
+				// event, which incorrectly painted the pane "Rate-limited"
+				// during routine status checks (Anthropic emits these even
+				// when fine). Now phase change is gated on actual cap-hit.
+				const rli =
+					(ev.payload as { rate_limit_info?: { status?: string; rateLimitType?: string; resetsAt?: number; isUsingOverage?: boolean; overageStatus?: string } } | undefined)?.rate_limit_info;
+				if (rli) {
+					if (rli.resetsAt && rli.rateLimitType === "five_hour") {
+						rateLimitResetsAt = rli.resetsAt * 1000; // sec → ms
+					}
+					const capHit = rli.status === "rejected" || rli.isUsingOverage === true;
+					if (capHit && phase !== "RATE_LIMITED") {
+						phaseBeforeRateLimit = phase;
+						phase = "RATE_LIMITED";
+						appended = true;
+					}
 				}
 			} else if (t === "claude-system") {
 				// One-time projection of the system info Replicas hands us at
@@ -834,6 +853,7 @@ export class ReplicaPoller {
 		else await this.state.storage.delete("phaseBeforeRateLimit");
 		if (activeToolStartedAt !== undefined) writes.activeToolStartedAt = activeToolStartedAt;
 		else await this.state.storage.delete("activeToolStartedAt");
+		if (rateLimitResetsAt !== undefined) writes.rateLimitResetsAt = rateLimitResetsAt;
 		if (plan) writes.plan = plan;
 		if (systemInfo) writes.systemInfo = systemInfo;
 		if (contextUsage) writes.contextUsage = contextUsage;
@@ -993,6 +1013,7 @@ export class ReplicaPoller {
 			"sessionTotals",
 			"activeToolStartedAt",
 			"segmentStartLine",
+			"rateLimitResetsAt",
 		])) as Map<string, unknown>;
 		const watch = snap.get("watch") as WatchSpec | undefined;
 		if (!watch) return null;
@@ -1024,7 +1045,8 @@ export class ReplicaPoller {
 					}
 				}
 			}
-			if (tok5h > 0 || tok7d > 0) {
+			const resetsAt = snap.get("rateLimitResetsAt") as number | undefined;
+			if (tok5h > 0 || tok7d > 0 || resetsAt) {
 				// Compute % left against the env-configured quotas. When a
 				// quota is zero/unset, leave the pct field undefined and the
 				// renderer falls back to absolute tokens for that window.
@@ -1034,7 +1056,15 @@ export class ReplicaPoller {
 					quota5h > 0 ? Math.max(0, Math.round((1 - tok5h / quota5h) * 100)) : undefined;
 				const pct7dLeft =
 					quota7d > 0 ? Math.max(0, Math.round((1 - tok7d / quota7d) * 100)) : undefined;
-				usageWindows = { tok5h, tok7d, cost5h, cost7d, pct5hLeft, pct7dLeft };
+				usageWindows = {
+					tok5h,
+					tok7d,
+					cost5h,
+					cost7d,
+					pct5hLeft,
+					pct7dLeft,
+					resetsAt,
+				};
 			}
 		} catch {}
 

@@ -551,9 +551,12 @@ describe("Done frame — result is its own message block", () => {
 });
 
 describe("renderUsageWindows", () => {
-	it("renders % left for both windows when quotas are configured", () => {
+	it("renders % left for both windows with (est) tag when quotas are configured", () => {
 		// 47k consumed against a 5M quota → 99% left.
 		// 215k consumed against a 100M quota → 100% left (rounds up).
+		// (est) tag is honest about the source — bridge-side estimate,
+		// not Anthropic's remaining-tokens header (which Replicas doesn't
+		// expose).
 		const out = render({
 			startedAt: Date.now() - 5000,
 			stepCount: 0,
@@ -569,10 +572,31 @@ describe("renderUsageWindows", () => {
 			},
 		});
 		expect(out).toContain("🪙");
-		expect(out).toContain("5h: 99% left");
-		expect(out).toContain("7d: 100% left");
+		expect(out).toContain("5h: 99% left (est)");
+		expect(out).toContain("7d: 100% left (est)");
 		// No raw token figure in the rendered fragment when % is present.
 		expect(out).not.toContain("47k tok");
+	});
+
+	it("renders the real Anthropic resetsAt as a 'resets in' tail", () => {
+		// resetsAt 1h 18m in the future.
+		const resetsAt = Date.now() + (1 * 60 * 60 * 1000 + 18 * 60 * 1000);
+		const out = render({
+			startedAt: Date.now() - 5000,
+			stepCount: 0,
+			phase: "STARTING",
+			lines: [],
+			usageWindows: {
+				tok5h: 47_000,
+				tok7d: 215_000,
+				cost5h: 0,
+				cost7d: 0,
+				pct5hLeft: 99,
+				pct7dLeft: 100,
+				resetsAt,
+			},
+		});
+		expect(out).toMatch(/resets in 1h 1[78]m/);
 	});
 
 	it("falls back to absolute tokens when quotas are not configured", () => {

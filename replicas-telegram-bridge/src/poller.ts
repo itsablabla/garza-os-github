@@ -77,6 +77,15 @@ export class ReplicaPoller {
 			await this.state.storage.deleteAll();
 			return new Response("ok");
 		}
+		if (req.method === "GET" && url.pathname === "/debug") {
+			const all = await this.state.storage.list();
+			const state: Record<string, unknown> = {};
+			for (const [k, v] of all) state[k] = v;
+			const alarmAt = await this.state.storage.getAlarm();
+			return new Response(JSON.stringify({ state, alarmAt }), {
+				headers: { "Content-Type": "application/json" },
+			});
+		}
 		return new Response("not found", { status: 404 });
 	}
 

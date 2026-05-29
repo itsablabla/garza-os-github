@@ -60,6 +60,17 @@ export default {
 			return new Response("ok", { status: 200 });
 		}
 
+		// Debug endpoint: GET /debug/watcher/<replicaId> returns the DO state.
+		if (req.method === "GET" && url.pathname.startsWith("/debug/watcher/")) {
+			const id = url.pathname.slice("/debug/watcher/".length);
+			if (env.WATCHER && id) {
+				const doId = env.WATCHER.idFromName(id);
+				const stub = env.WATCHER.get(doId);
+				return stub.fetch("https://watcher/debug", { method: "GET" });
+			}
+			return new Response("missing replica id", { status: 400 });
+		}
+
 		if (req.method !== "POST" || url.pathname !== "/tg") {
 			return new Response("not found", { status: 404 });
 		}

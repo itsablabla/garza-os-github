@@ -30,9 +30,10 @@ export async function handleMatrixMessage(
 	let replicaId: string | null = null;
 	let spawnedFresh = false;
 
-	// Run send + spawn in parallel with the ack so the user sees activity
-	// fast, then await ackP at the end so we can forward the reaction id
-	// to the watcher (it needs the id to redact the 👀 before placing 🎉).
+	// Run send + spawn while the 👀 react is in flight. We DO NOT await ackP
+	// before starting the watcher — the ack id is only needed at the terminal
+	// emoji swap, which is many seconds away. Fire-and-forget: once ackP
+	// resolves, PATCH the watcher with the id so swapReaction can redact it.
 	if (existing) {
 		const followUp = await sendFollowUp(existing, text, env, roomId, eventId);
 		if (followUp.ok) {
@@ -47,9 +48,21 @@ export async function handleMatrixMessage(
 		spawnedFresh = true;
 	}
 
-	const ackReactionId = await ackP;
 	if (replicaId) {
-		await startWatcher(env, replicaId, roomId, eventId, text, ackReactionId);
+		const settledReplicaId = replicaId;
+		await startWatcher(env, settledReplicaId, roomId, eventId, text, undefined);
+		// Background: forward the ack reaction id once the react call lands.
+		ackP
+			.then((id) => {
+				if (!id) return;
+				const stub = env.WATCHER.get(env.WATCHER.idFromName(settledReplicaId));
+				return stub.fetch("https://watcher/ack", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ ackReactionId: id }),
+				});
+			})
+			.catch(() => {});
 	}
 
 	if (!replicaId) {

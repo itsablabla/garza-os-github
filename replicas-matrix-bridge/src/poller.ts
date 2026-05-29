@@ -67,12 +67,12 @@ interface HistoryResponse {
 	total?: number;
 }
 
-const FIRST_POLL_DELAY_MS = 150;
-const ACTIVE_POLL_INTERVAL_MS = 300;
+const FIRST_POLL_DELAY_MS = 80;
+const ACTIVE_POLL_INTERVAL_MS = 180;
 const BACKOFF_POLL_INTERVAL_MS = 3000;
 const MAX_WATCH_DURATION_MS = 30 * 60 * 1000;
-const EDIT_MIN_INTERVAL_MS = 900;
-const TICKER_REFRESH_MS = 2000;
+const EDIT_MIN_INTERVAL_MS = 500;
+const TICKER_REFRESH_MS = 1500;
 const TYPING_INTERVAL_MS = 25_000;
 const REPLY_MAX_LEN = 16_000; // Matrix doesn't cap message length the way Telegram does (~16KB safe)
 
@@ -92,6 +92,15 @@ export class ReplicaPoller {
 		}
 		if (req.method === "POST" && url.pathname === "/cancel") {
 			return this.handleCancel();
+		}
+		if (req.method === "POST" && url.pathname === "/ack") {
+			// Late-arriving dispatch-side 👀 reaction id. Stored here so the
+			// terminal swapReaction can redact it instead of stacking emojis.
+			const body = (await req.json()) as { ackReactionId?: string };
+			if (body.ackReactionId) {
+				await this.state.storage.put("reactionEventId", body.ackReactionId);
+			}
+			return new Response("ok");
 		}
 		if (req.method === "GET" && url.pathname === "/debug") {
 			const all = await this.state.storage.list();

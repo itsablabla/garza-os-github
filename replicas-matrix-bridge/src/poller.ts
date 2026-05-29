@@ -107,6 +107,33 @@ export class ReplicaPoller {
 			return new Response("ok");
 		}
 
+		// Steering: a new message arrived while the previous turn is still
+		// running (status event live, no terminal yet). Don't reset — just
+		// update watch + inject a 💬 You: line, let the alarm chain pick up
+		// the agent's response.
+		const statusEventId = await this.state.storage.get<string>("statusEventId");
+		const pendingCleanup = await this.state.storage.get<boolean>("pendingCleanup");
+		if (
+			prior &&
+			prior.replicaId === body.replicaId &&
+			statusEventId !== undefined &&
+			!pendingCleanup
+		) {
+			const lines = (await this.state.storage.get<string[]>("lines")) ?? [];
+			if (body.userText) {
+				const escaped = body.userText
+					.replace(/&/g, "&amp;")
+					.replace(/</g, "&lt;")
+					.replace(/>/g, "&gt;")
+					.slice(0, 200);
+				lines.push(`💬 <i>You: ${escaped}</i>`);
+			}
+			await this.state.storage.put({ watch: body, lines, lastRendered: "" });
+			console.log(`[poller] /watch steer replica=${body.replicaId} ev=${body.startEventId}`);
+			await this.renderAndSend();
+			return new Response("ok");
+		}
+
 		const baselineP = this.snapshotEventCount(body.replicaId);
 		await this.state.storage.delete([
 			"statusEventId",

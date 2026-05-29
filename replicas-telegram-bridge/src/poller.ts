@@ -105,6 +105,34 @@ export class ReplicaPoller {
 			return new Response("ok");
 		}
 
+		// Steering: a new message arrived while the previous turn is still
+		// running (status frame is open, no terminal yet). Don't reset state
+		// — just update the watch spec, drop a 💬 You: line into the rolling
+		// log so the user sees their steer landed, and let the existing alarm
+		// chain pick up the agent's response to the new input.
+		const statusMessageId = await this.state.storage.get<number>("statusMessageId");
+		const pendingCleanup = await this.state.storage.get<boolean>("pendingCleanup");
+		if (
+			prior &&
+			prior.replicaId === body.replicaId &&
+			statusMessageId !== undefined &&
+			!pendingCleanup
+		) {
+			const lines = (await this.state.storage.get<string[]>("lines")) ?? [];
+			if (body.userText) {
+				const escaped = body.userText
+					.replace(/&/g, "&amp;")
+					.replace(/</g, "&lt;")
+					.replace(/>/g, "&gt;")
+					.slice(0, 200);
+				lines.push(`💬 <i>You: ${escaped}</i>`);
+			}
+			await this.state.storage.put({ watch: body, lines, lastRendered: "" });
+			console.log(`[poller] /watch steer replica=${body.replicaId} msg=${body.startMessageId}`);
+			await this.renderAndSend();
+			return new Response("ok");
+		}
+
 		// Run the baseline snapshot in parallel with the storage reset.
 		const baselineP = this.snapshotEventCount(body.replicaId);
 		await this.state.storage.delete([

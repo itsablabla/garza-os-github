@@ -432,16 +432,40 @@ export class ReplicaPoller {
 					durationSec: seconds,
 					errorMsg: resultErrorMsg ?? "agent error",
 				});
-			} else {
-				const replyP = resultText ? this.sendFinalReply(watch, resultText) : Promise.resolve();
-				await Promise.all([
-					this.setTerminal(watch, { kind: "done", durationSec: seconds }),
-					replyP,
-				]);
+				await this.state.storage.put("pendingCleanup", true);
+				await this.state.storage.setAlarm(Date.now() + 30_000);
+				return;
 			}
-			await this.state.storage.put("pendingCleanup", true);
-			await this.state.storage.setAlarm(Date.now() + 30_000);
+
+			// Persist the final reply text so subsequent alarm ticks can
+			// retry the send if this one fails — long turns occasionally drop
+			// the message mid-Promise.all, leaving the room with a Done frame
+			// but no answer. The cleanup alarm waits 30s, giving us many
+			// retry windows before storage gets wiped.
+			if (resultText) await this.state.storage.put("pendingFinalReply", resultText);
+
+			await this.setTerminal(watch, { kind: "done", durationSec: seconds });
+
+			await this.flushFinalReply(watch);
+
+			// Only mark for cleanup once the reply is confirmed delivered.
+			const stillPending = await this.state.storage.get<string>("pendingFinalReply");
+			if (!stillPending) {
+				await this.state.storage.put("pendingCleanup", true);
+				await this.state.storage.setAlarm(Date.now() + 30_000);
+			} else {
+				// Retry next alarm — short cadence so the user doesn't wait.
+				await this.state.storage.setAlarm(Date.now() + 2_000);
+			}
 			return;
+		}
+
+		// Even when no fresh claude-result is in this batch, a previous tick
+		// might have set sawResult but failed the send. Drain pendingFinalReply
+		// on every alarm tick so the retry actually fires.
+		const pendingReply = await this.state.storage.get<string>("pendingFinalReply");
+		if (pendingReply) {
+			await this.flushFinalReply(watch);
 		}
 
 		const lastEditAt = (await this.state.storage.get<number>("lastEditAt")) ?? 0;
@@ -559,12 +583,29 @@ export class ReplicaPoller {
 		}
 	}
 
-	private async sendFinalReply(watch: WatchSpec, text: string): Promise<void> {
+	private async sendFinalReply(watch: WatchSpec, text: string): Promise<boolean> {
 		const html = markdownToHtml(text.slice(0, REPLY_MAX_LEN));
 		try {
 			await sendMessage(matrixEnv(this.env), watch.roomId, html);
+			return true;
 		} catch (e) {
 			console.log(`[poller] sendFinalReply failed: ${e instanceof Error ? e.message : e}`);
+			return false;
+		}
+	}
+
+	// Drain the pendingFinalReply slot: try sending, clear on success.
+	// Called from both the sawResult branch (initial attempt) and from
+	// every subsequent alarm tick that finds the slot still set (retries).
+	private async flushFinalReply(watch: WatchSpec): Promise<void> {
+		const pending = await this.state.storage.get<string>("pendingFinalReply");
+		if (!pending) return;
+		const ok = await this.sendFinalReply(watch, pending);
+		if (ok) {
+			await this.state.storage.delete("pendingFinalReply");
+			console.log(`[poller] pendingFinalReply flushed (len=${pending.length})`);
+		} else {
+			console.log(`[poller] pendingFinalReply retry will fire next alarm`);
 		}
 	}
 

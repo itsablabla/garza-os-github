@@ -425,24 +425,41 @@ export class ReplicaPoller {
 
 		if (sawResult) {
 			const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
-			// Fire terminal status update and the final reply in parallel — no
-			// reason to serialize the two Telegram calls.
 			if (resultIsError) {
 				await this.setTerminal(watch, {
 					kind: "failed",
 					durationSec: seconds,
 					errorMsg: resultErrorMsg ?? "agent error",
 				});
-			} else {
-				const replyPromise = resultText ? this.sendReply(watch, resultText) : Promise.resolve();
-				await Promise.all([
-					this.setTerminal(watch, { kind: "done", durationSec: seconds }),
-					replyPromise,
-				]);
+				await this.state.storage.put("pendingCleanup", true);
+				await this.state.storage.setAlarm(Date.now() + 30_000);
+				return;
 			}
-			await this.state.storage.put("pendingCleanup", true);
-			await this.state.storage.setAlarm(Date.now() + 30_000);
+
+			// Persist the final reply so subsequent ticks can retry on send
+			// failure (long turns occasionally drop the message mid-Promise.all
+			// and leave the user with a Done frame but no answer).
+			if (resultText) await this.state.storage.put("pendingFinalReply", resultText);
+
+			await this.setTerminal(watch, { kind: "done", durationSec: seconds });
+
+			await this.flushFinalReply(watch);
+
+			const stillPending = await this.state.storage.get<string>("pendingFinalReply");
+			if (!stillPending) {
+				await this.state.storage.put("pendingCleanup", true);
+				await this.state.storage.setAlarm(Date.now() + 30_000);
+			} else {
+				await this.state.storage.setAlarm(Date.now() + 2_000);
+			}
 			return;
+		}
+
+		// Drain pendingFinalReply on every tick — first attempt may have lost
+		// the message, retries until matrix returns an event_id.
+		const pendingReply = await this.state.storage.get<string>("pendingFinalReply");
+		if (pendingReply) {
+			await this.flushFinalReply(watch);
 		}
 
 		// Render conditions:
@@ -556,15 +573,34 @@ export class ReplicaPoller {
 		}
 	}
 
-	private async sendReply(watch: WatchSpec, text: string): Promise<void> {
-		let body = text;
-		let first = true;
-		while (body.length > 0) {
-			if (!first) await sleep(1100);
-			first = false;
-			const piece = body.slice(0, REPLY_MAX_LEN);
-			body = body.slice(REPLY_MAX_LEN);
-			await this.sendFormattedReplyChunk(watch, piece);
+	private async sendReply(watch: WatchSpec, text: string): Promise<boolean> {
+		try {
+			let body = text;
+			let first = true;
+			while (body.length > 0) {
+				if (!first) await sleep(1100);
+				first = false;
+				const piece = body.slice(0, REPLY_MAX_LEN);
+				body = body.slice(REPLY_MAX_LEN);
+				await this.sendFormattedReplyChunk(watch, piece);
+			}
+			return true;
+		} catch (e) {
+			console.log(`[poller] sendReply failed: ${e instanceof Error ? e.message : e}`);
+			return false;
+		}
+	}
+
+	// Drain pendingFinalReply: retry on every alarm tick until Telegram accepts.
+	private async flushFinalReply(watch: WatchSpec): Promise<void> {
+		const pending = await this.state.storage.get<string>("pendingFinalReply");
+		if (!pending) return;
+		const ok = await this.sendReply(watch, pending);
+		if (ok) {
+			await this.state.storage.delete("pendingFinalReply");
+			console.log(`[poller] pendingFinalReply flushed (len=${pending.length})`);
+		} else {
+			console.log(`[poller] pendingFinalReply retry will fire next alarm`);
 		}
 	}
 

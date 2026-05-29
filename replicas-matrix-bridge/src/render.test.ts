@@ -476,8 +476,8 @@ describe("phaseToReactionEmoji", () => {
 	});
 });
 
-describe("Done frame — resultHtml embedding", () => {
-	it("embeds the result HTML below the op log so a single message carries the answer", () => {
+describe("Done frame — result is its own message block", () => {
+	it("Done frame does NOT embed resultHtml (poller sends it as a separate message)", () => {
 		const out = render({
 			startedAt: Date.now() - 56000,
 			stepCount: 0,
@@ -490,12 +490,14 @@ describe("Done frame — resultHtml embedding", () => {
 			},
 		});
 		expect(out).toContain("🎉 <b>Done</b> · 56s");
-		expect(out).toContain("Yes — found it.");
-		expect(out).toContain("<b>Beeper MCP:</b>");
-		expect(out).toContain("https://example.com");
+		// Per UX review: the reply lives in its OWN message block sent
+		// by the poller. The Done frame is just the status summary.
+		expect(out).not.toContain("Yes — found it.");
+		expect(out).not.toContain("<b>Beeper MCP:</b>");
+		expect(out).not.toContain("https://example.com");
 	});
 
-	it("text-only Done frame is no longer empty — header + subtitle + body all in one message", () => {
+	it("text-only Done frame is the status summary, body lives in a follow-up message", () => {
 		const out = render({
 			startedAt: Date.now() - 18000,
 			stepCount: 0,
@@ -515,8 +517,9 @@ describe("Done frame — resultHtml embedding", () => {
 		// Subtitle is present
 		expect(out).toContain("Opus 4.7");
 		expect(out).toContain("7/13 MCP");
-		// Body is embedded — the user actually SEES the answer in the Done frame
-		expect(out).toContain("Did I find what?");
+		// Body is NO LONGER embedded — the poller sends a separate
+		// message for the reply right after this Done frame lands.
+		expect(out).not.toContain("Did I find what?");
 	});
 
 	it("failed turn never embeds resultHtml — only the errorMsg", () => {
@@ -537,6 +540,46 @@ describe("Done frame — resultHtml embedding", () => {
 		expect(out).toContain("❌ <b>Failed</b>");
 		expect(out).toContain("agent error: rate limited");
 		expect(out).not.toContain("This should not appear");
+	});
+});
+
+describe("renderUsageWindows", () => {
+	it("renders 5h + 7d token totals with the 🪙 anchor", () => {
+		const out = render({
+			startedAt: Date.now() - 5000,
+			stepCount: 0,
+			phase: "STARTING",
+			lines: [],
+			usageWindows: { tok5h: 47_000, tok7d: 215_000, cost5h: 0.42, cost7d: 1.92 },
+		});
+		expect(out).toContain("🪙");
+		expect(out).toContain("5h:");
+		expect(out).toContain("47k tok");
+		expect(out).toContain("7d:");
+		expect(out).toContain("215k tok");
+	});
+
+	it("hides the usage line when both windows are zero", () => {
+		const out = render({
+			startedAt: Date.now() - 5000,
+			stepCount: 0,
+			phase: "STARTING",
+			lines: [],
+			usageWindows: { tok5h: 0, tok7d: 0, cost5h: 0, cost7d: 0 },
+		});
+		expect(out).not.toContain("🪙");
+	});
+
+	it("formats M (millions) for very large token totals", () => {
+		const out = render({
+			startedAt: Date.now() - 5000,
+			stepCount: 0,
+			phase: "STARTING",
+			lines: [],
+			usageWindows: { tok5h: 312_000, tok7d: 2_100_000, cost5h: 0, cost7d: 0 },
+		});
+		expect(out).toContain("312k tok");
+		expect(out).toContain("2.1M tok");
 	});
 });
 

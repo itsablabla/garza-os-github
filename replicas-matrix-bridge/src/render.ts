@@ -117,6 +117,18 @@ export interface SessionTotals {
 	turns: number;
 }
 
+// Rolling-window usage aggregates computed from the per-org usage log
+// kept in KV (`usage:org`). Surfaced in the subtitle instead of per-turn
+// cost — because these are subscription plans (Claude Max, OpenAI Pro)
+// and absolute $ doesn't matter to the user; what matters is how much
+// they've consumed in the 5h reset window and 7d sliding window.
+export interface UsageWindows {
+	tok5h: number;
+	tok7d: number;
+	cost5h: number;
+	cost7d: number;
+}
+
 export interface StatusState {
 	userText?: string;
 	startedAt: number;
@@ -140,6 +152,11 @@ export interface StatusState {
 	// surfaced once turnCount > 1, so a single-turn conversation looks
 	// the same as before.
 	sessionTotals?: SessionTotals;
+	// Per-org rolling-window usage (5h + 7d). Replaces the per-turn $
+	// cost in the subtitle — what matters for a subscription plan is
+	// "how much have I consumed in the current 5h reset window" and
+	// "this week", not the dollar value of any single turn.
+	usageWindows?: UsageWindows;
 	// Start timestamp of the most recently issued tool_use that has not
 	// yet matched a tool_result. When set, the active 🔄 tool line in
 	// the rolling log carries a live `· Ns` elapsed counter that ticks
@@ -640,13 +657,14 @@ function renderTerminal(state: StatusState): string {
 		if (filesFooter) blocks.push(filesFooter);
 	}
 
-	// Embed the agent's final reply directly in the Done frame. Single
-	// message per turn — Beeper and other bridges can't drop a "second
-	// message" if there is no second message. Sits below the op log so
-	// reading order is past → present → answer.
-	if (isDone && state.terminal!.resultHtml) {
-		blocks.push(state.terminal!.resultHtml);
-	}
+	// Per Jaden's review: the agent's final reply is now its own message
+	// block, sent separately by the poller after this Done frame lands.
+	// The Done frame is the *status summary* (tools, files, totals); the
+	// reply is the *answer*. Cleaner reading order, easier to scroll
+	// back to the answer without the status clutter, and matches the
+	// "result/solution is its own block" UX. The poller carries the
+	// retry-on-429 logic for the separate send.
+	void state.terminal?.resultHtml;
 
 	let out = blocks.join("<br><br>");
 	if (out.length > MAX_RENDER_CHARS) out = out.slice(0, MAX_RENDER_CHARS - 1) + "…";
@@ -674,13 +692,12 @@ function renderSubtitle(state: StatusState): string {
 		if (s.toolCount > 0) parts.push(`${s.toolCount} tools`);
 	}
 	// Cumulative session totals (when more than one turn in this room) —
-	// surfaces "across the conversation" cost + steps so the user has
-	// running visibility into total spend.
+	// step + turn count only. The $ is now redundant with the 5h/7d
+	// usage windows below, which are more meaningful for subscription
+	// plans where absolute cost isn't what the user cares about.
 	if (state.sessionTotals && state.sessionTotals.turns > 1) {
 		const t = state.sessionTotals;
-		const costStr = formatCost(t.costUsd);
-		if (costStr) parts.push(`session ${costStr} · ${t.steps} steps · ${t.turns} turns`);
-		else parts.push(`session ${t.steps} steps · ${t.turns} turns`);
+		parts.push(`session ${t.steps} steps · ${t.turns} turns`);
 	}
 	// The plain `ctx N%` line stays — keeps the at-a-glance number.
 	if (state.contextUsage && state.contextUsage.pct > 0) {
@@ -688,6 +705,13 @@ function renderSubtitle(state: StatusState): string {
 	}
 	const lines: string[] = [];
 	if (parts.length > 0) lines.push(`<i>${escapeHtml(parts.join(" · "))}</i>`);
+
+	// Subscription-plan usage windows: replaces the per-turn / session $
+	// figure with the actually-meaningful "what have I burned in the 5h
+	// reset window and this week" view. On its own line because the
+	// emoji + dual figures don't fit comfortably inline.
+	const usageLine = renderUsageWindows(state.usageWindows);
+	if (usageLine) lines.push(`<i>${usageLine}</i>`);
 
 	// Context bar on its own line below the dimmed subtitle when ctx > 0
 	// — too wide to fit comfortably alongside the model/MCP info.
@@ -710,7 +734,17 @@ function prettyModel(m: string): string {
 export function formatTokens(n: number): string {
 	if (n < 1000) return String(n);
 	if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
-	return `${Math.round(n / 1000)}k`;
+	if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+	return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+// Render the 5h + 7d rolling token usage as a single subtitle fragment.
+// This is what matters for subscription plans (Claude Max / OpenAI Pro):
+// "what have I burned in the 5h reset window and this week."
+export function renderUsageWindows(u: UsageWindows | undefined): string {
+	if (!u) return "";
+	if (u.tok5h === 0 && u.tok7d === 0) return "";
+	return `🪙 5h: ${formatTokens(u.tok5h)} tok · 7d: ${formatTokens(u.tok7d)} tok`;
 }
 
 export function formatDuration(seconds: number): string {

@@ -291,6 +291,7 @@ export class ReplicaPoller {
 			"phaseBeforeRateLimit",
 			"activeToolStartedAt",
 			"segmentStartLine",
+			"replyEventId",
 			// Per-turn throttle bookkeeping — wipe so a fresh turn starts
 			// fast even if the prior turn ratcheted the backoff bonus up.
 			"backoffBonusMs",
@@ -885,11 +886,50 @@ export class ReplicaPoller {
 				);
 			}
 
+			// Per-org usage log. Append a {ts, cost, tok} entry on every
+			// Done; the array is pruned to entries within the last 8 days
+			// so it stays small and the 7d window has full data. Used by
+			// the subtitle's "🪙 5h · 7d" render so the user sees rolling
+			// consumption against a subscription plan instead of arbitrary
+			// per-turn cost figures. Best-effort: failure doesn't block
+			// the Done frame.
+			try {
+				const usageKey = `usage:org`;
+				const priorLog = (await this.env.MAP.get<
+					{ ts: number; cost: number; tok: number }[]
+				>(usageKey, { type: "json" })) ?? [];
+				const turnCost = resultMeta?.costUsd ?? 0;
+				const turnTok =
+					(resultMeta?.inputTokens ?? 0) + (resultMeta?.outputTokens ?? 0);
+				const now = Date.now();
+				const cutoff = now - 8 * 24 * 60 * 60 * 1000;
+				const nextLog = priorLog.filter((e) => e.ts >= cutoff);
+				nextLog.push({ ts: now, cost: turnCost, tok: turnTok });
+				await this.env.MAP.put(usageKey, JSON.stringify(nextLog), {
+					expirationTtl: 60 * 60 * 24 * 30, // 30 days
+				});
+			} catch (e) {
+				console.log(
+					`[poller] usage log update failed: ${e instanceof Error ? e.message : e}`,
+				);
+			}
+
 			await this.setTerminal(watch, {
 				kind: "done",
 				durationSec: seconds,
 				resultHtml,
 			});
+
+			// Send the agent's final reply as its OWN message right after the
+			// Done frame. Per UX review: status summary (Done frame with tools
+			// + totals) and the actual answer should be separate message
+			// blocks so it's easy to scroll back to the answer without the
+			// status clutter. Reply-to'd against the user's prompt so Beeper
+			// threads it visually with the original message. Retried on 429
+			// the same way terminal frames are.
+			if (resultHtml) {
+				await this.sendReplyAsOwnBlock(watch, resultHtml);
+			}
 
 			await this.state.storage.put("pendingCleanup", true);
 			await this.state.storage.setAlarm(Date.now() + 30_000);
@@ -948,6 +988,38 @@ export class ReplicaPoller {
 		const watch = snap.get("watch") as WatchSpec | undefined;
 		if (!watch) return null;
 		const currentAction = (snap.get("currentAction") as string | undefined) ?? "";
+
+		// Per-org rolling usage. Read the log from KV and bucket into 5h
+		// and 7d aggregates. Computed lazily here so every render has
+		// up-to-date numbers without the poller having to recompute on
+		// every alarm tick.
+		let usageWindows: import("./render").UsageWindows | undefined;
+		try {
+			const log = (await this.env.MAP.get<
+				{ ts: number; cost: number; tok: number }[]
+			>("usage:org", { type: "json" })) ?? [];
+			const now = Date.now();
+			const cutoff5h = now - 5 * 60 * 60 * 1000;
+			const cutoff7d = now - 7 * 24 * 60 * 60 * 1000;
+			let tok5h = 0;
+			let tok7d = 0;
+			let cost5h = 0;
+			let cost7d = 0;
+			for (const e of log) {
+				if (e.ts >= cutoff7d) {
+					tok7d += e.tok;
+					cost7d += e.cost;
+					if (e.ts >= cutoff5h) {
+						tok5h += e.tok;
+						cost5h += e.cost;
+					}
+				}
+			}
+			if (tok5h > 0 || tok7d > 0) {
+				usageWindows = { tok5h, tok7d, cost5h, cost7d };
+			}
+		} catch {}
+
 		return {
 			userText: watch.userText,
 			startedAt: (snap.get("startedAt") as number | undefined) ?? Date.now(),
@@ -964,7 +1036,41 @@ export class ReplicaPoller {
 			sessionTotals: (snap.get("sessionTotals") as import("./render").SessionTotals | undefined) ?? undefined,
 			activeToolStartedAt: (snap.get("activeToolStartedAt") as number | undefined) ?? undefined,
 			segmentStartLine: (snap.get("segmentStartLine") as number | undefined) ?? undefined,
+			usageWindows,
 		};
+	}
+
+	/**
+	 * Send the agent's final reply as its own Matrix message, separate
+	 * from the Done frame. Retried on 429 the same way terminal frames
+	 * are. Reply-to'd against the user's prompt so Beeper threads it.
+	 *
+	 * Saved as `replyEventId` in storage so the same id is reused if a
+	 * retry happens after a transient failure (no duplicate replies).
+	 */
+	private async sendReplyAsOwnBlock(watch: WatchSpec, html: string): Promise<void> {
+		const existing = await this.state.storage.get<string>("replyEventId");
+		if (existing) return; // already sent successfully on a prior pass
+		const trimmed = html.slice(0, REPLY_MAX_LEN);
+		for (let attempt = 0; attempt < 4; attempt++) {
+			try {
+				const id = await sendMessage(matrixEnv(this.env), watch.roomId, trimmed, {
+					replyTo: watch.startEventId,
+				});
+				await this.state.storage.put("replyEventId", id);
+				return;
+			} catch (e) {
+				if (e instanceof MatrixError && e.status === 429) {
+					const waitMs = Math.min(8_000, Math.max(500, e.retryAfterMs ?? 1_500));
+					console.log(`[poller] reply 429 attempt ${attempt + 1}, retry in ${waitMs}ms`);
+					await sleep(waitMs);
+					continue;
+				}
+				console.log(`[poller] reply send failed: ${e instanceof Error ? e.message : e}`);
+				return;
+			}
+		}
+		console.log(`[poller] reply send exhausted retries`);
 	}
 
 	/**

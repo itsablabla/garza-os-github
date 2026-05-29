@@ -8,7 +8,7 @@ compatibility_flags = ["nodejs_compat"]
 # Then paste the id below.
 [[kv_namespaces]]
 binding = "MAP"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "e2e3107ab55b4c8ab4bb6a66a3f02329"
 
 # Secrets (do NOT commit values). Set with:
 #   wrangler secret put TG_TOKEN

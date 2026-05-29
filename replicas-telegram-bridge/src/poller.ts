@@ -59,15 +59,46 @@ const FIRST_POLL_DELAY_MS = 80;
 const ACTIVE_POLL_INTERVAL_MS = 180;
 const BACKOFF_POLL_INTERVAL_MS = 3000;
 const MAX_WATCH_DURATION_MS = 30 * 60 * 1000;
-// Telegram permits ~1 editMessageText per chat per second; we leave a small
-// margin so a burst of polls coalesces into at most one edit per ~900ms.
-const EDIT_MIN_INTERVAL_MS = 500;
+
+// Telegram per-chat edit caps (community-derived; Telegram doesn't publish):
+//   • Private:      ~1 edit per chat per second
+//   • Group / supergroup: 20 messages per minute → one every ~3 seconds
+// We pad each by a safety margin so a burst of polls can't accidentally
+// straddle the limit and trip a 429.
+const EDIT_MIN_INTERVAL_MS_PRIVATE = 800;
+const EDIT_MIN_INTERVAL_MS_GROUP = 3500;
+
 // Even without new events, refresh the rendered status if at least this
 // long has passed so the ⏱ ticker stays live.
-const TICKER_REFRESH_MS = 1500;
+const TICKER_REFRESH_MS = 2500;
+
+// Char-delta edit gate (n3d1117/chatgpt-telegram-bot pattern, see
+// docs/acp-telegram-status-research.md). On non-terminal renders with no
+// phase transition, skip the edit if the rendered text length changed by
+// fewer than this many characters. Stops us burning quota on a 5-char
+// thinking-preview update.
+const CHAR_DELTA_CUTOFF = 50;
+
+// Self-tuning per-turn 429 backoff. Each 429 from Telegram adds 1500ms to
+// the effective throttle. Wipes when the DO state resets on the next
+// /watch fresh-spawn, so it's per-turn — noisy turns settle into a
+// sustainable cadence, calm turns start fast.
+const BACKOFF_PER_429_MS = 1500;
+const MAX_BACKOFF_BONUS_MS = 10_000;
+
 const CHAT_ACTION_INTERVAL_MS = 4000;
 const REPLY_MAX_LEN = 4000;
 const DASHBOARD_BASE = "https://www.replicas.dev/dashboard?workspaceId=";
+
+// Telegram convention: chat_id < 0 is a group / supergroup / channel.
+// Private chats are positive ints.
+function isGroupChat(chatId: number): boolean {
+	return chatId < 0;
+}
+
+function editMinIntervalMs(chatId: number): number {
+	return isGroupChat(chatId) ? EDIT_MIN_INTERVAL_MS_GROUP : EDIT_MIN_INTERVAL_MS_PRIVATE;
+}
 
 export class ReplicaPoller {
 	private state: DurableObjectState;
@@ -570,24 +601,62 @@ export class ReplicaPoller {
 		const lastRendered = await this.state.storage.get<string>("lastRendered");
 		if (text === lastRendered) return;
 
-		// Telegram rate guard: don't edit the same message more than once per
-		// ~900ms. If we're inside the window, leave the state intact so the
-		// next alarm picks up the freshest version (including the ticker tick).
-		// Terminal edits (Done/Failed) bypass — they MUST land, since the
-		// rolling-log freeze depends on them and there's no follow-up tick.
 		const lastEditAt = (await this.state.storage.get<number>("lastEditAt")) ?? 0;
 		const since = Date.now() - lastEditAt;
 		const messageId = await this.state.storage.get<number>("statusMessageId");
 		const isTerminal = s.terminal !== undefined;
-		if (!isTerminal && messageId !== undefined && since < EDIT_MIN_INTERVAL_MS) return;
 
-		await this.state.storage.put({ lastRendered: text, lastEditAt: Date.now() });
+		// Three throttle gates, only on non-terminal renders. Terminal edits
+		// (Done/Failed) MUST land — the rolling-log freeze depends on them
+		// and there's no follow-up tick.
+		if (!isTerminal && messageId !== undefined) {
+			// (1) Per-chat-type edit floor (group = 3500ms, private = 800ms)
+			//     plus a self-tuning per-turn backoff bonus that ratchets up
+			//     by BACKOFF_PER_429_MS each time Telegram says "slow down".
+			const baseMin = editMinIntervalMs(watch.chatId);
+			const backoffBonus = (await this.state.storage.get<number>("backoffBonusMs")) ?? 0;
+			if (since < baseMin + backoffBonus) return;
+
+			// (2) Honor any explicit retry_after window from a prior 429 — it
+			//     overrides the floor if the server told us a longer wait.
+			const rlUntil = (await this.state.storage.get<number>("rateLimitedUntil")) ?? 0;
+			if (Date.now() < rlUntil) return;
+
+			// (3) Char-delta gate: skip when the rendered text barely moved
+			//     AND the phase hasn't transitioned. Stops thinking-preview
+			//     ticks (~5 chars of delta) from burning quota. Phase
+			//     transitions ALWAYS edit through (they swap the header
+			//     emoji + label and the user expects to see that fast).
+			const lastRenderedLen = (await this.state.storage.get<number>("lastRenderedLen")) ?? 0;
+			const lastPhase = await this.state.storage.get<Phase>("lastEditedPhase");
+			const phaseChanged = lastPhase !== undefined && lastPhase !== s.phase;
+			if (!phaseChanged && Math.abs(text.length - lastRenderedLen) < CHAR_DELTA_CUTOFF) return;
+		}
+
+		await this.state.storage.put({
+			lastRendered: text,
+			lastEditAt: Date.now(),
+			lastRenderedLen: text.length,
+			lastEditedPhase: s.phase,
+		});
 
 		const replyMarkup = inlineKeyboard(watch.replicaId, !!s.terminal);
 
 		if (messageId !== undefined) {
-			const ok = await this.editStatus(watch, messageId, text, replyMarkup);
-			if (ok) return;
+			const result = await this.editStatus(watch, messageId, text, replyMarkup);
+			if (result.ok) return;
+			if (result.rateLimited) {
+				// On 429: bump per-turn backoff, store retry_after, and do
+				// NOT fall through to sendStatus — that's the fragmenter
+				// (one new bubble per failed edit). Wait for the next tick.
+				const wait = result.retryAfterMs ?? BACKOFF_PER_429_MS;
+				await this.state.storage.put("rateLimitedUntil", Date.now() + wait);
+				const prevBonus = (await this.state.storage.get<number>("backoffBonusMs")) ?? 0;
+				const nextBonus = Math.min(MAX_BACKOFF_BONUS_MS, prevBonus + BACKOFF_PER_429_MS);
+				await this.state.storage.put("backoffBonusMs", nextBonus);
+				console.log(`[poller] editStatus 429 — bonus ${prevBonus}→${nextBonus}ms, retry_after ${wait}ms`);
+				return;
+			}
 		}
 		const newId = await this.sendStatus(watch, text, replyMarkup);
 		if (newId !== null) {
@@ -671,7 +740,7 @@ export class ReplicaPoller {
 		mid: number,
 		text: string,
 		replyMarkup: string,
-	): Promise<boolean> {
+	): Promise<{ ok: boolean; rateLimited?: boolean; retryAfterMs?: number }> {
 		const params = new URLSearchParams();
 		params.set("chat_id", String(watch.chatId));
 		params.set("message_id", String(mid));
@@ -680,10 +749,22 @@ export class ReplicaPoller {
 		params.set("reply_markup", replyMarkup);
 		const r = await this.tgCall("editMessageText", params);
 		const t = await r.text();
-		if (t.includes('"ok":true')) return true;
-		if (t.includes("message is not modified")) return true;
+		if (t.includes('"ok":true')) return { ok: true };
+		if (t.includes("message is not modified")) return { ok: true };
+
+		// Telegram 429 carries retry-after in two places — the HTTP status
+		// AND parameters.retry_after (seconds). Parse both, prefer the
+		// explicit retry_after field; convert seconds → ms.
+		if (r.status === 429 || t.includes('"error_code":429')) {
+			let retryAfterMs: number | undefined;
+			const m = t.match(/"retry_after"\s*:\s*(\d+)/);
+			if (m) retryAfterMs = parseInt(m[1]!, 10) * 1000;
+			console.log(`[poller] editMessageText 429: ${t.slice(0, 200)}`);
+			return { ok: false, rateLimited: true, retryAfterMs };
+		}
+
 		console.log(`[poller] editMessageText failed: ${t.slice(0, 200)}`);
-		return false;
+		return { ok: false };
 	}
 
 	private async sendStatus(watch: WatchSpec, text: string, replyMarkup: string): Promise<number | null> {

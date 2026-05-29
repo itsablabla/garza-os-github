@@ -2,11 +2,13 @@ import type { Env } from "./index";
 import { markdownToTelegramHtml } from "./markdown";
 import {
 	formatToolUseLine,
+	parsePlan,
 	phaseFor,
 	phaseToReactionEmoji,
 	render,
 	thinkingLine,
 	type Phase,
+	type PlanState,
 	type StatusState,
 } from "./render";
 
@@ -112,6 +114,7 @@ export class ReplicaPoller {
 			"pinned",
 			"lastChatActionAt",
 			"lastEditAt",
+			"plan",
 		]);
 		const baseline = await baselineP;
 		await this.state.storage.put({
@@ -176,6 +179,7 @@ export class ReplicaPoller {
 			"phase",
 			"stepCount",
 			"currentAction",
+			"plan",
 		])) as Map<string, unknown>;
 		const watch = snap.get("watch") as WatchSpec | undefined;
 		if (!watch) return;
@@ -220,6 +224,7 @@ export class ReplicaPoller {
 		let phase = (snap.get("phase") as Phase | undefined) ?? "STARTING";
 		let stepCount = (snap.get("stepCount") as number | undefined) ?? 0;
 		let currentAction = (snap.get("currentAction") as string | undefined) ?? "";
+		let plan = (snap.get("plan") as PlanState | undefined) ?? null;
 
 		let sawResult = false;
 		let resultText: string | null = null;
@@ -246,14 +251,21 @@ export class ReplicaPoller {
 						appended = true;
 					} else if (block.type === "text" && block.text) {
 						pendingAssistantText = block.text;
-						// Mid-flight assistant text is the agent's running
-						// commentary — surface it as the italic "what am I
-						// doing" line under the phase header AND keep it in
-						// the rolling log so it survives subsequent tools.
-						const narration = thinkingLine(block.text);
-						currentAction = narration;
-						lines.push(`💬 ${narration}`);
-						appended = true;
+						// The agent sometimes emits a structured "Plan (X/N)"
+						// block with ~item~ strikethrough on done steps. That
+						// shouldn't go through the truncated italic narration
+						// path — capture it as a dedicated plan block instead.
+						const parsedPlan = parsePlan(block.text);
+						if (parsedPlan) {
+							plan = parsedPlan;
+							currentAction = "";
+							appended = true;
+						} else {
+							const narration = thinkingLine(block.text);
+							currentAction = narration;
+							lines.push(`💬 ${narration}`);
+							appended = true;
+						}
 					}
 				}
 			} else if (t === "claude-result") {
@@ -269,14 +281,16 @@ export class ReplicaPoller {
 
 		if (!resultText && sawResult && pendingAssistantText) resultText = pendingAssistantText;
 
-		// Batched write of the four mutated fields + lastSeenCount.
-		await this.state.storage.put({
+		// Batched write of all mutated fields + lastSeenCount.
+		const writes: Record<string, unknown> = {
 			lines,
 			phase,
 			stepCount,
 			currentAction,
 			lastSeenCount: events.length,
-		});
+		};
+		if (plan) writes.plan = plan;
+		await this.state.storage.put(writes);
 
 		console.log(
 			`[poller] events=${events.length} fresh=${fresh.length} phase=${phase} step=${stepCount} sawResult=${sawResult}`,
@@ -335,20 +349,26 @@ export class ReplicaPoller {
 	}
 
 	private async loadState(): Promise<StatusState | null> {
-		const watch = await this.state.storage.get<WatchSpec>("watch");
+		const snap = (await this.state.storage.get([
+			"watch",
+			"startedAt",
+			"stepCount",
+			"phase",
+			"currentAction",
+			"lines",
+			"plan",
+		])) as Map<string, unknown>;
+		const watch = snap.get("watch") as WatchSpec | undefined;
 		if (!watch) return null;
-		const startedAt = (await this.state.storage.get<number>("startedAt")) ?? Date.now();
-		const stepCount = (await this.state.storage.get<number>("stepCount")) ?? 0;
-		const phase = (await this.state.storage.get<Phase>("phase")) ?? "STARTING";
-		const currentAction = (await this.state.storage.get<string>("currentAction")) ?? "";
-		const lines = (await this.state.storage.get<string[]>("lines")) ?? [];
+		const currentAction = (snap.get("currentAction") as string | undefined) ?? "";
 		return {
 			userText: watch.userText,
-			startedAt,
-			stepCount,
-			phase,
+			startedAt: (snap.get("startedAt") as number | undefined) ?? Date.now(),
+			stepCount: (snap.get("stepCount") as number | undefined) ?? 0,
+			phase: (snap.get("phase") as Phase | undefined) ?? "STARTING",
 			currentAction: currentAction || undefined,
-			lines,
+			lines: (snap.get("lines") as string[] | undefined) ?? [],
+			plan: (snap.get("plan") as PlanState | undefined) ?? undefined,
 		};
 	}
 

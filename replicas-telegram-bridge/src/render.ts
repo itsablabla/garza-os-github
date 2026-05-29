@@ -64,6 +64,17 @@ export type Phase =
 	| "DONE"
 	| "FAILED";
 
+export interface PlanItem {
+	content: string;
+	done: boolean;
+}
+
+export interface PlanState {
+	done: number;
+	total: number;
+	items: PlanItem[];
+}
+
 export interface StatusState {
 	userText?: string;
 	startedAt: number;
@@ -71,7 +82,31 @@ export interface StatusState {
 	phase: Phase;
 	currentAction?: string;
 	lines: string[];
+	plan?: PlanState;
 	terminal?: { kind: "done" | "failed"; durationSec: number; errorMsg?: string };
+}
+
+export function parsePlan(text: string): PlanState | null {
+	const trimmed = text.trim();
+	const lines = trimmed
+		.split("\n")
+		.map((s) => s.trim())
+		.filter(Boolean);
+	if (lines.length === 0) return null;
+	const headerMatch = lines[0]!.match(/^Plan\s*\(\s*(\d+)\s*\/\s*(\d+)\s*\)\s*$/i);
+	if (!headerMatch) return null;
+	const done = parseInt(headerMatch[1]!, 10);
+	const total = parseInt(headerMatch[2]!, 10);
+	const items: PlanItem[] = [];
+	for (const line of lines.slice(1)) {
+		const stripped = line.match(/^~(.+)~$/);
+		if (stripped) {
+			items.push({ content: stripped[1]!.trim(), done: true });
+		} else {
+			items.push({ content: line, done: false });
+		}
+	}
+	return { done, total, items };
 }
 
 const PHASE_EMOJI: Record<Phase, string> = {
@@ -176,9 +211,12 @@ function renderActive(state: StatusState): string {
 	headerParts.push(formatDuration(elapsedSec));
 	const blocks: string[] = [headerParts.join(" · ")];
 
-	// Thinking preview (italic) sits directly under the header for context.
 	if (state.currentAction && state.currentAction.startsWith("<i>")) {
 		blocks.push(state.currentAction);
+	}
+
+	if (state.plan) {
+		blocks.push(renderPlan(state.plan));
 	}
 
 	if (state.lines.length > 0) {
@@ -197,6 +235,15 @@ function renderActive(state: StatusState): string {
 	let out = blocks.join("\n\n");
 	if (out.length > MAX_RENDER_CHARS) out = out.slice(0, MAX_RENDER_CHARS - 1) + "…";
 	return out;
+}
+
+export function renderPlan(plan: PlanState): string {
+	const lines: string[] = [`<b>📋 Plan (${plan.done}/${plan.total})</b>`];
+	for (const item of plan.items) {
+		const escaped = escapeHtml(item.content);
+		lines.push(item.done ? `✓ <s>${escaped}</s>` : `◦ ${escaped}`);
+	}
+	return lines.join("\n");
 }
 
 function renderTerminal(state: StatusState): string {

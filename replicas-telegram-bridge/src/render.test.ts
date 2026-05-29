@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
 	formatDuration,
 	formatToolUseLine,
+	parsePlan,
 	phaseFor,
 	phaseToReactionEmoji,
 	render,
+	renderPlan,
 	thinkingLine,
 } from "./render";
 
@@ -181,6 +183,102 @@ describe("render — terminal state", () => {
 			terminal: { kind: "failed", durationSec: 5 },
 		});
 		expect(out).toBe("❌ <b>Failed</b> · 5s");
+	});
+});
+
+describe("parsePlan", () => {
+	const sample = [
+		"Plan (2/6)",
+		"~Round 2 sandbox created (folder + 2 docs + blocks)~",
+		"Blocks add/get/update/delete confirmed; retry blocks_move + blocks_revert",
+		"~markdown_add OK (text only); image_view needs Craft-hosted URL (external blocked)~",
+		"Re-run tasks + comments; retry collections_create, whiteboard_create",
+		"Re-run document/documents_search",
+		"Cleanup (docs + folder delete)",
+	].join("\n");
+
+	it("returns null for non-plan text", () => {
+		expect(parsePlan("just regular narration text")).toBeNull();
+		expect(parsePlan("")).toBeNull();
+	});
+
+	it("extracts the done / total counts from the header", () => {
+		const plan = parsePlan(sample);
+		expect(plan).not.toBeNull();
+		expect(plan!.done).toBe(2);
+		expect(plan!.total).toBe(6);
+	});
+
+	it("marks tilde-wrapped items as done", () => {
+		const plan = parsePlan(sample)!;
+		expect(plan.items.length).toBe(6);
+		expect(plan.items[0]).toEqual({
+			content: "Round 2 sandbox created (folder + 2 docs + blocks)",
+			done: true,
+		});
+		expect(plan.items[1]).toEqual({
+			content: "Blocks add/get/update/delete confirmed; retry blocks_move + blocks_revert",
+			done: false,
+		});
+		expect(plan.items[2]).toEqual({
+			content: "markdown_add OK (text only); image_view needs Craft-hosted URL (external blocked)",
+			done: true,
+		});
+		expect(plan.items.filter((i) => i.done).length).toBe(2);
+	});
+
+	it("tolerates whitespace in the header", () => {
+		expect(parsePlan("Plan ( 3 / 8 )\nitem one\n~item two~")?.done).toBe(3);
+		expect(parsePlan("Plan ( 3 / 8 )\nitem one\n~item two~")?.total).toBe(8);
+	});
+});
+
+describe("renderPlan", () => {
+	it("renders done items with strikethrough and undone with a bullet", () => {
+		const html = renderPlan({
+			done: 1,
+			total: 2,
+			items: [
+				{ content: "do this", done: true },
+				{ content: "then this", done: false },
+			],
+		});
+		expect(html).toContain("<b>📋 Plan (1/2)</b>");
+		expect(html).toContain("<s>do this</s>");
+		expect(html).toContain("◦ then this");
+	});
+
+	it("escapes HTML in item content", () => {
+		const html = renderPlan({
+			done: 0,
+			total: 1,
+			items: [{ content: "fix <a> tag", done: false }],
+		});
+		expect(html).toContain("fix &lt;a&gt; tag");
+	});
+});
+
+describe("render — plan section", () => {
+	it("inserts the plan block between currentAction and the rolling lines", () => {
+		const out = render({
+			startedAt: Date.now() - 14000,
+			stepCount: 4,
+			phase: "PLANNING",
+			currentAction: "<i>Working on the plan</i>",
+			plan: {
+				done: 1,
+				total: 3,
+				items: [
+					{ content: "scaffold", done: true },
+					{ content: "wire it up", done: false },
+					{ content: "test", done: false },
+				],
+			},
+			lines: ["🔧 <code>ls</code>"],
+		});
+		expect(out).toContain("📋 Plan (1/3)");
+		expect(out).toContain("<s>scaffold</s>");
+		expect(out).toContain("◦ wire it up");
 	});
 });
 

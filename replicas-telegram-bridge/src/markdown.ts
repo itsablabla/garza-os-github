@@ -57,8 +57,9 @@ export function markdownToTelegramHtml(md: string): string {
 	s = s.replace(/(^|[\s(])\*([^\s*][^\n*]*?)\*(?=[\s.,;:!?)\]]|$)/gm, "$1<i>$2</i>");
 	s = s.replace(/(^|[\s(])_([^\s_][^\n_]*?)_(?=[\s.,;:!?)\]]|$)/gm, "$1<i>$2</i>");
 
-	// Strikethrough.
+	// Strikethrough (double-tilde for GFM, single-tilde for Telegram MD).
 	s = s.replace(/~~([^~\n]+)~~/g, "<s>$1</s>");
+	s = s.replace(/(?<![~\w])~([^~\n]+)~(?![~\w])/g, "<s>$1</s>");
 
 	// Links: [text](url). URL was already &-escaped above; restore safe quotes.
 	s = s.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (_m, text: string, url: string) => {

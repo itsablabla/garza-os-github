@@ -46,6 +46,16 @@ describe("markdownToTelegramHtml", () => {
 		);
 	});
 
+	it("converts single-tilde and double-tilde strikethrough", () => {
+		expect(markdownToTelegramHtml("~~gone~~")).toBe("<s>gone</s>");
+		expect(markdownToTelegramHtml("~item~")).toBe("<s>item</s>");
+		expect(markdownToTelegramHtml("a ~mid~ b")).toBe("a <s>mid</s> b");
+	});
+
+	it("does not strike words that include a tilde elsewhere", () => {
+		expect(markdownToTelegramHtml("foo~bar~baz")).toBe("foo~bar~baz");
+	});
+
 	it("handles a realistic agent reply", () => {
 		const md = [
 			"Here's a high-level overview:",

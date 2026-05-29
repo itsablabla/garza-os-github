@@ -1,5 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import worker, { handleMessage, replicaName, routingKey, type Env } from "./index";
+import worker, {
+	handleMessage,
+	prefixWithRoutingHeader,
+	replicaName,
+	routingKey,
+	type Env,
+} from "./index";
 
 function mockKv() {
 	const store = new Map<string, string>();
@@ -145,7 +151,7 @@ describe("handleMessage", () => {
 		const created = calls.find((c) => c.url.endsWith("/v1/replica"));
 		expect(created).toBeDefined();
 		const body = JSON.parse((created!.init!.body as string) ?? "{}");
-		expect(body.message).toBe("deploy the api");
+		expect(body.message).toMatch(/^\[tg:chat_id=555\]\n# Spawned from Telegram\..*\n\ndeploy the api$/s);
 		expect(body.source).toBe("telegram");
 		expect(body.environment_id).toBe("env-id");
 		expect(body.metadata.telegram_chat_id).toBe(555);
@@ -166,6 +172,8 @@ describe("handleMessage", () => {
 
 		const followUp = calls.find((c) => c.url.includes("rep-existing/messages"));
 		expect(followUp).toBeDefined();
+		const followUpBody = JSON.parse((followUp!.init!.body as string) ?? "{}");
+		expect(followUpBody.message).toMatch(/^\[tg:chat_id=555\]\n.*\n\nand add tests$/s);
 
 		const created = calls.find((c) => c.url.endsWith("/v1/replica"));
 		expect(created).toBeUndefined();
@@ -226,6 +234,24 @@ describe("helpers", () => {
 	it("routingKey separates DM and forum topics", () => {
 		expect(routingKey(1)).toBe("chat:1:thread:main");
 		expect(routingKey(1, 5)).toBe("chat:1:thread:5");
+	});
+
+	it("prefixWithRoutingHeader includes chat_id and thread_id for forum topics", () => {
+		const out = prefixWithRoutingHeader(tgMessage({ message_thread_id: 42 }), "hi");
+		expect(out.split("\n")[0]).toBe("[tg:chat_id=555:thread_id=42]");
+		expect(out.endsWith("\n\nhi")).toBe(true);
+	});
+
+	it("prefixWithRoutingHeader omits thread_id for plain DMs", () => {
+		const out = prefixWithRoutingHeader(tgMessage(), "hi");
+		expect(out.split("\n")[0]).toBe("[tg:chat_id=555]");
+		expect(out.endsWith("\n\nhi")).toBe(true);
+	});
+
+	it("prefixWithRoutingHeader includes the agent hint and reference doc", () => {
+		const out = prefixWithRoutingHeader(tgMessage(), "do a thing");
+		expect(out).toContain("tg-reply.sh");
+		expect(out).toContain("TELEGRAM_REPLY.md");
 	});
 
 	it("replicaName slugifies sender", () => {

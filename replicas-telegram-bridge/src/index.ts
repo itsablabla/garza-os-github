@@ -94,7 +94,7 @@ export async function handleMessage(msg: TgMessage, text: string, env: Env): Pro
 	const existing = await env.MAP.get(key);
 
 	const replicaId = existing
-		? await sendFollowUp(existing, text, env).then(() => existing).catch(() => null)
+		? await sendFollowUp(existing, text, env, msg).then(() => existing).catch(() => null)
 		: await createReplica(msg, text, env);
 
 	if (!replicaId) {
@@ -129,7 +129,7 @@ export function routingKey(chatId: number, threadId?: number): string {
 async function createReplica(msg: TgMessage, text: string, env: Env): Promise<string | null> {
 	const body = {
 		name: replicaName(msg),
-		message: text,
+		message: prefixWithRoutingHeader(msg, text),
 		environment_id: env.REPLICAS_ENV_ID,
 		source: "telegram",
 		metadata: {
@@ -151,13 +151,22 @@ async function createReplica(msg: TgMessage, text: string, env: Env): Promise<st
 	return json.replica?.id ?? json.id ?? null;
 }
 
-async function sendFollowUp(replicaId: string, text: string, env: Env): Promise<void> {
+async function sendFollowUp(replicaId: string, text: string, env: Env, msg: TgMessage): Promise<void> {
 	const r = await fetch(`${env.REPLICAS_API_BASE}/replica/${replicaId}/messages`, {
 		method: "POST",
 		headers: replicasHeaders(env),
-		body: JSON.stringify({ message: text }),
+		body: JSON.stringify({ message: prefixWithRoutingHeader(msg, text) }),
 	});
 	if (!r.ok) throw new Error(`follow-up failed: ${r.status}`);
+}
+
+export function prefixWithRoutingHeader(msg: TgMessage, text: string): string {
+	const parts = [`chat_id=${msg.chat.id}`];
+	if (msg.message_thread_id !== undefined) parts.push(`thread_id=${msg.message_thread_id}`);
+	const header = `[tg:${parts.join(":")}]`;
+	const hint =
+		"# Spawned from Telegram. Post status + your final result back with `~/.replicas/bin/tg-reply.sh \"<text>\"`. Run `~/.replicas/bin/tg-target-detect.sh` once with this prompt'\u0027s first line on stdin to cache the target. See `~/.replicas/TELEGRAM_REPLY.md`.";
+	return `${header}\n${hint}\n\n${text}`;
 }
 
 function replicasHeaders(env: Env): HeadersInit {

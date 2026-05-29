@@ -48,7 +48,10 @@
 
 const STATUS_MAX_LEN = 200;
 const RECENT_LINES_VISIBLE = 4;
-const MAX_TOTAL_LINES = 40;
+// Older steps go into <blockquote expandable> ("Show more"). Generous cap
+// since the user can collapse the expandable; only the 4096-char Telegram
+// total bites us, and we cap that separately below.
+const MAX_TOTAL_LINES = 80;
 const MAX_RENDER_CHARS = 3800;
 
 export type Phase =

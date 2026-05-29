@@ -224,6 +224,14 @@ export class ReplicaPoller {
 						appended = true;
 					} else if (block.type === "text" && block.text) {
 						pendingAssistantText = block.text;
+						// Mid-flight assistant text is the agent's running
+						// commentary — surface it as the italic "what am I
+						// doing" line under the phase header AND keep it in
+						// the rolling log so it survives subsequent tools.
+						const narration = thinkingLine(block.text);
+						currentAction = narration;
+						lines.push(`💬 ${narration}`);
+						appended = true;
 					}
 				}
 			} else if (t === "claude-result") {

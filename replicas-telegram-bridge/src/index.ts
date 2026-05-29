@@ -93,9 +93,24 @@ export async function handleMessage(msg: TgMessage, text: string, env: Env): Pro
 
 	const existing = await env.MAP.get(key);
 
-	const replicaId = existing
-		? await sendFollowUp(existing, text, env, msg).then(() => existing).catch(() => null)
-		: await createReplica(msg, text, env);
+	let replicaId: string | null = null;
+	let spawnedFresh = false;
+
+	if (existing) {
+		const followUp = await sendFollowUp(existing, text, env, msg);
+		if (followUp.ok) {
+			replicaId = existing;
+		} else if (followUp.gone) {
+			// Replica was deleted or expired. Invalidate KV and spawn fresh
+			// so the user doesn't get stuck routing to a dead workspace.
+			await env.MAP.delete(key);
+			replicaId = await createReplica(msg, text, env);
+			spawnedFresh = true;
+		}
+	} else {
+		replicaId = await createReplica(msg, text, env);
+		spawnedFresh = true;
+	}
 
 	if (!replicaId) {
 		await sendTelegram(env, "sendMessage", {
@@ -107,7 +122,7 @@ export async function handleMessage(msg: TgMessage, text: string, env: Env): Pro
 		return;
 	}
 
-	if (!existing) {
+	if (spawnedFresh) {
 		const ttl = Math.max(60, parseInt(env.REPLICA_TTL_SECONDS, 10) || 604800);
 		await env.MAP.put(key, replicaId, { expirationTtl: ttl });
 	}
@@ -151,13 +166,18 @@ async function createReplica(msg: TgMessage, text: string, env: Env): Promise<st
 	return json.replica?.id ?? json.id ?? null;
 }
 
-async function sendFollowUp(replicaId: string, text: string, env: Env, msg: TgMessage): Promise<void> {
+async function sendFollowUp(
+	replicaId: string,
+	text: string,
+	env: Env,
+	msg: TgMessage,
+): Promise<{ ok: boolean; gone: boolean }> {
 	const r = await fetch(`${env.REPLICAS_API_BASE}/replica/${replicaId}/messages`, {
 		method: "POST",
 		headers: replicasHeaders(env),
 		body: JSON.stringify({ message: prefixWithRoutingHeader(msg, text) }),
 	});
-	if (!r.ok) throw new Error(`follow-up failed: ${r.status}`);
+	return { ok: r.ok, gone: r.status === 404 || r.status === 410 };
 }
 
 export function prefixWithRoutingHeader(msg: TgMessage, text: string): string {

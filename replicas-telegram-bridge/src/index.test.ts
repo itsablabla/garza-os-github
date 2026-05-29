@@ -197,6 +197,24 @@ describe("handleMessage", () => {
 		expect(created).toHaveBeenCalledTimes(1);
 	});
 
+	it("falls back to creating a fresh replica when the mapped one is 404", async () => {
+		const { env, store } = mockEnv();
+		store.set("chat:555:thread:main", "rep-dead");
+
+		const { calls } = mockFetch({
+			"rep-dead/messages": () => new Response("Not found", { status: 404 }),
+			"api.example/v1/replica": () =>
+				new Response(JSON.stringify({ replica: { id: "rep-fresh" } }), { status: 200 }),
+			"tg.example": () => new Response("{}", { status: 200 }),
+		});
+
+		await handleMessage(tgMessage({ message_id: 200, text: "still alive?" }), "still alive?", env);
+
+		const fallbackCreate = calls.find((c) => c.url.endsWith("/v1/replica"));
+		expect(fallbackCreate).toBeDefined();
+		expect(store.get("chat:555:thread:main")).toBe("rep-fresh");
+	});
+
 	it("posts an error message back to Telegram when the Replicas API fails", async () => {
 		const { env } = mockEnv();
 		const { calls } = mockFetch({

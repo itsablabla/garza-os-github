@@ -116,6 +116,18 @@ export default {
 			return stub.fetch("https://watcher/debug", { method: "GET" });
 		}
 
+		if (req.method === "POST" && url.pathname.startsWith("/admin/join-room/")) {
+			const roomId = decodeURIComponent(url.pathname.slice("/admin/join-room/".length));
+			if (!roomId) return new Response("missing room id", { status: 400 });
+			const encoded = encodeURIComponent(roomId);
+			const r = await fetch(
+				`${env.MATRIX_HOMESERVER}/_matrix/client/v3/rooms/${encoded}/join`,
+				{ method: "POST", headers: { Authorization: `Bearer ${env.MATRIX_ACCESS_TOKEN}`, "Content-Type": "application/json" }, body: "{}" },
+			);
+			const body = await r.text();
+			return new Response(body, { status: r.status, headers: { "Content-Type": "application/json" } });
+		}
+
 		if (req.method === "POST" && url.pathname.startsWith("/admin/watcher/") && url.pathname.endsWith("/cancel")) {
 			const replicaId = url.pathname.slice("/admin/watcher/".length, -"/cancel".length);
 			if (!replicaId) return new Response("missing replica id", { status: 400 });
@@ -133,6 +145,27 @@ export default {
 			);
 			const body = await r.text();
 			return new Response(body, { status: r.status, headers: { "Content-Type": "application/json" } });
+		}
+
+		if (req.method === "GET" && url.pathname === "/debug/invites") {
+			const r = await fetch(
+				`${env.MATRIX_HOMESERVER}/_matrix/client/v3/sync?filter=%7B%22room%22%3A%7B%22invite%22%3A%7B%22limit%22%3A50%7D%2C%22join%22%3A%7B%22limit%22%3A0%2C%22timeline%22%3A%7B%22limit%22%3A0%7D%7D%2C%22leave%22%3A%7B%22limit%22%3A0%7D%7D%7D&timeout=0`,
+				{ headers: { Authorization: `Bearer ${env.MATRIX_ACCESS_TOKEN}` } },
+			);
+			const data = (await r.json()) as {
+				rooms?: { invite?: Record<string, { invite_state?: { events?: Array<{ type: string; content: Record<string, unknown> }> } }> };
+			};
+			const invites = data.rooms?.invite ?? {};
+			const out = Object.entries(invites).map(([roomId, room]) => {
+				const events = room.invite_state?.events ?? [];
+				const nameEv = events.find((e) => e.type === "m.room.name");
+				const name = nameEv ? String(nameEv.content.name ?? "") : null;
+				return { roomId, name };
+			});
+			return new Response(JSON.stringify({ invites: out }), {
+				status: r.status,
+				headers: { "Content-Type": "application/json" },
+			});
 		}
 
 		if (req.method === "GET" && url.pathname === "/debug/joined-rooms") {

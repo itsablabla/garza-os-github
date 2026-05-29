@@ -152,15 +152,30 @@ export async function handleMessage(msg: TgMessage, text: string, env: Env): Pro
 	let replicaId: string | null = null;
 	let spawnedFresh = false;
 
-	// Fire-and-forget the 👀 reaction in parallel so the user sees it
-	// instantly, before any of the Replicas calls return.
+	// Fire-and-forget the 👀 reaction + the initial "Starting · 0s" frame
+	// in parallel so the user sees activity before any Replicas call lands.
 	const ackReaction = sendInstantAck(env, msg);
+	const initialFrameP = sendTelegram(env, "sendMessage", {
+		chat_id: msg.chat.id,
+		message_thread_id: msg.message_thread_id,
+		text: "🤔 <b>Starting</b> · 0s",
+		parse_mode: "HTML",
+		reply_to_message_id: msg.message_id,
+		allow_sending_without_reply: true,
+	})
+		.then(async (r) => {
+			if (!r.ok) return undefined;
+			const j = (await r.json().catch(() => ({}))) as { result?: { message_id?: number } };
+			return j.result?.message_id;
+		})
+		.catch(() => undefined);
 
 	if (existing) {
 		// For a follow-up, send the message AND re-arm the watcher in parallel.
+		// initialStatusMessageId arrives via /ack once the frame send resolves.
 		const [followUp] = await Promise.all([
 			sendFollowUp(existing, text, env, msg),
-			startWatcher(env, existing, msg),
+			startWatcher(env, existing, msg, undefined),
 		]);
 		if (followUp.ok) {
 			replicaId = existing;
@@ -172,6 +187,26 @@ export async function handleMessage(msg: TgMessage, text: string, env: Env): Pro
 	} else {
 		replicaId = await createReplica(msg, text, env);
 		spawnedFresh = true;
+	}
+
+	const initialStatusMessageId = await initialFrameP;
+	if (replicaId && initialStatusMessageId !== undefined) {
+		const settledReplicaId = replicaId;
+		if (spawnedFresh) {
+			await startWatcher(env, settledReplicaId, msg, initialStatusMessageId);
+		} else {
+			env.WATCHER.get(env.WATCHER.idFromName(settledReplicaId))
+				.fetch("https://watcher/ack", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ initialStatusMessageId }),
+				})
+				.catch(() => {});
+		}
+	} else if (replicaId && spawnedFresh) {
+		// initialFrame send failed (rare). Fall back to the slow path: watcher
+		// starts without a pre-sent frame and renders fresh on its first tick.
+		await startWatcher(env, replicaId, msg, undefined);
 	}
 
 	// Don't block the response on the ack reaction — it's already in flight.
@@ -236,11 +271,8 @@ async function createReplica(msg: TgMessage, text: string, env: Env): Promise<st
 	if (!r.ok) return null;
 	const json = (await r.json()) as ReplicaCreateResponse;
 	const replicaId = json.replica?.id ?? json.id ?? null;
-	if (replicaId) {
-		// Fire-and-forget — the DO does the rest async, no point blocking the
-		// Worker's return on the watcher attach round-trip.
-		await startWatcher(env, replicaId, msg);
-	}
+	// Caller owns the single startWatcher invocation (carries the
+	// initialStatusMessageId once the pre-sent frame resolves).
 	return replicaId;
 }
 
@@ -256,7 +288,12 @@ async function sendInstantAck(env: Env, msg: TgMessage): Promise<void> {
 	}).catch(() => {});
 }
 
-async function startWatcher(env: Env, replicaId: string, msg: TgMessage): Promise<void> {
+async function startWatcher(
+	env: Env,
+	replicaId: string,
+	msg: TgMessage,
+	initialStatusMessageId?: number,
+): Promise<void> {
 	if (!env.WATCHER) return;
 	const id = env.WATCHER.idFromName(replicaId);
 	const stub = env.WATCHER.get(id);
@@ -270,6 +307,7 @@ async function startWatcher(env: Env, replicaId: string, msg: TgMessage): Promis
 				threadId: msg.message_thread_id,
 				startMessageId: msg.message_id,
 				userText: msg.text ?? msg.caption ?? "",
+				initialStatusMessageId,
 			}),
 		})
 		.catch(() => {});

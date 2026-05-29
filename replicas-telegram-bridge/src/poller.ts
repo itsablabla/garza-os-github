@@ -22,6 +22,11 @@ interface WatchSpec {
 	threadId?: number;
 	startMessageId?: number;
 	userText?: string;
+	// Pre-sent "🤔 Starting · 0s" message id. Dispatch fires the initial
+	// frame in parallel with the Replicas spawn so the user sees activity
+	// before the POST roundtrip lands; the DO adopts this id as its
+	// statusMessageId so subsequent renders edit instead of sending fresh.
+	initialStatusMessageId?: number;
 }
 
 interface HistoryEvent {
@@ -50,16 +55,16 @@ interface HistoryResponse {
 	total?: number;
 }
 
-const FIRST_POLL_DELAY_MS = 150;
-const ACTIVE_POLL_INTERVAL_MS = 300;
+const FIRST_POLL_DELAY_MS = 80;
+const ACTIVE_POLL_INTERVAL_MS = 180;
 const BACKOFF_POLL_INTERVAL_MS = 3000;
 const MAX_WATCH_DURATION_MS = 30 * 60 * 1000;
 // Telegram permits ~1 editMessageText per chat per second; we leave a small
 // margin so a burst of polls coalesces into at most one edit per ~900ms.
-const EDIT_MIN_INTERVAL_MS = 900;
+const EDIT_MIN_INTERVAL_MS = 500;
 // Even without new events, refresh the rendered status if at least this
 // long has passed so the ⏱ ticker stays live.
-const TICKER_REFRESH_MS = 2000;
+const TICKER_REFRESH_MS = 1500;
 const CHAT_ACTION_INTERVAL_MS = 4000;
 const REPLY_MAX_LEN = 4000;
 const DASHBOARD_BASE = "https://www.replicas.dev/dashboard?workspaceId=";
@@ -77,6 +82,16 @@ export class ReplicaPoller {
 		const url = new URL(req.url);
 		if (req.method === "POST" && url.pathname === "/watch") {
 			return this.handleWatch(req);
+		}
+		if (req.method === "POST" && url.pathname === "/ack") {
+			const body = (await req.json()) as { initialStatusMessageId?: number };
+			if (typeof body.initialStatusMessageId === "number") {
+				const existing = await this.state.storage.get<number>("statusMessageId");
+				if (existing === undefined) {
+					await this.state.storage.put("statusMessageId", body.initialStatusMessageId);
+				}
+			}
+			return new Response("ok");
 		}
 		if (req.method === "POST" && url.pathname === "/cancel") {
 			return this.handleCancel();
@@ -151,7 +166,7 @@ export class ReplicaPoller {
 			"plan",
 		]);
 		const baseline = await baselineP;
-		await this.state.storage.put({
+		const seed: Record<string, unknown> = {
 			watch: body,
 			lastSeenCount: baseline,
 			lines: [],
@@ -159,7 +174,13 @@ export class ReplicaPoller {
 			phase: "STARTING",
 			currentAction: "",
 			startedAt: Date.now(),
-		});
+		};
+		// Adopt the pre-sent Starting frame as our statusMessageId so the
+		// poller edits it on the next render instead of sending fresh.
+		if (typeof body.initialStatusMessageId === "number") {
+			seed.statusMessageId = body.initialStatusMessageId;
+		}
+		await this.state.storage.put(seed);
 		console.log(`[poller] /watch replica=${body.replicaId} baseline=${baseline}`);
 
 		// Render initial frame + schedule first poll in parallel. (Worker

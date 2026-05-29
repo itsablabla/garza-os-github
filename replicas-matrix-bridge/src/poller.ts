@@ -687,14 +687,14 @@ export class ReplicaPoller {
 					// history forever.
 					if (/no low surrogate|no high surrogate|invalid_request_error.*JSON/i.test(raw)) {
 						resultErrorMsg =
-							"Conversation context has invalid characters (lone UTF-16 surrogate from a malformed tool output). Auto-cutting and starting a fresh session — your next message will get a clean reply.";
+							"Conversation context has invalid characters (lone UTF-16 surrogate from a malformed tool output). Auto-cutting and starting a fresh Sonnet session — your next message will get a clean reply.";
 						// Auto-recovery directive: this error is unrecoverable
 						// within the existing replica's history. Mark the
 						// turn for auto-cut so the cleanup path flushes KV
 						// and the next user send creates a fresh replica.
 						unrecoverable = true;
 					} else if (/string too long|max_tokens/i.test(raw)) {
-						resultErrorMsg = `Context window full — auto-cutting and starting fresh. Send your message again.`;
+						resultErrorMsg = `Context window full — auto-cutting and starting a fresh Sonnet session. Send your message again.`;
 						unrecoverable = true;
 					} else {
 						resultErrorMsg = raw;
@@ -909,16 +909,19 @@ export class ReplicaPoller {
 				});
 				// Auto-cut: when the error is unrecoverable (the broken
 				// state is baked into the replica's chat history and no
-				// follow-up prompt can fix it), flush the room: KV
-				// mapping. The next user message will spawn a fresh
-				// replica with empty history. Future iteration: replace
-				// the text-only Failed frame with a Sonic-voiced
-				// announcement once outbound voice support ships (see
-				// ~/.replicas/plans/2026-05-29_beeper-voice-messages-plan.md).
+				// follow-up prompt can fix it), flush BOTH the room: KV
+				// mapping AND any per-room model: override. The next
+				// user message will spawn a fresh replica with empty
+				// history, and because the per-room override is gone
+				// it'll land on REPLICAS_MODEL_OVERRIDE (Sonnet by
+				// default in wrangler.toml) — even if the room had a
+				// prior `!model opus` command stashed. Guarantees
+				// "fresh + Sonnet" per Jaden's directive.
 				if (unrecoverable) {
 					try {
 						await this.env.MAP.delete(`room:${watch.roomId}`);
-						console.log(`[poller] auto-cut: flushed room:${watch.roomId} mapping (unrecoverable replica state)`);
+						await this.env.MAP.delete(`model:${watch.roomId}`);
+						console.log(`[poller] auto-cut: flushed room: + model: for ${watch.roomId} (unrecoverable; next spawn → Sonnet)`);
 					} catch (e) {
 						console.log(`[poller] auto-cut flush failed: ${e instanceof Error ? e.message : e}`);
 					}

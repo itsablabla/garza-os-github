@@ -31,9 +31,9 @@ interface HistoryResponse {
 	events?: HistoryEvent[];
 }
 
-const FIRST_POLL_DELAY_MS = 1500;
-const ACTIVE_POLL_INTERVAL_MS = 2000;
-const BACKOFF_POLL_INTERVAL_MS = 6000;
+const FIRST_POLL_DELAY_MS = 400;
+const ACTIVE_POLL_INTERVAL_MS = 800;
+const BACKOFF_POLL_INTERVAL_MS = 4000;
 const MAX_WATCH_DURATION_MS = 30 * 60 * 1000; // give up after 30 min
 const STATUS_MAX_LEN = 200;
 const REPLY_MAX_LEN = 4000;
@@ -131,7 +131,7 @@ export class ReplicaPoller {
 		const lastSeenCount = (await this.state.storage.get<number>("lastSeenCount")) ?? 0;
 
 		const r = await fetch(
-			`${this.env.REPLICAS_API_BASE}/replica/${watch.replicaId}/history?limit=200&include=content&verbose=1`,
+			`${this.env.REPLICAS_API_BASE}/replica/${watch.replicaId}/history?limit=50&include=content&verbose=1`,
 			{
 				headers: {
 					Authorization: `Bearer ${this.env.REPLICAS_API_KEY}`,

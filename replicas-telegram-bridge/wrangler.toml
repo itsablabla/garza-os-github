@@ -32,3 +32,8 @@ REPLICAS_ENV_ID = "5f06f598-2712-456a-aab1-bb8cbe64ab01"
 REPLICAS_API_BASE = "https://api.replicas.dev/v1"
 TG_API_BASE = "https://api.telegram.org"
 REPLICA_TTL_SECONDS = "604800"
+# Default Telegram-spawned replicas to fast model + low thinking. Override
+# by setting these to a different value here or via `wrangler secret put`.
+REPLICAS_AGENT_OVERRIDE = "claude"
+REPLICAS_MODEL_OVERRIDE = "claude-sonnet-4-6"
+REPLICAS_THINKING_OVERRIDE = "low"

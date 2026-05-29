@@ -9,6 +9,9 @@ export interface Env {
 	REPLICAS_API_BASE: string;
 	TG_API_BASE: string;
 	REPLICA_TTL_SECONDS: string;
+	REPLICAS_AGENT_OVERRIDE?: string;
+	REPLICAS_MODEL_OVERRIDE?: string;
+	REPLICAS_THINKING_OVERRIDE?: string;
 }
 
 export { ReplicaPoller } from "./poller";
@@ -152,6 +155,12 @@ async function createReplica(msg: TgMessage, text: string, env: Env): Promise<st
 		message: prefixWithRoutingHeader(msg, text),
 		environment_id: env.REPLICAS_ENV_ID,
 		source: "telegram",
+		// Default Telegram-spawned replicas to a faster model + low thinking so
+		// the chat UX stays snappy. Can be overridden by env vars at deploy
+		// time without code change (see REPLICAS_*_OVERRIDE wrangler vars).
+		coding_agent: env.REPLICAS_AGENT_OVERRIDE || "claude",
+		model: env.REPLICAS_MODEL_OVERRIDE || "claude-sonnet-4-6",
+		thinking_level: env.REPLICAS_THINKING_OVERRIDE || "low",
 		metadata: {
 			telegram_chat_id: msg.chat.id,
 			telegram_chat_title: msg.chat.title ?? msg.chat.username ?? null,

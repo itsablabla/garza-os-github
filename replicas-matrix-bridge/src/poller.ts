@@ -429,19 +429,12 @@ export class ReplicaPoller {
 
 		if (!resultText && sawResult && pendingAssistantText) resultText = pendingAssistantText;
 
-		// If we're about to send a final markdown reply AND the rolling log
-		// already has other lines (tool-call lines from earlier in the turn),
-		// drop the trailing 💬 narration — otherwise the Done frame would
-		// duplicate the response (once truncated as italic narration, once in
-		// full as the markdown reply below). When there are NO other lines
-		// (text-only turn) keep the narration so the Done frame isn't empty.
-		if (
-			sawResult &&
-			!resultIsError &&
-			resultText &&
-			lastTextNarrationIdx !== null &&
-			lines.length > 1
-		) {
+		// When a final markdown reply is coming, always drop the trailing 💬
+		// narration. The Done frame stays tidy (just header + subtitle for
+		// text-only turns, plus tool-call log for multi-step ones), and the
+		// full reply lands as the next message — the user never sees the
+		// same body once-truncated-once-full stacked on top of each other.
+		if (sawResult && !resultIsError && resultText && lastTextNarrationIdx !== null) {
 			lines.splice(lastTextNarrationIdx, 1);
 		}
 
@@ -625,8 +618,14 @@ export class ReplicaPoller {
 
 	private async sendFinalReply(watch: WatchSpec, text: string): Promise<boolean> {
 		const html = markdownToHtml(text.slice(0, REPLY_MAX_LEN));
+		// Stable txn id so retries hit Matrix's homeserver-side dedupe
+		// (the spec guarantees: same txn id from the same access token
+		// returns the same event_id, never a duplicate message). Without
+		// this, a transient fetch error after the server already accepted
+		// the send would cause the next retry tick to create a duplicate.
+		const txn = `final-${watch.replicaId}`;
 		try {
-			await sendMessage(matrixEnv(this.env), watch.roomId, html);
+			await sendMessage(matrixEnv(this.env), watch.roomId, html, { txnId: txn });
 			return true;
 		} catch (e) {
 			console.log(`[poller] sendFinalReply failed: ${e instanceof Error ? e.message : e}`);
@@ -635,16 +634,20 @@ export class ReplicaPoller {
 	}
 
 	// Drain the pendingFinalReply slot: try sending, clear on success.
-	// Called from both the sawResult branch (initial attempt) and from
-	// every subsequent alarm tick that finds the slot still set (retries).
+	// Optimistically clears the slot BEFORE sending so a second concurrent
+	// flush (e.g. from an /ack-triggered renderAndSend interleaving with
+	// the alarm) can't double-send. On failure we restore the slot so the
+	// next alarm tick retries. Combined with the stable txn id above this
+	// is double-defense against duplicate final replies.
 	private async flushFinalReply(watch: WatchSpec): Promise<void> {
 		const pending = await this.state.storage.get<string>("pendingFinalReply");
 		if (!pending) return;
+		await this.state.storage.delete("pendingFinalReply");
 		const ok = await this.sendFinalReply(watch, pending);
 		if (ok) {
-			await this.state.storage.delete("pendingFinalReply");
 			console.log(`[poller] pendingFinalReply flushed (len=${pending.length})`);
 		} else {
+			await this.state.storage.put("pendingFinalReply", pending);
 			console.log(`[poller] pendingFinalReply retry will fire next alarm`);
 		}
 	}

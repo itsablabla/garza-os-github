@@ -81,9 +81,12 @@ export async function sendMessage(
 	env: MatrixEnv,
 	roomId: string,
 	html: string,
-	options: { replyTo?: string; plainFallback?: string } = {},
+	options: { replyTo?: string; plainFallback?: string; txnId?: string } = {},
 ): Promise<string> {
-	const txn = randomTxn();
+	// Caller can pin a stable txn id for idempotent retries — Matrix dedupes
+	// per (access_token, txn_id) and returns the same event_id, so a fetch
+	// blip after a successful send won't create a duplicate message.
+	const txn = options.txnId ?? randomTxn();
 	const body: Json = {
 		msgtype: "m.text",
 		body: options.plainFallback ?? stripHtml(html),

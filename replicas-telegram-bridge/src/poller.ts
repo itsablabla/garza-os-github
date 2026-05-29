@@ -407,19 +407,11 @@ export class ReplicaPoller {
 
 		if (!resultText && sawResult && pendingAssistantText) resultText = pendingAssistantText;
 
-		// If we're about to send a final markdown reply AND the rolling log
-		// already has other lines (tool-call lines from earlier in the turn),
-		// drop the trailing 💬 narration — otherwise the Done frame would
-		// duplicate the response (once truncated as italic narration, once in
-		// full as the markdown reply below). When there are NO other lines
-		// (text-only turn) keep the narration so the Done frame isn't empty.
-		if (
-			sawResult &&
-			!resultIsError &&
-			resultText &&
-			lastTextNarrationIdx !== null &&
-			lines.length > 1
-		) {
+		// When a final markdown reply is coming, always drop the trailing 💬
+		// narration. The Done frame stays tidy (just header + subtitle for
+		// text-only turns, plus tool-call log for multi-step ones) and the
+		// full reply lands as the next message — no duplicated body.
+		if (sawResult && !resultIsError && resultText && lastTextNarrationIdx !== null) {
 			lines.splice(lastTextNarrationIdx, 1);
 		}
 
@@ -613,14 +605,18 @@ export class ReplicaPoller {
 	}
 
 	// Drain pendingFinalReply: retry on every alarm tick until Telegram accepts.
+	// Optimistically clear the slot BEFORE sending so a second concurrent
+	// flush (e.g. a render interleaving with the alarm) can't double-send.
+	// On failure we restore the slot so the next alarm tick retries.
 	private async flushFinalReply(watch: WatchSpec): Promise<void> {
 		const pending = await this.state.storage.get<string>("pendingFinalReply");
 		if (!pending) return;
+		await this.state.storage.delete("pendingFinalReply");
 		const ok = await this.sendReply(watch, pending);
 		if (ok) {
-			await this.state.storage.delete("pendingFinalReply");
 			console.log(`[poller] pendingFinalReply flushed (len=${pending.length})`);
 		} else {
+			await this.state.storage.put("pendingFinalReply", pending);
 			console.log(`[poller] pendingFinalReply retry will fire next alarm`);
 		}
 	}

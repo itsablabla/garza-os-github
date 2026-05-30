@@ -180,6 +180,7 @@ export class ReplicaPoller {
 			"lastChatActionAt",
 			"lastEditAt",
 			"plan",
+			"persistedAssistantText",
 		]);
 		const baseline = await baselineP;
 		const seed: Record<string, unknown> = {
@@ -302,6 +303,11 @@ export class ReplicaPoller {
 
 		let sawResult = false;
 		let resultText: string | null = null;
+		// Persisted across ticks: last claude-assistant text block. Used as
+		// fallback when claude-result lands in a later tick with no
+		// payload.result. Matrix bridge had the same race; both fixed.
+		const persistedAssistantText =
+			(await this.state.storage.get<string>("persistedAssistantText")) ?? null;
 		let resultIsError = false;
 		let resultErrorMsg: string | null = null;
 		let pendingAssistantText: string | null = null;
@@ -427,7 +433,12 @@ export class ReplicaPoller {
 			}
 		}
 
-		if (!resultText && sawResult && pendingAssistantText) resultText = pendingAssistantText;
+		// Fallback: prefer this tick's local text, then persisted-across-tick
+		// text. Catches the race where the final assistant text and the
+		// claude-result land in separate alarm intervals.
+		if (!resultText && sawResult) {
+			resultText = pendingAssistantText ?? persistedAssistantText;
+		}
 
 		// When a final markdown reply is coming, drop ANY trailing 💬
 		// narration lines that have accumulated across ticks — the full
@@ -477,6 +488,9 @@ export class ReplicaPoller {
 		if (systemInfo) writes.systemInfo = systemInfo;
 		if (contextUsage) writes.contextUsage = contextUsage;
 		if (resultMeta) writes.resultMeta = resultMeta;
+		// Persist latest assistant text across ticks for the cross-tick
+		// race fix described above.
+		if (pendingAssistantText) writes.persistedAssistantText = pendingAssistantText;
 		await this.state.storage.put(writes);
 
 		console.log(

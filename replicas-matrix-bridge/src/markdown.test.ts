@@ -122,6 +122,38 @@ describe("markdownToTelegramHtml", () => {
 		expect(markdownToTelegramHtml("[a](#anchor)")).toContain('href="#anchor"');
 	});
 
+	it("renders GFM tables as <table><thead><tbody>", () => {
+		const md = [
+			"| Item | Why |",
+			"|------|-----|",
+			"| Truncation | Matrix 64KB |",
+			"| No state | Tools isolated |",
+		].join("\n");
+		const out = markdownToTelegramHtml(md);
+		expect(out).toContain("<table>");
+		expect(out).toContain("<thead><tr><th>Item</th><th>Why</th></tr></thead>");
+		expect(out).toContain("<tbody>");
+		expect(out).toContain("<tr><td>Truncation</td><td>Matrix 64KB</td></tr>");
+		expect(out).toContain("<tr><td>No state</td><td>Tools isolated</td></tr>");
+		expect(out).toContain("</table>");
+	});
+
+	it("escapes HTML characters inside table cells without double-encoding", () => {
+		const md = [
+			"| Tag | Note |",
+			"|-----|------|",
+			"| <b> | bold marker |",
+		].join("\n");
+		const out = markdownToTelegramHtml(md);
+		expect(out).toContain("<td>&lt;b&gt;</td>");
+		expect(out).not.toContain("&amp;lt;");
+	});
+
+	it("only treats a table when the separator row is present", () => {
+		const out = markdownToTelegramHtml("| just | text |\nnot a separator");
+		expect(out).not.toContain("<table>");
+	});
+
 	it("strips null bytes from input so they cannot collide with placeholders", () => {
 		const out = markdownToTelegramHtml("a\u0000PH0\u0000b");
 		// The literal "PH0" survives but the wrapping NULL bytes are gone,

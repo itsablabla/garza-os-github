@@ -2,6 +2,7 @@ import { handleMatrixMessage } from "./dispatch";
 
 export interface Env {
 	MAP: KVNamespace;
+	OUTPUT_ARCHIVE: R2Bucket;
 	WATCHER: DurableObjectNamespace;
 	LISTENER: DurableObjectNamespace;
 	OLM_VAULT: DurableObjectNamespace;

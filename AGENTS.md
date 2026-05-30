@@ -71,3 +71,15 @@ A task is only "done" when **all** of these are true:
   task "seems small".
 - Hand-roll HTTP clients for SaaS APIs that already have a composite
   tool / MCP server available.
+
+## Project-specific deep dives
+
+When working inside one of these subdirectories, read the linked
+handoff *before* writing code — it captures the architecture, prior
+decisions, things Jaden has explicitly liked/disliked, and the known
+open work for that project.
+
+- **`replicas-matrix-bridge/` + `replicas-telegram-bridge/`** —
+  Cloudflare Workers that bridge Beeper/Matrix and Telegram to the
+  Replicas agent runtime. Full handoff: [`docs/agent-handoff.md`](docs/agent-handoff.md).
+  Each subfolder also has its own `AGENTS.md` pointing here.

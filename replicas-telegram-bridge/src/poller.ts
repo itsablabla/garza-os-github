@@ -328,7 +328,13 @@ export class ReplicaPoller {
 						// block with ~item~ strikethrough on done steps. That
 						// shouldn't go through the truncated italic narration
 						// path — capture it as a dedicated plan block instead.
-						const parsedPlan = parsePlan(block.text);
+						// Ported from matrix bridge: only accept Plan(d/t)
+						// headers BEFORE any tool calls and before any prior
+						// plan has been parsed. Prevents a confused or
+						// adversarial agent from overwriting in-progress view
+						// by emitting mid-turn fake completion.
+						const planEligible = stepCount === 0 && plan === null;
+						const parsedPlan = planEligible ? parsePlan(block.text) : null;
 						if (parsedPlan) {
 							plan = parsedPlan;
 							currentAction = "";
@@ -428,6 +434,29 @@ export class ReplicaPoller {
 			while (lines.length > 0 && lines[lines.length - 1]!.startsWith("💬 ")) {
 				lines.pop();
 			}
+		}
+
+		// Ported from matrix bridge: cap unbounded lines[] growth on
+		// thinking-heavy turns. Long planning sessions push hundreds of
+		// `💬` narration lines that bloat the serialized state on every
+		// alarm tick. Cap at LINES_HARD_CAP entries by dropping OLDEST
+		// non-protected lines first; tool lifecycle markers stay.
+		const LINES_HARD_CAP = 300;
+		if (lines.length > LINES_HARD_CAP) {
+			const isProtected = (l: string): boolean =>
+				l.startsWith("🔄 ") || l.startsWith("✅ ") || l.startsWith("❌ ") ||
+				l.startsWith("💬 <i>You:");
+			let i = 0;
+			let dropped = 0;
+			while (i < lines.length && lines.length > LINES_HARD_CAP) {
+				if (!isProtected(lines[i]!)) {
+					lines.splice(i, 1);
+					dropped++;
+				} else {
+					i += 1;
+				}
+			}
+			if (dropped > 0) console.log(`[poller] lines cap: dropped ${dropped} non-tool lines`);
 		}
 
 		// Batched write of all mutated fields + lastSeenCount.

@@ -75,4 +75,29 @@ describe("markdownToTelegramHtml", () => {
 		expect(html).toContain("<i>italic</i>");
 		expect(html).toContain("<s>strike</s>");
 	});
+
+	it("blocks javascript: link schemes (renders as bracketed plain text)", () => {
+		const out = markdownToTelegramHtml("[click](javascript:alert(1))");
+		expect(out).not.toContain("<a ");
+		expect(out).not.toContain("href=");
+		expect(out).toContain("[click]");
+	});
+
+	it("blocks data: link schemes", () => {
+		const out = markdownToTelegramHtml("[x](data:text/html,<script>alert(1)</script>)");
+		expect(out).not.toContain("<a ");
+		expect(out).not.toContain("<script>");
+	});
+
+	it("allows http(s), mailto, ftp, magnet, tg link schemes", () => {
+		expect(markdownToTelegramHtml("[a](http://x.com)")).toContain('href="http://x.com"');
+		expect(markdownToTelegramHtml("[a](https://x.com)")).toContain('href="https://x.com"');
+		expect(markdownToTelegramHtml("[a](mailto:x@y.com)")).toContain('href="mailto:x@y.com"');
+		expect(markdownToTelegramHtml("[a](tg://user?id=123)")).toContain('href="tg://user?id=123"');
+	});
+
+	it("strips NULL bytes from input", () => {
+		const out = markdownToTelegramHtml("a\u0000PH0\u0000b");
+		expect(out).not.toContain("\u0000");
+	});
 });

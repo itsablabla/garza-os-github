@@ -22,7 +22,23 @@
  * get scanned for asterisks, then escape the prose, then apply inline
  * markup, then splice the codeblocks back in.
  */
+// Allow-list of URL schemes for markdown `[text](url)` links. Ported
+// from the matrix bridge: a prompt-injected / adversarial agent emitting
+// `[click](javascript:alert(1))` could otherwise produce a clickable
+// XSS vector if a downstream Telegram client renders schemed hrefs
+// loosely. We restrict to http(s), ftp, mailto, magnet plus relative
+// paths and fragment-only links; everything else falls through to
+// plain bracketed text.
+const ALLOWED_LINK_SCHEMES = /^(?:https?|ftp|mailto|magnet|tg):/i;
+const RELATIVE_OR_FRAGMENT = /^(?:[\/#?]|[a-zA-Z0-9_\-.]+$)/;
+
 export function markdownToTelegramHtml(md: string): string {
+	// Strip NULL bytes up front. The placeholder sentinel below is built
+	// around `\u0000PH<n>\u0000`; an agent emitting literal NULL bytes
+	// could otherwise collide with a real placeholder and corrupt the
+	// spliced-back content.
+	md = md.replace(/\u0000/g, "");
+
 	const placeholders: string[] = [];
 	const placeholder = (html: string): string => {
 		const key = `\u0000PH${placeholders.length}\u0000`;
@@ -61,9 +77,25 @@ export function markdownToTelegramHtml(md: string): string {
 	s = s.replace(/~~([^~\n]+)~~/g, "<s>$1</s>");
 	s = s.replace(/(?<![~\w])~([^~\n]+)~(?![~\w])/g, "<s>$1</s>");
 
-	// Links: [text](url). URL was already &-escaped above; restore safe quotes.
+	// Links: [text](url). URL was already &-escaped above. We additionally
+	// scheme-validate so `javascript:`/`data:`/`vbscript:` etc. can't slip
+	// through into the href — render as plain text in that case so the user
+	// still sees what was emitted but it can't be clicked into an XSS.
 	s = s.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (_m, text: string, url: string) => {
-		const safeUrl = url.replace(/"/g, "&quot;");
+		const trimmed = url.trim();
+		const isSchemed = /^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(trimmed);
+		const allowed = isSchemed
+			? ALLOWED_LINK_SCHEMES.test(trimmed)
+			: RELATIVE_OR_FRAGMENT.test(trimmed);
+		if (!allowed) {
+			const safeUrl = trimmed
+				.replace(/&/g, "&amp;")
+				.replace(/</g, "&lt;")
+				.replace(/>/g, "&gt;")
+				.replace(/"/g, "&quot;");
+			return `[${text}](${safeUrl})`;
+		}
+		const safeUrl = trimmed.replace(/"/g, "&quot;");
 		return `<a href="${safeUrl}">${text}</a>`;
 	});
 

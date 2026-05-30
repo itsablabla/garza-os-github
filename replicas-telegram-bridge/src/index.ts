@@ -223,8 +223,15 @@ export async function handleMessage(msg: TgMessage, text: string, env: Env): Pro
 	}
 
 	if (spawnedFresh) {
-		const ttl = Math.max(60, parseInt(env.REPLICA_TTL_SECONDS, 10) || 604800);
-		await env.MAP.put(key, replicaId, { expirationTtl: ttl });
+		// REPLICA_TTL_SECONDS = "0" → no TTL (permanent until we delete it
+		// ourselves on respawn or unrecoverable error). Anything > 0 is
+		// honored as a cap. Matches the matrix bridge change: KV mapping
+		// survives as long as the replica does.
+		const ttlEnv = parseInt(env.REPLICA_TTL_SECONDS, 10);
+		const opts: KVNamespacePutOptions = ttlEnv > 0
+			? { expirationTtl: Math.max(60, ttlEnv) }
+			: {};
+		await env.MAP.put(key, replicaId, opts);
 	}
 
 	// Acknowledge with an eyes reaction (Bot API 7.0+).
@@ -250,10 +257,14 @@ async function createReplica(msg: TgMessage, text: string, env: Env): Promise<st
 		coding_agent: env.REPLICAS_AGENT_OVERRIDE || "claude",
 		model: env.REPLICAS_MODEL_OVERRIDE || "claude-sonnet-4-6",
 		thinking_level: env.REPLICAS_THINKING_OVERRIDE || "low",
-		// Keep the workspace warm longer so follow-up messages skip the cold
-		// start. Replicas defaults to 30min inactivity timeout; bump to 60min.
-		lifecycle_policy: "delete_after_inactivity",
-		auto_stop_minutes: 60,
+		// Ported from matrix bridge directive: replicas should NEVER auto-
+		// delete on inactivity. A new replica is only created when the
+		// existing one is broken (a 404/410 from the messages endpoint
+		// triggers the fresh-spawn fallback path above). Healthy idle
+		// replicas survive indefinitely so the user can resume any
+		// conversation without losing context.
+		lifecycle_policy: "manual",
+		auto_stop_minutes: 0,
 		metadata: {
 			telegram_chat_id: msg.chat.id,
 			telegram_chat_title: msg.chat.title ?? msg.chat.username ?? null,

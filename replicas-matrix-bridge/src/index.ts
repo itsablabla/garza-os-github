@@ -120,6 +120,10 @@ export default {
 			const stub = env.LISTENER.get(env.LISTENER.idFromName("global"));
 			return stub.fetch("https://listener/reset", { method: "POST" });
 		}
+		if (req.method === "POST" && url.pathname === "/admin/listener/reload-keys") {
+			const stub = env.LISTENER.get(env.LISTENER.idFromName("global"));
+			return stub.fetch("https://listener/reload-keys", { method: "POST" });
+		}
 		if (req.method === "POST" && url.pathname === "/admin/vault/reset") {
 			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));
 			return stub.fetch("https://vault/reset", { method: "POST" });

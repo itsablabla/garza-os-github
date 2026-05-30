@@ -43,12 +43,38 @@ export async function handleMatrixMessage(
 ): Promise<void> {
 	const key = `room:${roomId}`;
 	const seenKey = `seen:${roomId}:${eventId}`;
-	const seen = await env.MAP.get(seenKey);
-	if (seen) {
-		console.log(`[dispatch] DEDUPE skip room=${roomId} ev=${eventId}`);
-		return;
+	// Audit follow-up: dedupe via MatrixListener DO instead of KV. KV's
+	// eventual consistency let two concurrent dispatches both read
+	// "absent" and both proceed; routing through the singleton listener
+	// DO uses blockConcurrencyWhile for genuine put-if-absent semantics.
+	// The narrow race only fired when two paths hit the same event_id at
+	// once (listener /sync + /admin/recover-room replay, or /dispatch
+	// admin call racing the listener), but the cost of fixing it
+	// properly is one cross-DO RPC per dispatch and a periodic prune of
+	// the seen:* prefix (handled by the listener's existing prune cron).
+	try {
+		const listenerStub = env.LISTENER.get(env.LISTENER.idFromName("global"));
+		const claim = await listenerStub.fetch("https://listener/dedup-claim", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ key: seenKey }),
+		});
+		const j = (await claim.json()) as { claimed?: boolean };
+		if (!j.claimed) {
+			console.log(`[dispatch] DEDUPE skip room=${roomId} ev=${eventId}`);
+			return;
+		}
+	} catch (e) {
+		// Failsafe to legacy KV path if the DO is unreachable — better to
+		// risk a (very rare) double-dispatch than to drop the message.
+		console.log(`[dispatch] dedup DO failed, falling back to KV: ${e instanceof Error ? e.message : e}`);
+		const seen = await env.MAP.get(seenKey);
+		if (seen) {
+			console.log(`[dispatch] DEDUPE (kv fallback) skip room=${roomId} ev=${eventId}`);
+			return;
+		}
+		await env.MAP.put(seenKey, "1", { expirationTtl: 600 });
 	}
-	await env.MAP.put(seenKey, "1", { expirationTtl: 600 });
 
 	// Capture the 👀 ack reaction id so the watcher can redact it later when
 	// it swaps in the terminal emoji — otherwise both stack on the prompt.

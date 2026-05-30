@@ -53,6 +53,34 @@ export class MatrixListener {
 			await this.state.storage.setAlarm(Date.now() + 100);
 			return new Response("ok");
 		}
+		if (req.method === "POST" && url.pathname === "/dedup-claim") {
+			// Atomic put-if-absent for the dispatch dedupe path. KV's
+			// eventual consistency lets two concurrent reads both see
+			// "not present" and both write "1", letting the same Matrix
+			// event spawn the agent twice. Routing through this DO uses
+			// blockConcurrencyWhile so the check + write is genuinely
+			// atomic — at most one caller per event_id gets {claimed:true}.
+			const body = (await req.json()) as { key: string };
+			let claimed = false;
+			await this.state.blockConcurrencyWhile(async () => {
+				const existing = await this.state.storage.get<number>(body.key);
+				if (existing) return;
+				await this.state.storage.put(body.key, Date.now());
+				claimed = true;
+			});
+			return Response.json({ claimed });
+		}
+		if (req.method === "POST" && url.pathname === "/reload-keys") {
+			// Clear the in-memory cachedKeys so the next megolmKeys() call
+			// re-reads MATRIX_MEGOLM_KEYS_JSON from env. Lets the operator
+			// rotate Megolm session keys without a full redeploy (set the
+			// secret, then POST here to flush the cache). cachedCurve25519
+			// is keyed on the OlmVault identity which can change after a
+			// vault reset, so flush that too.
+			this.cachedKeys = undefined;
+			this.cachedCurve25519 = undefined;
+			return Response.json({ ok: true, message: "in-memory key caches cleared" });
+		}
 		if (req.method === "POST" && url.pathname === "/stop") {
 			await this.state.storage.deleteAlarm();
 			return new Response("ok");
@@ -91,6 +119,15 @@ export class MatrixListener {
 				if (algorithm !== "m.megolm.v1.aes-sha2" || !sessionId || !ciphertext) {
 					skipped += 1;
 					continue;
+				}
+				if (!senderKey) {
+					// Audit follow-up: missing outer sender_key means our
+					// m.room_key_request can only route to `<user>:*` and
+					// the originating device may not pick it up. Surface so
+					// the operator can spot bridges that strip sender_key.
+					console.log(
+						`[recover-room] WARN missing sender_key ev=${ev.event_id} room=${body.roomId} session=${sessionId.slice(0, 16)}…`,
+					);
 				}
 				triedDecrypt += 1;
 				const sessionKey = await this.findKey(body.roomId, sessionId, megolmKeys);
@@ -176,7 +213,65 @@ export class MatrixListener {
 		} catch (e) {
 			console.error("[listener] alarm threw", e instanceof Error ? e.message : String(e));
 		}
+		// Audit follow-up: periodic prune of pending-decrypt:* queues.
+		// Run at most every PRUNE_INTERVAL_MS so we don't burn DO storage
+		// budget on every 1s alarm tick. Drops queue entries whose
+		// origin_server_ts is more than PENDING_TTL_MS old AND deletes
+		// the whole queue if it ends up empty after pruning. Bounds
+		// long-term storage growth from sessions that were never sent
+		// (sender device went offline before forwarding the key).
+		try {
+			await this.maybePruneStaleDecryptQueues();
+		} catch (e) {
+			console.error("[listener] prune threw", e instanceof Error ? e.message : String(e));
+		}
 		await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS);
+	}
+
+	private async maybePruneStaleDecryptQueues(): Promise<void> {
+		const PRUNE_INTERVAL_MS = 30 * 60 * 1000; // every 30 min
+		const PENDING_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+		// seen:* keys only need to survive Matrix's re-delivery window,
+		// which is bounded by /sync's since-token behavior. 1h is generous.
+		const SEEN_TTL_MS = 60 * 60 * 1000;
+		const lastRun = (await this.state.storage.get<number>("last-prune-at")) ?? 0;
+		const now = Date.now();
+		if (now - lastRun < PRUNE_INTERVAL_MS) return;
+		await this.state.storage.put("last-prune-at", now);
+		const cutoff = now - PENDING_TTL_MS;
+		const all = await this.state.storage.list({ prefix: "pending-decrypt:" });
+		let pruned = 0;
+		let emptied = 0;
+		for (const [key, value] of all) {
+			const list = value as Array<{ origin_server_ts?: number }> | undefined;
+			if (!Array.isArray(list)) continue;
+			const kept = list.filter((e) => (e.origin_server_ts ?? 0) >= cutoff);
+			if (kept.length === 0) {
+				await this.state.storage.delete(key);
+				emptied += 1;
+				pruned += list.length;
+			} else if (kept.length < list.length) {
+				await this.state.storage.put(key, kept);
+				pruned += list.length - kept.length;
+			}
+		}
+		if (pruned > 0) {
+			console.log(`[listener] prune: dropped ${pruned} stale pending-decrypt entries (${emptied} queues emptied)`);
+		}
+		// Prune seen:* dedup markers older than SEEN_TTL_MS.
+		const seenList = await this.state.storage.list({ prefix: "seen:" });
+		const seenCutoff = now - SEEN_TTL_MS;
+		let seenPruned = 0;
+		for (const [key, value] of seenList) {
+			const ts = typeof value === "number" ? value : 0;
+			if (ts < seenCutoff) {
+				await this.state.storage.delete(key);
+				seenPruned += 1;
+			}
+		}
+		if (seenPruned > 0) {
+			console.log(`[listener] prune: dropped ${seenPruned} stale seen:* entries`);
+		}
 	}
 
 	private async alarmInner(): Promise<void> {
@@ -219,16 +314,52 @@ export class MatrixListener {
 					captured?: boolean;
 					capturedRoomId?: string;
 					capturedSessionId?: string;
+					capturedSource?: "live" | "forwarded";
 				};
 				console.log(
-					`[listener] to_device sender=${senderKey.slice(0, 12)}… type=${entry.type} ok=${j.ok} captured=${j.captured}`,
+					`[listener] to_device sender=${senderKey.slice(0, 12)}… type=${entry.type} ok=${j.ok} captured=${j.captured} src=${j.capturedSource ?? "n/a"}`,
 				);
-				// E2EE auto-recovery: when the vault captures a Megolm
-				// session key (either initial m.room_key or our requested
-				// m.forwarded_room_key response), walk the pending-decrypt
-				// queue for that (room, session) and dispatch any
-				// previously-stuck user messages.
+				// Audit follow-up: m.forwarded_room_key validation. We only
+				// accept forwarded Megolm keys for (room, session) pairs we
+				// previously asked about via our own m.room_key_request.
+				// Without this, any Olm-paired sender could plant arbitrary
+				// Megolm keys for arbitrary rooms by emitting an unsolicited
+				// m.forwarded_room_key — and the vault would store it
+				// without checking. m.room_key (the initial share) is
+				// passed through unchanged because that's how legitimate
+				// senders bootstrap a new outbound session.
 				if (j.captured && j.capturedRoomId && j.capturedSessionId) {
+					if (j.capturedSource === "forwarded") {
+						const wasRequested = await this.wasKeyRequested(
+							j.capturedRoomId,
+							j.capturedSessionId,
+						);
+						if (!wasRequested) {
+							console.log(
+								`[listener] UNSOLICITED forwarded_room_key — evicting room=${j.capturedRoomId} session=${j.capturedSessionId.slice(0, 16)}…`,
+							);
+							const evict = this.env.OLM_VAULT.get(
+								this.env.OLM_VAULT.idFromName("global"),
+							);
+							await evict
+								.fetch("https://vault/keystore-delete", {
+									method: "POST",
+									headers: { "Content-Type": "application/json" },
+									body: JSON.stringify({
+										roomId: j.capturedRoomId,
+										sessionId: j.capturedSessionId,
+										reason: "no outstanding m.room_key_request",
+									}),
+								})
+								.catch(() => {});
+							continue;
+						}
+					}
+					// E2EE auto-recovery: when the vault captures a Megolm
+					// session key (either initial m.room_key or our requested
+					// m.forwarded_room_key response), walk the pending-decrypt
+					// queue for that (room, session) and dispatch any
+					// previously-stuck user messages.
 					await this.drainPendingForSession(j.capturedRoomId, j.capturedSessionId);
 				}
 			} catch (e) {
@@ -501,6 +632,21 @@ export class MatrixListener {
 		} catch (e) {
 			console.log(`[listener] room_key_request failed: ${e instanceof Error ? e.message : e}`);
 		}
+	}
+
+	/**
+	 * Audit follow-up: check whether we previously emitted an
+	 * m.room_key_request for this (room, session). Used to gate the
+	 * acceptance of m.forwarded_room_key — if we never asked, the
+	 * forwarded key is unsolicited and may be an attacker trying to
+	 * plant a Megolm key. The key-request:* prefix is owned by
+	 * maybeSendKeyRequest and is bucketed by 5-min windows, so we just
+	 * check if any bucket exists for the (room, session) pair.
+	 */
+	private async wasKeyRequested(roomId: string, sessionId: string): Promise<boolean> {
+		const prefix = `key-request:${roomId}:${sessionId}:`;
+		const list = await this.state.storage.list({ prefix, limit: 1 });
+		return list.size > 0;
 	}
 
 	/**

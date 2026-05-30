@@ -721,7 +721,16 @@ export class ReplicaPoller {
 						appended = true;
 					} else if (block.type === "text" && block.text) {
 						pendingAssistantText = block.text;
-						const parsedPlan = parsePlan(block.text);
+						// Audit follow-up: parsePlan hijack tightening. Only
+						// accept Plan(d/t) headers BEFORE any tool calls have
+						// run AND before any non-plan narration has shipped.
+						// An adversarial / confused agent emitting `Plan (5/5)`
+						// mid-turn would otherwise overwrite the user's view
+						// of progress (or hide tool failures behind a fake
+						// "5/5 done" header). Gate on stepCount === 0 and
+						// no prior plan having been parsed.
+						const planEligible = stepCount === 0 && plan === null;
+						const parsedPlan = planEligible ? parsePlan(block.text) : null;
 						if (parsedPlan) {
 							plan = parsedPlan;
 							currentAction = "";
@@ -1067,27 +1076,22 @@ export class ReplicaPoller {
 				);
 			}
 
-			// Per-org usage log. Append a {ts, cost, tok} entry on every
-			// Done; the array is pruned to entries within the last 8 days
-			// so it stays small and the 7d window has full data. Used by
-			// the subtitle's "🪙 5h · 7d" render so the user sees rolling
-			// consumption against a subscription plan instead of arbitrary
-			// per-turn cost figures. Best-effort: failure doesn't block
-			// the Done frame.
+			// Per-org usage log. Audit follow-up: routed through the
+			// OlmVault singleton DO instead of KV so concurrent Done
+			// frames across rooms don't drop entries via read-modify-
+			// write race. The vault's blockConcurrencyWhile-wrapped
+			// /usage-bump endpoint serializes appends; pruning to the
+			// 8-day window happens there too so the renderer never
+			// reads a bloated log.
 			try {
-				const usageKey = `usage:org`;
-				const priorLog = (await this.env.MAP.get<
-					{ ts: number; cost: number; tok: number }[]
-				>(usageKey, { type: "json" })) ?? [];
 				const turnCost = resultMeta?.costUsd ?? 0;
 				const turnTok =
 					(resultMeta?.inputTokens ?? 0) + (resultMeta?.outputTokens ?? 0);
-				const now = Date.now();
-				const cutoff = now - 8 * 24 * 60 * 60 * 1000;
-				const nextLog = priorLog.filter((e) => e.ts >= cutoff);
-				nextLog.push({ ts: now, cost: turnCost, tok: turnTok });
-				await this.env.MAP.put(usageKey, JSON.stringify(nextLog), {
-					expirationTtl: 60 * 60 * 24 * 30, // 30 days
+				const stub = this.env.OLM_VAULT.get(this.env.OLM_VAULT.idFromName("global"));
+				await stub.fetch("https://vault/usage-bump", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ ts: Date.now(), cost: turnCost, tok: turnTok }),
 				});
 			} catch (e) {
 				console.log(
@@ -1171,15 +1175,16 @@ export class ReplicaPoller {
 		if (!watch) return null;
 		const currentAction = (snap.get("currentAction") as string | undefined) ?? "";
 
-		// Per-org rolling usage. Read the log from KV and bucket into 5h
-		// and 7d aggregates. Computed lazily here so every render has
-		// up-to-date numbers without the poller having to recompute on
-		// every alarm tick.
+		// Per-org rolling usage. Audit follow-up: read through the
+		// OlmVault singleton DO so this view sees writes from any room's
+		// most recent Done frame (KV-eventual-consistency could lag).
+		// Bucket into 5h and 7d aggregates locally.
 		let usageWindows: import("./render").UsageWindows | undefined;
 		try {
-			const log = (await this.env.MAP.get<
-				{ ts: number; cost: number; tok: number }[]
-			>("usage:org", { type: "json" })) ?? [];
+			const stub = this.env.OLM_VAULT.get(this.env.OLM_VAULT.idFromName("global"));
+			const r = await stub.fetch("https://vault/usage-read");
+			const j = (await r.json()) as { log?: { ts: number; cost: number; tok: number }[] };
+			const log = j.log ?? [];
 			const now = Date.now();
 			const cutoff5h = now - 5 * 60 * 60 * 1000;
 			const cutoff7d = now - 7 * 24 * 60 * 60 * 1000;

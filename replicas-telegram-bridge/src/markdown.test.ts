@@ -100,4 +100,27 @@ describe("markdownToTelegramHtml", () => {
 		const out = markdownToTelegramHtml("a\u0000PH0\u0000b");
 		expect(out).not.toContain("\u0000");
 	});
+
+	it("renders GFM tables as <pre> with column-aligned ASCII", () => {
+		const md = [
+			"| Tool | Status |",
+			"|------|--------|",
+			"| read | done   |",
+			"| edit | pending |",
+		].join("\n");
+		const out = markdownToTelegramHtml(md);
+		expect(out).toContain("<pre>");
+		// Each cell space-padded to widest in its column; separator uses
+		// box-drawing chars.
+		expect(out).toContain("Tool │ Status");
+		expect(out).toContain("─────┼");
+		expect(out).toContain("read │ done");
+		expect(out).toContain("edit │ pending");
+	});
+
+	it("ignores pipe-rows without a separator row", () => {
+		const out = markdownToTelegramHtml("| just | text |\nnot a separator");
+		expect(out).not.toContain("<pre>");
+		expect(out).not.toContain("│");
+	});
 });

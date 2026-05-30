@@ -10,6 +10,10 @@ export interface Env {
 	MATRIX_ACCESS_TOKEN: string;
 	MATRIX_USER_ID: string;
 	MATRIX_DEVICE_ID?: string;
+	// Bot's display name used for the plain-text wake-word gate in group
+	// rooms. Defaults to "Jada" if unset. See isPlainTextWakeWord in
+	// listener.ts for match rules. Configure in wrangler.toml [vars].
+	MATRIX_DISPLAY_NAME?: string;
 	// Base58-encoded SSSS recovery key (e.g. `EsTu zRAC eDpv …`) used to
 	// decrypt the cross-signing private keys stashed in the user's account
 	// data. Optional — only required by /admin/vault/cross-sign.

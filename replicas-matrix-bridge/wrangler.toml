@@ -73,6 +73,12 @@ REPLICAS_THINKING_OVERRIDE = "medium"
 # Bot device id on matrix.org (the device the MATRIX_ACCESS_TOKEN was minted
 # for). Used as the id in the Olm device-key upload + signature subject.
 MATRIX_DEVICE_ID = "Ww3fWv0z7s"
+# Bot's display name. Used by the plain-text wake-word gate in group
+# rooms — when a message body starts with this name (with optional `@`
+# prefix, case-insensitive, word boundary), the listener treats it as
+# an explicit mention even if the client didn't attach `m.mentions`
+# metadata. Matches Beeper Desktop's normal send shape.
+MATRIX_DISPLAY_NAME = "Jada"
 # Subscription-plan quotas for the 🪙 row in the status pane subtitle.
 # Defaults are mid-range estimates for Claude Max $200 (~250–1000 Sonnet
 # messages × ~10k tok/msg per 5h window; ~480–960 hrs/wk × ~115k tok/hr

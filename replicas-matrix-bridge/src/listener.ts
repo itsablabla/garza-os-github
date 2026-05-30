@@ -16,6 +16,27 @@ function resolveModelAlias(input: string): string {
 	return input.trim();
 }
 
+// Plain-text wake word for group rooms. Required because Beeper Desktop,
+// mobile Matrix clients, and the API direct-send path frequently emit
+// "Jada do X" without attaching `m.mentions.user_ids` or a matrix.to link
+// in `formatted_body`, so the spec-compliant mention gate silently drops
+// every such message. Empirically observed across "Schedule Manager",
+// "Nomad promise program", and most multi-human Manager rooms.
+//
+// Match rules:
+//   - anchored at the body start (optionally with leading whitespace)
+//   - optional `@` prefix
+//   - case-insensitive
+//   - word boundary after the name so "jadaphone" does NOT match
+//   - mid-body mentions ("I told Jada earlier") do NOT match — those
+//     belong on the explicit mention gate, not the plain-text fallback
+export function isPlainTextWakeWord(body: string, displayName: string): boolean {
+	if (!body || !displayName) return false;
+	const escaped = displayName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const pattern = new RegExp(`^\\s*@?${escaped}\\b`, "i");
+	return pattern.test(body);
+}
+
 /**
  * MatrixListener — single global Durable Object that holds the bot's
  * /sync long-poll. Re-runs on a ~1s alarm so we keep catching up
@@ -745,6 +766,13 @@ export class MatrixListener {
 		if (Array.isArray(mentions) && mentions.includes(this.env.MATRIX_USER_ID)) return true;
 		const fmt = content.formatted_body as string | undefined;
 		if (fmt && (fmt.includes(this.env.MATRIX_USER_ID) || fmt.includes(`/${this.env.MATRIX_USER_ID}`))) return true;
+		// Plain-text wake-word fallback for clients that don't attach
+		// m.mentions metadata (Beeper Desktop, most mobile clients): if
+		// the body begins with the bot's display name, treat it as an
+		// explicit address. See isPlainTextWakeWord for match rules.
+		const body = (content.body as string | undefined) ?? "";
+		const displayName = this.env.MATRIX_DISPLAY_NAME ?? "Jada";
+		if (isPlainTextWakeWord(body, displayName)) return true;
 		return false;
 	}
 

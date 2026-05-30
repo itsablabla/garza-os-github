@@ -60,6 +60,13 @@ REPLICA_TTL_SECONDS = "0"
 REPLICAS_AGENT_OVERRIDE = "claude"
 REPLICAS_MODEL_OVERRIDE = "claude-sonnet-4-6"
 REPLICAS_THINKING_OVERRIDE = "medium"
+# Single-workspace mode. When set, dispatch reuses this replica id for
+# rooms whose KV mapping is missing instead of POST /v1/replica. Pinned
+# on first message so subsequent messages route via the normal existing
+# path. Leave commented (or unset) to keep the per-room auto-spawn
+# behavior. Can also be set as a secret with:
+#   wrangler secret put DEFAULT_REPLICA_ID
+# DEFAULT_REPLICA_ID = "00000000-0000-0000-0000-000000000000"
 # Bot device id on matrix.org (the device the MATRIX_ACCESS_TOKEN was minted
 # for). Used as the id in the Olm device-key upload + signature subject.
 MATRIX_DEVICE_ID = "Ww3fWv0z7s"

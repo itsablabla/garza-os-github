@@ -40,6 +40,7 @@ export async function handleMatrixMessage(
 	roomId: string,
 	eventId: string,
 	text: string,
+	opts: { replyAsVoice?: boolean } = {},
 ): Promise<void> {
 	const key = `room:${roomId}`;
 	const seenKey = `seen:${roomId}:${eventId}`;
@@ -102,7 +103,7 @@ export async function handleMatrixMessage(
 		// Watcher fires in parallel with sendFollowUp. If the follow-up turns
 		// out to be `gone` (replica expired), we'll cancel and respawn.
 		const followUpP = sendFollowUp(existing, text, env, roomId, eventId);
-		const watcherP = startWatcher(env, existing, roomId, eventId, text, undefined, undefined);
+		const watcherP = startWatcher(env, existing, roomId, eventId, text, undefined, undefined, opts.replyAsVoice);
 		const followUp = await followUpP;
 		await watcherP;
 		if (followUp.ok) {
@@ -139,7 +140,7 @@ export async function handleMatrixMessage(
 		// already started it above and just need to forward the initial frame
 		// + ack ids — same /ack endpoint already handles that.
 		if (spawnedFresh) {
-			await startWatcher(env, settledReplicaId, roomId, eventId, text, undefined, initialFrameId || undefined);
+			await startWatcher(env, settledReplicaId, roomId, eventId, text, undefined, initialFrameId || undefined, opts.replyAsVoice);
 		} else if (initialFrameId) {
 			env.WATCHER.get(env.WATCHER.idFromName(settledReplicaId))
 				.fetch("https://watcher/ack", {
@@ -243,6 +244,7 @@ async function startWatcher(
 	text: string,
 	ackReactionId?: string,
 	initialStatusEventId?: string,
+	replyAsVoice?: boolean,
 ): Promise<void> {
 	const stub = env.WATCHER.get(env.WATCHER.idFromName(replicaId));
 	await stub
@@ -256,6 +258,7 @@ async function startWatcher(
 				userText: text,
 				ackReactionId: ackReactionId || undefined,
 				initialStatusEventId: initialStatusEventId || undefined,
+				replyAsVoice: replyAsVoice ? true : undefined,
 			}),
 		})
 		.catch(() => {});

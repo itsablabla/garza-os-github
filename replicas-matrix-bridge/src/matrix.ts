@@ -243,6 +243,70 @@ export async function joinRoom(env: MatrixEnv, roomId: string): Promise<void> {
 }
 
 /**
+ * Check whether a room has E2EE enabled by reading the m.room.encryption
+ * state event. Used by the Phase 2 outbound voice path to decide between
+ * a plain mxc:// upload and an AES-CTR encrypted attachment.
+ */
+export async function isRoomEncrypted(env: MatrixEnv, roomId: string): Promise<boolean> {
+	const url = `${env.MATRIX_HOMESERVER.replace(/\/$/, "")}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/state/m.room.encryption/`;
+	const r = await fetch(url, {
+		headers: { Authorization: `Bearer ${env.MATRIX_ACCESS_TOKEN}` },
+	});
+	return r.ok;
+}
+
+/**
+ * Send an `m.audio` voice message — Phase 2 outbound TTS. Content shape
+ * follows MSC3245 (the marker is `org.matrix.msc3245.voice: {}`). Both
+ * the unencrypted (`content.url`) and E2EE (`content.file`) variants
+ * are handled by the caller; this helper just packages the event.
+ */
+export async function sendVoiceMessage(
+	env: MatrixEnv,
+	roomId: string,
+	options: {
+		url?: string;
+		file?: Record<string, unknown>;
+		mimetype: string;
+		size: number;
+		durationMs: number;
+		waveform?: number[];
+		replyTo?: string;
+		txnId?: string;
+		filename?: string;
+	},
+): Promise<string> {
+	const txn = options.txnId ?? `tx-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+	const body: Json = {
+		msgtype: "m.audio",
+		body: options.filename ?? "Voice message.ogg",
+		info: {
+			mimetype: options.mimetype,
+			size: options.size,
+			duration: options.durationMs,
+		},
+		"org.matrix.msc1767.audio": {
+			duration: options.durationMs,
+			waveform: options.waveform ?? [],
+		},
+		"org.matrix.msc3245.voice": {},
+	};
+	if (options.url) body.url = options.url;
+	if (options.file) body.file = options.file;
+	if (options.replyTo) {
+		body["m.relates_to"] = { "m.in_reply_to": { event_id: options.replyTo } };
+	}
+	const out = (await call(
+		env,
+		"PUT",
+		`/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${encodeURIComponent(txn)}`,
+		body,
+	)) as { event_id?: string };
+	if (!out.event_id) throw new Error("sendVoiceMessage: missing event_id");
+	return out.event_id;
+}
+
+/**
  * `/sync` long-poll — returns the next batch of events. Caller passes the
  * `since` token from the previous response, plus `timeout` ms (~28s leaves
  * margin under CF Workers' 30s fetch limit).

@@ -431,6 +431,7 @@ export class MatrixListener {
 				// via Whisper, swap body in place so the rest of the
 				// dispatch flow proceeds with the transcript as if the
 				// user had typed it.
+				let cameFromVoice = false;
 				if (msgtype === "m.audio" && audioContent && this.isVoiceMessage(audioContent)) {
 					const transcribed = await this.transcribeVoiceContent(roomId, audioContent);
 					if (!transcribed) {
@@ -439,6 +440,7 @@ export class MatrixListener {
 					}
 					body = transcribed;
 					msgtype = "m.text";
+					cameFromVoice = true;
 				}
 
 				if (msgtype !== "m.text" || !body) continue;
@@ -460,7 +462,9 @@ export class MatrixListener {
 				const shouldDispatch = await this.shouldHandleMessage(roomId, ev);
 				if (!shouldDispatch) continue;
 
-				await this.dispatchMessage(roomId, ev.event_id, body);
+				// Mirror mode: if the user's prompt was a voice message, the
+				// bot's reply ships as voice too. Phase 2 outbound TTS.
+				await this.dispatchMessage(roomId, ev.event_id, body, { replyAsVoice: cameFromVoice });
 			}
 		}
 	}
@@ -860,10 +864,15 @@ export class MatrixListener {
 		return `🎤 (voice ${durLabel}) ${transcript}`;
 	}
 
-	private async dispatchMessage(roomId: string, eventId: string, body: string): Promise<void> {
+	private async dispatchMessage(
+		roomId: string,
+		eventId: string,
+		body: string,
+		opts: { replyAsVoice?: boolean } = {},
+	): Promise<void> {
 		// In-process call so we don't pay an extra Worker round-trip.
 		try {
-			await handleMatrixMessage(this.env, roomId, eventId, body);
+			await handleMatrixMessage(this.env, roomId, eventId, body, opts);
 		} catch (e) {
 			console.log(`[listener] dispatch failed: ${e instanceof Error ? e.message : e}`);
 		}

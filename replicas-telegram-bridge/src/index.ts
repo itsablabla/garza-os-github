@@ -178,7 +178,8 @@ async function handleVoiceMessage(msg: TgMessage, env: Env): Promise<void> {
 		const transcript = result.text.trim();
 		const body = `🎤 (voice ${durLabel}) ${transcript}`;
 		console.log(`[tg] voice transcribed chat=${msg.chat.id} duration=${durLabel} text=${JSON.stringify(transcript.slice(0, 80))}`);
-		await handleMessage(msg, body, env);
+		// Mirror mode: voice in → voice out via Phase 2 TTS.
+		await handleMessage(msg, body, env, { replyAsVoice: true });
 	} catch (e) {
 		console.log(`[tg] voice handle threw: ${e instanceof Error ? e.message : e}`);
 	}
@@ -212,7 +213,7 @@ async function ackCallback(env: Env, id: string, text?: string): Promise<void> {
 	}).catch(() => {});
 }
 
-export async function handleMessage(msg: TgMessage, text: string, env: Env): Promise<void> {
+export async function handleMessage(msg: TgMessage, text: string, env: Env, opts: { replyAsVoice?: boolean } = {}): Promise<void> {
 	const key = routingKey(msg.chat.id, msg.message_thread_id);
 	const idempotencyKey = `seen:${msg.chat.id}:${msg.message_id}`;
 
@@ -250,7 +251,7 @@ export async function handleMessage(msg: TgMessage, text: string, env: Env): Pro
 		// initialStatusMessageId arrives via /ack once the frame send resolves.
 		const [followUp] = await Promise.all([
 			sendFollowUp(existing, text, env, msg),
-			startWatcher(env, existing, msg, undefined),
+			startWatcher(env, existing, msg, undefined, opts.replyAsVoice),
 		]);
 		if (followUp.ok) {
 			replicaId = existing;
@@ -268,7 +269,7 @@ export async function handleMessage(msg: TgMessage, text: string, env: Env): Pro
 	if (replicaId && initialStatusMessageId !== undefined) {
 		const settledReplicaId = replicaId;
 		if (spawnedFresh) {
-			await startWatcher(env, settledReplicaId, msg, initialStatusMessageId);
+			await startWatcher(env, settledReplicaId, msg, initialStatusMessageId, opts.replyAsVoice);
 		} else {
 			env.WATCHER.get(env.WATCHER.idFromName(settledReplicaId))
 				.fetch("https://watcher/ack", {
@@ -281,7 +282,7 @@ export async function handleMessage(msg: TgMessage, text: string, env: Env): Pro
 	} else if (replicaId && spawnedFresh) {
 		// initialFrame send failed (rare). Fall back to the slow path: watcher
 		// starts without a pre-sent frame and renders fresh on its first tick.
-		await startWatcher(env, replicaId, msg, undefined);
+		await startWatcher(env, replicaId, msg, undefined, opts.replyAsVoice);
 	}
 
 	// Don't block the response on the ack reaction — it's already in flight.
@@ -379,6 +380,7 @@ async function startWatcher(
 	replicaId: string,
 	msg: TgMessage,
 	initialStatusMessageId?: number,
+	replyAsVoice?: boolean,
 ): Promise<void> {
 	if (!env.WATCHER) return;
 	const id = env.WATCHER.idFromName(replicaId);
@@ -394,6 +396,7 @@ async function startWatcher(
 				startMessageId: msg.message_id,
 				userText: msg.text ?? msg.caption ?? "",
 				initialStatusMessageId,
+				replyAsVoice: replyAsVoice ? true : undefined,
 			}),
 		})
 		.catch(() => {});

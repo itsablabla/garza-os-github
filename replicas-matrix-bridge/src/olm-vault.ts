@@ -82,6 +82,48 @@ export class OlmVault {
 				const hit = list.find((e) => e.session_id === sessionId);
 				return Response.json({ found: !!hit, session_key: hit?.session_key ?? null });
 			}
+			if (req.method === "POST" && url.pathname === "/usage-bump") {
+				// Audit follow-up: per-org usage log was being read-modify-
+				// written from the poller via KV, which loses concurrent
+				// appends across rooms (last write wins). Routing through
+				// this singleton DO with blockConcurrencyWhile makes the
+				// append atomic. Storage shape kept identical so the
+				// renderer's bucketing logic stays unchanged.
+				const body = (await req.json()) as { ts: number; cost: number; tok: number };
+				const CUTOFF_MS = 8 * 24 * 60 * 60 * 1000;
+				let log: { ts: number; cost: number; tok: number }[] = [];
+				await this.state.blockConcurrencyWhile(async () => {
+					const prior = (await this.state.storage.get<typeof log>("usage:org")) ?? [];
+					const cutoff = Date.now() - CUTOFF_MS;
+					log = prior.filter((e) => e.ts >= cutoff);
+					log.push({ ts: body.ts, cost: body.cost, tok: body.tok });
+					await this.state.storage.put("usage:org", log);
+				});
+				return Response.json({ ok: true, entries: log.length });
+			}
+			if (req.method === "GET" && url.pathname === "/usage-read") {
+				const log = (await this.state.storage.get<{ ts: number; cost: number; tok: number }[]>("usage:org")) ?? [];
+				return Response.json({ log });
+			}
+			if (req.method === "POST" && url.pathname === "/keystore-delete") {
+				// Used by the listener to evict a forwarded Megolm key that
+				// failed the "did we actually request this?" check. Without
+				// this, an Olm-paired sender could plant arbitrary Megolm
+				// keys for any room. With it, forwarded keys are restricted
+				// to (room, session) pairs we previously asked about.
+				const body = (await req.json()) as { roomId: string; sessionId: string; reason?: string };
+				const ks = (await this.state.storage.get<Record<string, MegolmKeyEntry[]>>(K_KEYSTORE)) ?? {};
+				const list = ks[body.roomId] ?? [];
+				const next = list.filter((e) => e.session_id !== body.sessionId);
+				if (next.length === list.length) return Response.json({ ok: true, evicted: 0 });
+				if (next.length === 0) delete ks[body.roomId];
+				else ks[body.roomId] = next;
+				await this.state.storage.put(K_KEYSTORE, ks);
+				console.log(
+					`[olm-vault] evicted unsolicited forwarded key room=${body.roomId} session=${body.sessionId.slice(0, 16)}… reason=${body.reason ?? "unspecified"}`,
+				);
+				return Response.json({ ok: true, evicted: list.length - next.length });
+			}
 			return new Response("not found", { status: 404 });
 		} catch (e) {
 			console.log(`[olm-vault] ${url.pathname} threw: ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`);
@@ -382,7 +424,21 @@ export class OlmVault {
 			if (usedSessionPickle) {
 				const next = pickles.filter((p) => p !== usedSessionPickle);
 				next.push(usedSessionPickle);
-				sessionsMap[senderCurve25519] = next.slice(-8);
+				// Cap=32 (was 8). Verified + multi-device senders can rotate
+				// Olm sessions fast enough that 8 was occasionally dropping
+				// legitimate sessions whose ratchet was still alive (silent
+				// decryption failure on subsequent to-device events that
+				// referenced the evicted session). mautrix-go keeps ~64;
+				// 32 is a comfortable mid-point. Log evictions so the
+				// operator can spot pathological churn.
+				const CAP = 32;
+				if (next.length > CAP) {
+					const evicted = next.length - CAP;
+					console.log(
+						`[olm-vault] session cap evicted ${evicted} oldest session(s) sender=${senderCurve25519.slice(0, 12)}…`,
+					);
+				}
+				sessionsMap[senderCurve25519] = next.slice(-CAP);
 				await this.state.storage.put(K_SESSIONS, sessionsMap);
 			}
 
@@ -395,6 +451,7 @@ export class OlmVault {
 			let captured = false;
 			let capturedRoomId: string | undefined;
 			let capturedSessionId: string | undefined;
+			let capturedSource: "live" | "forwarded" | undefined;
 			try {
 				const inner = JSON.parse(plaintext) as {
 					type?: string;
@@ -434,6 +491,7 @@ export class OlmVault {
 						captured = true;
 						capturedRoomId = c.room_id;
 						capturedSessionId = c.session_id;
+						capturedSource = inner.type === "m.forwarded_room_key" ? "forwarded" : "live";
 						console.log(
 							`[olm-vault] captured Megolm via ${inner.type} room=${c.room_id} session=${c.session_id!.slice(0, 16)}…`,
 						);
@@ -443,7 +501,7 @@ export class OlmVault {
 				/* not JSON — return raw */
 			}
 
-			return Response.json({ ok: true, captured, plaintext, capturedRoomId, capturedSessionId });
+			return Response.json({ ok: true, captured, plaintext, capturedRoomId, capturedSessionId, capturedSource });
 		} finally {
 			account.free();
 			void Olm;

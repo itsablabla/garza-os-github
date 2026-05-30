@@ -31,6 +31,42 @@ export interface Env {
 	// wrangler.toml for the Claude Max $200 plan; override per-account.
 	USAGE_QUOTA_5H_TOK?: string;
 	USAGE_QUOTA_7D_TOK?: string;
+	// Bearer token gating /admin/*, /debug/*, and /dispatch. When unset the
+	// endpoints fall through with a warning log (migration mode) so existing
+	// operator curl flows keep working. Once set, every protected route
+	// requires `Authorization: Bearer ${ADMIN_TOKEN}`. Set via
+	// `wrangler secret put ADMIN_TOKEN`.
+	ADMIN_TOKEN?: string;
+}
+
+// Constant-time string compare to avoid leaking ADMIN_TOKEN length / prefix
+// via response-time differences. Falls back to a length-mismatch fast path
+// (both branches still walk both strings).
+function timingSafeEqual(a: string, b: string): boolean {
+	const la = a.length;
+	const lb = b.length;
+	const len = Math.max(la, lb);
+	let diff = la ^ lb;
+	for (let i = 0; i < len; i++) {
+		const ca = i < la ? a.charCodeAt(i) : 0;
+		const cb = i < lb ? b.charCodeAt(i) : 0;
+		diff |= ca ^ cb;
+	}
+	return diff === 0;
+}
+
+function requireAuth(req: Request, env: Env, pathname: string): Response | null {
+	if (!env.ADMIN_TOKEN) {
+		console.log(`[auth] WARNING: ${pathname} called without ADMIN_TOKEN configured — allowing (migration mode). Set ADMIN_TOKEN secret to lock down.`);
+		return null;
+	}
+	const header = req.headers.get("Authorization") ?? "";
+	const match = /^Bearer\s+(.+)$/i.exec(header);
+	const presented = match?.[1]?.trim() ?? "";
+	if (!presented || !timingSafeEqual(presented, env.ADMIN_TOKEN)) {
+		return new Response("unauthorized", { status: 401 });
+	}
+	return null;
 }
 
 export { ReplicaPoller } from "./poller";
@@ -49,6 +85,20 @@ export default {
 
 		if (req.method === "GET" && url.pathname === "/health") {
 			return new Response("ok");
+		}
+
+		// Gate every privileged path. /health stays public; everything else
+		// (admin/debug + dispatch + start-listener) requires ADMIN_TOKEN
+		// once it's set. While unset, the helper logs a warning and lets
+		// the request through so we don't break operator flows mid-migration.
+		const isProtected =
+			url.pathname.startsWith("/admin/") ||
+			url.pathname.startsWith("/debug/") ||
+			url.pathname === "/dispatch" ||
+			url.pathname === "/start-listener";
+		if (isProtected) {
+			const denied = requireAuth(req, env, url.pathname);
+			if (denied) return denied;
 		}
 
 		if (req.method === "POST" && url.pathname === "/start-listener") {

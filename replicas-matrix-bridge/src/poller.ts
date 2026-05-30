@@ -1706,6 +1706,7 @@ function replicasHeaders(env: Env): HeadersInit {
 	return {
 		Authorization: `Bearer ${env.REPLICAS_API_KEY}`,
 		"Replicas-Org-Id": env.REPLICAS_ORG_ID,
+		"Content-Type": "application/json",
 	};
 }
 

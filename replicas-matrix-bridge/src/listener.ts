@@ -868,9 +868,31 @@ export class MatrixListener {
 			console.log(`[listener] voice msg in room=${roomId} but OPENAI_API_KEY not set — skipping`);
 			return undefined;
 		}
-		const info = content.info as { duration?: number; mimetype?: string } | undefined;
+		const info = content.info as { duration?: number; mimetype?: string; size?: number } | undefined;
 		const durationMs = info?.duration ?? 0;
 		const declaredMime = info?.mimetype ?? "audio/ogg";
+
+		// Cost guardrail: rate-limit Whisper transcribes to avoid an
+		// adversarial / runaway sender burning OpenAI credits. We track
+		// a rolling window of transcription seconds per room across the
+		// last 60 minutes; if total > VOICE_MINUTES_PER_HOUR_CAP, skip
+		// new voice messages and log. Caller falls through to "voice
+		// skipped" UX (same as no-API-key path).
+		const VOICE_MINUTES_PER_HOUR_CAP = 30;
+		const WINDOW_MS = 60 * 60 * 1000;
+		const ledgerKey = `voice-budget:${roomId}`;
+		const now = Date.now();
+		const ledger =
+			(await this.state.storage.get<{ ts: number; sec: number }[]>(ledgerKey)) ?? [];
+		const fresh = ledger.filter((e) => now - e.ts < WINDOW_MS);
+		const totalSec = fresh.reduce((acc, e) => acc + e.sec, 0);
+		const proposedSec = Math.max(0, Math.round(durationMs / 1000));
+		if (totalSec + proposedSec > VOICE_MINUTES_PER_HOUR_CAP * 60) {
+			console.log(
+				`[listener] voice budget exhausted room=${roomId} usedSec=${totalSec} thisSec=${proposedSec} cap=${VOICE_MINUTES_PER_HOUR_CAP * 60} — skipping`,
+			);
+			return undefined;
+		}
 
 		const audio = await fetchVoiceAudio(matrixEnv(this.env), {
 			url: content.url as string | undefined,
@@ -906,6 +928,10 @@ export class MatrixListener {
 		console.log(
 			`[listener] voice transcribed room=${roomId} duration=${durLabel} text=${JSON.stringify(transcript.slice(0, 80))}`,
 		);
+		// Persist the consumed seconds in the budget ledger so subsequent
+		// voice messages in this room debit against the same window.
+		fresh.push({ ts: now, sec: proposedSec });
+		await this.state.storage.put(ledgerKey, fresh);
 		return `🎤 (voice ${durLabel}) ${transcript}`;
 	}
 

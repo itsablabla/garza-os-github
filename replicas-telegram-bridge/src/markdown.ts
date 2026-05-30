@@ -39,6 +39,16 @@ export function markdownToTelegramHtml(md: string): string {
 	// spliced-back content.
 	md = md.replace(/\u0000/g, "");
 
+	// GFM markdown tables → ASCII-aligned <pre> blocks. Telegram's HTML
+	// parse_mode doesn't support <table>, so we render the same data as a
+	// monospaced pre-formatted block. Detect `| header | header |` rows
+	// followed by `|---|---|` separator + body rows; emit a `<pre>` with
+	// each cell padded to the column's widest value. Runs BEFORE the
+	// fenced-code-block pass so the pre placeholder is registered
+	// alongside the other code blocks and survives the rest of the
+	// markdown passes intact.
+	md = renderGfmTables(md);
+
 	const placeholders: string[] = [];
 	const placeholder = (html: string): string => {
 		const key = `\u0000PH${placeholders.length}\u0000`;
@@ -109,4 +119,61 @@ export function markdownToTelegramHtml(md: string): string {
 
 function escapeHtml(s: string): string {
 	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Pre-pass that walks the markdown line by line, finds GFM tables, and
+// rewrites each into a triple-backtick block containing the ASCII-padded
+// table. The triple-backtick block is then consumed by the existing
+// fenced-code-block extractor, so the table survives unmangled through
+// the rest of the markdown passes.
+function renderGfmTables(md: string): string {
+	const lines = md.split("\n");
+	const out: string[] = [];
+	let i = 0;
+	while (i < lines.length) {
+		const line = lines[i]!;
+		const isRowLike = /^\s*\|.+\|?\s*$/.test(line);
+		const isSeparator =
+			i + 1 < lines.length &&
+			/^\s*\|?\s*:?-{2,}/.test(lines[i + 1]!) &&
+			/^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1]!);
+		if (!isRowLike || !isSeparator) {
+			out.push(line);
+			i++;
+			continue;
+		}
+		const header = parseTableRow(line);
+		i += 2;
+		const body: string[][] = [];
+		while (i < lines.length && /^\s*\|.+\|?\s*$/.test(lines[i]!)) {
+			body.push(parseTableRow(lines[i]!));
+			i++;
+		}
+		// Compute column widths.
+		const widths: number[] = header.map((c) => c.length);
+		for (const row of body) {
+			for (let c = 0; c < row.length; c++) {
+				if ((row[c] ?? "").length > (widths[c] ?? 0)) widths[c] = row[c]!.length;
+			}
+		}
+		const pad = (s: string, w: number): string => s + " ".repeat(Math.max(0, w - s.length));
+		const renderRow = (cells: string[]): string =>
+			cells.map((c, idx) => pad(c, widths[idx] ?? c.length)).join(" │ ");
+		const sep = widths.map((w) => "─".repeat(w)).join("─┼─");
+		const renderedHeader = renderRow(header);
+		const renderedBody = body.map(renderRow);
+		out.push("```");
+		out.push(renderedHeader);
+		out.push(sep);
+		for (const r of renderedBody) out.push(r);
+		out.push("```");
+	}
+	return out.join("\n");
+}
+
+function parseTableRow(line: string): string[] {
+	let s = line.trim();
+	if (s.startsWith("|")) s = s.slice(1);
+	if (s.endsWith("|")) s = s.slice(0, -1);
+	return s.split("|").map((c) => c.trim());
 }

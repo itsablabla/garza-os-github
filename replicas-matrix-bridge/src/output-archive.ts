@@ -3,11 +3,14 @@
 // the Done frame can surface a `📎 View full output` link instead of
 // dropping the rest of the content on the floor.
 //
-// Keying: `<sha256(content)>/<basename>`. Sha-based dedupes identical
-// outputs across rooms / sessions; basename is the tool's most likely
-// filename hint so a casual click in the browser sees a meaningful
-// name in the title bar. Public-read R2 bucket (configured in
-// wrangler.toml) so the URL works without auth headers.
+// Keying: `<128-bit random>/<basename>`. Random-prefixed so the URL is
+// genuinely unguessable — an earlier sha256-derived scheme let an
+// attacker who could *guess* the content (e.g. the bytes of a public
+// /etc/os-release dump) reconstruct the URL without ever seeing it,
+// which leaks data in E2EE rooms where the URL is the only thing
+// crossing the encryption boundary. Loses cross-room dedup; gains
+// real unguessability. Lifecycle on the bucket prunes objects after
+// 30 days so cost stays bounded.
 
 export interface ArchiveEnv {
 	OUTPUT_ARCHIVE: R2Bucket;
@@ -25,13 +28,12 @@ const R2_PUBLIC_BASE = "https://pub-54d26cd2ad324055a4a573666935ce53.r2.dev";
 export const ARCHIVE_THRESHOLD_BYTES = 2_000;
 
 /**
- * SHA-256 of the input, hex-encoded. Used as the R2 key prefix for
- * dedupe across rooms.
+ * 32-hex-char unguessable random prefix (128 bits of entropy from
+ * crypto.getRandomValues). Used as the R2 key prefix so the public
+ * URL can't be constructed by guessing the content.
  */
-async function sha256Hex(s: string): Promise<string> {
-	const buf = new TextEncoder().encode(s);
-	const hash = await crypto.subtle.digest("SHA-256", buf as BufferSource);
-	const bytes = new Uint8Array(hash);
+function randomPrefix(): string {
+	const bytes = crypto.getRandomValues(new Uint8Array(16));
 	let hex = "";
 	for (let i = 0; i < bytes.length; i++) {
 		hex += bytes[i]!.toString(16).padStart(2, "0");
@@ -42,8 +44,7 @@ async function sha256Hex(s: string): Promise<string> {
 /**
  * Best-effort archive of a tool result. Returns the public r2.dev URL
  * on success, undefined on failure (caller falls through to inline
- * truncation). Idempotent — re-archiving identical content is a
- * no-op put.
+ * truncation). Each call writes to a fresh random prefix — no dedup.
  */
 export async function archiveLargeOutput(
 	env: ArchiveEnv,
@@ -53,14 +54,14 @@ export async function archiveLargeOutput(
 	if (!env.OUTPUT_ARCHIVE) return undefined;
 	if (content.length < ARCHIVE_THRESHOLD_BYTES) return undefined;
 	try {
-		const hex = await sha256Hex(content);
+		const prefix = randomPrefix();
 		// Strip path separators from the basename so an attacker can't
-		// climb the key namespace via `../`. The hash prefix is the
+		// climb the key namespace via `../`. The random prefix is the
 		// trust anchor; basename is purely cosmetic.
 		const cleanBase = suggestedBasename
 			.replace(/[^a-zA-Z0-9._-]/g, "_")
 			.slice(0, 80) || "output.txt";
-		const key = `${hex}/${cleanBase}`;
+		const key = `${prefix}/${cleanBase}`;
 		// httpMetadata content-type so a browser renders the blob inline
 		// instead of forcing a download — most tool outputs are plain text.
 		await env.OUTPUT_ARCHIVE.put(key, content, {

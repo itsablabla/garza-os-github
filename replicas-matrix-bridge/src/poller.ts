@@ -309,6 +309,7 @@ export class ReplicaPoller {
 			"replyEventId",
 			"replyEventIds",
 			"lastResultHtmlChunks",
+			"persistedAssistantText",
 			// Per-turn throttle bookkeeping — wipe so a fresh turn starts
 			// fast even if the prior turn ratcheted the backoff bonus up.
 			"backoffBonusMs",
@@ -597,6 +598,14 @@ export class ReplicaPoller {
 
 		let sawResult = false;
 		let resultText: string | null = null;
+		// Persisted across ticks: the most recent claude-assistant text block.
+		// Used as the fallback when claude-result lands in a later tick with
+		// payload.result missing/empty. Without this, the answer text emitted
+		// in tick A and the result event in tick B raced — tick B's
+		// fallback to (per-tick local) pendingAssistantText was null and the
+		// reply never shipped, leaving a Done frame with no body.
+		const persistedAssistantText =
+			(await this.state.storage.get<string>("persistedAssistantText")) ?? null;
 		let resultIsError = false;
 		let resultErrorMsg: string | null = null;
 		// Set true when claude-result returns an error class that
@@ -937,7 +946,13 @@ export class ReplicaPoller {
 			}
 		}
 
-		if (!resultText && sawResult && pendingAssistantText) resultText = pendingAssistantText;
+		// Fallback: prefer this tick's local text block, fall back to the
+		// last text persisted across previous ticks. Catches the race
+		// where the final claude-assistant text and the claude-result land
+		// in separate alarm intervals.
+		if (!resultText && sawResult) {
+			resultText = pendingAssistantText ?? persistedAssistantText;
+		}
 
 		// When a final markdown reply is coming, drop ANY trailing 💬
 		// narration lines that have accumulated across ticks — the full
@@ -1000,6 +1015,11 @@ export class ReplicaPoller {
 			lastEventAt,
 			segmentStartLine,
 		};
+		// Persist the latest claude-assistant text across ticks so a
+		// claude-result that arrives in a later interval can still find
+		// the answer to send. Only writes when this tick actually saw a
+		// fresh text block — otherwise leaves the prior value intact.
+		if (pendingAssistantText) writes.persistedAssistantText = pendingAssistantText;
 		if (phaseBeforeRateLimit !== null) writes.phaseBeforeRateLimit = phaseBeforeRateLimit;
 		else await this.state.storage.delete("phaseBeforeRateLimit");
 		if (activeToolStartedAt !== undefined) writes.activeToolStartedAt = activeToolStartedAt;

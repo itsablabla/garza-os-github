@@ -491,6 +491,10 @@ export class ReplicaPoller {
 								? { expirationTtl: Math.max(60, ttlEnv) }
 								: {};
 							await this.env.MAP.put(`room:${watch.roomId}`, newReplicaId, opts);
+							// Reverse mapping for the cross-room contamination
+							// guard in dispatch.ts (matches the createReplica
+							// path so respawned replicas claim ownership too).
+							await this.env.MAP.put(`replica:${newReplicaId}`, watch.roomId, opts);
 							// Re-point THIS watcher at the new replica id so the
 							// next /history poll succeeds against it. lastSeenCount
 							// resets to 0 so we project from scratch.

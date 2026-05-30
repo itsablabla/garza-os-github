@@ -83,7 +83,23 @@ export async function handleMatrixMessage(
 	// eat the user's first acknowledgment signal.
 	const ackP = reactWithRetry(matrixEnvShape(env), roomId, eventId, "👀");
 
-	const existing = await env.MAP.get(key);
+	let existing = await env.MAP.get(key);
+	// Defensive guard: cross-room contamination check. If the reverse
+	// mapping `replica:${existing}` -> ownerRoomId says this replica is
+	// owned by a different room, we treat existing as unset and spawn
+	// fresh — otherwise messages from room X would dispatch to room Y's
+	// replica (observed in production today: 3 group rooms all pointing
+	// at one replica id). Empty/absent reverse mapping is OK for
+	// backwards compatibility with pre-guard replicas that never wrote
+	// one.
+	if (existing) {
+		const ownerRoomId = await env.MAP.get(`replica:${existing}`);
+		if (ownerRoomId && ownerRoomId !== roomId) {
+			console.log(`[dispatch] CROSS-ROOM MISMATCH detected: room=${roomId} mapped to replicaId=${existing} but replica is owned by ${ownerRoomId} — flushing + spawning fresh`);
+			await env.MAP.delete(key);
+			existing = null;
+		}
+	}
 	console.log(`[dispatch] proceed room=${roomId} ev=${eventId} existing=${existing ?? "none"} text=${JSON.stringify(text.slice(0, 50))}`);
 	let replicaId: string | null = null;
 	let spawnedFresh = false;
@@ -179,6 +195,10 @@ export async function handleMatrixMessage(
 			? { expirationTtl: Math.max(60, ttlEnv) }
 			: {};
 		await env.MAP.put(key, replicaId, opts);
+		// Reverse mapping for cross-room contamination guard. Lets a
+		// future dispatch detect that this replicaId is owned by this
+		// specific room and refuse to attach to it from any other room.
+		await env.MAP.put(`replica:${replicaId}`, roomId, opts);
 	}
 }
 

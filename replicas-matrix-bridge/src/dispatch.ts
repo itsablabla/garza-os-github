@@ -124,6 +124,25 @@ export async function handleMatrixMessage(
 		await watcherP;
 		if (followUp.ok) {
 			replicaId = existing;
+			// Opportunistic backfill of the reverse mapping for pre-PR-29
+			// replicas that don't have one yet. The cross-room guard only
+			// fires when the reverse exists; writing it on the first
+			// successful follow-up after upgrade closes the protection
+			// gap for the 47 mappings that existed when the guard
+			// shipped. Race-safe: a colliding peer will see mismatch on
+			// its NEXT follow-up and respawn.
+			try {
+				const reverseSet = await env.MAP.get(`replica:${existing}`);
+				if (!reverseSet) {
+					const ttlEnv = parseInt(env.REPLICA_TTL_SECONDS, 10);
+					const opts: KVNamespacePutOptions = ttlEnv > 0
+						? { expirationTtl: Math.max(60, ttlEnv) }
+						: {};
+					await env.MAP.put(`replica:${existing}`, roomId, opts);
+				}
+			} catch (e) {
+				console.log(`[dispatch] reverse-map backfill failed: ${e instanceof Error ? e.message : e}`);
+			}
 		} else {
 			// Any non-ok response (including the explicit `gone` 404/410 and
 			// every other failure mode — 429, 5xx, network blip, etc.) falls

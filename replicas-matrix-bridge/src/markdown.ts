@@ -14,7 +14,23 @@
  *   4. inline pass on the remaining prose
  *   5. paste the code placeholders back
  */
+// Allow-list of URL schemes for markdown `[text](url)` links. Matrix spec
+// says clients SHOULD filter to http/https/ftp/mailto/magnet but client
+// behavior varies (Element/Beeper/native homeserver-relay/etc.). Bridge
+// strips everything else into plain text so a prompt-injected agent
+// emitting `[click](javascript:alert(1))` can't produce a clickable XSS
+// vector regardless of client filtering.
+const ALLOWED_LINK_SCHEMES = /^(?:https?|ftp|mailto|magnet):/i;
+const RELATIVE_OR_FRAGMENT = /^(?:[\/#?]|[a-zA-Z0-9_\-.]+$)/;
+
 export function markdownToTelegramHtml(md: string): string {
+	// Strip NULL bytes up front. The placeholder sentinel below is built
+	// around `\u0000PH<n>\u0000`; an agent emitting literal NULL bytes in
+	// its output could otherwise collide with a real placeholder and
+	// corrupt the spliced-back content. NULL is never legitimately part
+	// of Markdown body text.
+	md = md.replace(/\u0000/g, "");
+
 	const placeholders: string[] = [];
 	const placeholder = (html: string): string => {
 		const key = `\u0000PH${placeholders.length}\u0000`;
@@ -62,9 +78,24 @@ export function markdownToTelegramHtml(md: string): string {
 	s = s.replace(/~~([^~\n]+)~~/g, "<s>$1</s>");
 	s = s.replace(/(?<![~\w])~([^~\n]+)~(?![~\w])/g, "<s>$1</s>");
 
-	// Links: [text](url). URL was already &-escaped above; restore safe quotes.
+	// Links: [text](url). URL was already &-escaped above. We additionally
+	// scheme-validate so `javascript:`/`data:`/`vbscript:` etc. can't slip
+	// through into the href — render as plain text in that case so the user
+	// still sees what was emitted but it can't be clicked into an XSS.
 	s = s.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (_m, text: string, url: string) => {
-		const safeUrl = url.replace(/"/g, "&quot;");
+		const trimmed = url.trim();
+		const isSchemed = /^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(trimmed);
+		const allowed = isSchemed
+			? ALLOWED_LINK_SCHEMES.test(trimmed)
+			: RELATIVE_OR_FRAGMENT.test(trimmed);
+		if (!allowed) {
+			// Render as bracketed plain-text. The text was already escaped
+			// by escapeOutsideBlocks; the URL needs explicit quote-escape
+			// in case it contains `"` (the original code did this too).
+			const safeUrl = trimmed.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+			return `[${text}](${safeUrl})`;
+		}
+		const safeUrl = trimmed.replace(/"/g, "&quot;");
 		return `<a href="${safeUrl}">${text}</a>`;
 	});
 

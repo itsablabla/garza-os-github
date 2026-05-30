@@ -96,6 +96,39 @@ describe("markdownToTelegramHtml", () => {
 		expect(markdownToTelegramHtml("first\n\nsecond")).toBe("first<br><br>second");
 	});
 
+	it("blocks javascript: link schemes (renders as bracketed plain text)", () => {
+		const out = markdownToTelegramHtml("[click me](javascript:alert(1))");
+		expect(out).not.toContain("<a ");
+		expect(out).not.toContain("href=");
+		expect(out).toContain("[click me]");
+		expect(out).toContain("javascript:alert(1)");
+	});
+
+	it("blocks data: URI link schemes", () => {
+		const out = markdownToTelegramHtml("[x](data:text/html,<script>alert(1)</script>)");
+		expect(out).not.toContain("<a ");
+		expect(out).not.toContain("<script>");
+	});
+
+	it("allows http, https, mailto, ftp, magnet schemes", () => {
+		expect(markdownToTelegramHtml("[a](http://x.com)")).toContain('href="http://x.com"');
+		expect(markdownToTelegramHtml("[a](https://x.com)")).toContain('href="https://x.com"');
+		expect(markdownToTelegramHtml("[a](mailto:x@y.com)")).toContain('href="mailto:x@y.com"');
+		expect(markdownToTelegramHtml("[a](ftp://x.com/file)")).toContain('href="ftp://x.com/file"');
+	});
+
+	it("allows relative paths and fragment-only links", () => {
+		expect(markdownToTelegramHtml("[a](/path/to/thing)")).toContain('href="/path/to/thing"');
+		expect(markdownToTelegramHtml("[a](#anchor)")).toContain('href="#anchor"');
+	});
+
+	it("strips null bytes from input so they cannot collide with placeholders", () => {
+		const out = markdownToTelegramHtml("a\u0000PH0\u0000b");
+		// The literal "PH0" survives but the wrapping NULL bytes are gone,
+		// so the splice-back step cannot mistake it for a real placeholder.
+		expect(out).not.toContain("\u0000");
+	});
+
 	it("the actual tools-list response shape renders cleanly", () => {
 		const md = [
 			"# Available Tools",

@@ -470,9 +470,13 @@ export class ReplicaPoller {
 						await this.env.MAP.delete(`model:${watch.roomId}`);
 						const newReplicaId = await this.respawnReplica(watch, userText);
 						if (newReplicaId) {
-							// Persist the new replicaId to KV with the same TTL.
-							const ttl = Math.max(60, parseInt(this.env.REPLICA_TTL_SECONDS, 10) || 604800);
-							await this.env.MAP.put(`room:${watch.roomId}`, newReplicaId, { expirationTtl: ttl });
+							// Persist the new replicaId to KV with the same TTL
+							// policy as the dispatch path. "0" = no TTL.
+							const ttlEnv = parseInt(this.env.REPLICA_TTL_SECONDS, 10);
+							const opts: KVNamespacePutOptions = ttlEnv > 0
+								? { expirationTtl: Math.max(60, ttlEnv) }
+								: {};
+							await this.env.MAP.put(`room:${watch.roomId}`, newReplicaId, opts);
 							// Re-point THIS watcher at the new replica id so the
 							// next /history poll succeeds against it. lastSeenCount
 							// resets to 0 so we project from scratch.
@@ -1320,8 +1324,10 @@ export class ReplicaPoller {
 			coding_agent: this.env.REPLICAS_AGENT_OVERRIDE || "claude",
 			model: this.env.REPLICAS_MODEL_OVERRIDE || "claude-sonnet-4-6",
 			thinking_level: this.env.REPLICAS_THINKING_OVERRIDE || "medium",
-			lifecycle_policy: "delete_after_inactivity",
-			auto_stop_minutes: 1440,
+			// Match createReplica — replicas never auto-delete on
+			// inactivity; only the genuinely-broken paths recycle them.
+			lifecycle_policy: "manual",
+			auto_stop_minutes: 0,
 			metadata: { matrix_room_id: watch.roomId, matrix_event_id: eventId, auto_respawn: true },
 		};
 		const r = await fetch(`${this.env.REPLICAS_API_BASE}/replica`, {

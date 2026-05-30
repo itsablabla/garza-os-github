@@ -143,8 +143,15 @@ export async function handleMatrixMessage(
 	}
 
 	if (spawnedFresh) {
-		const ttl = Math.max(60, parseInt(env.REPLICA_TTL_SECONDS, 10) || 604800);
-		await env.MAP.put(key, replicaId, { expirationTtl: ttl });
+		// REPLICA_TTL_SECONDS = "0" → no TTL (permanent until we delete it
+		// ourselves on respawn or auto-cut). Anything > 0 is honored as a
+		// cap. Matches the directive: KV mapping survives as long as the
+		// replica does; only explicit cleanup flushes it.
+		const ttlEnv = parseInt(env.REPLICA_TTL_SECONDS, 10);
+		const opts: KVNamespacePutOptions = ttlEnv > 0
+			? { expirationTtl: Math.max(60, ttlEnv) }
+			: {};
+		await env.MAP.put(key, replicaId, opts);
 	}
 }
 
@@ -180,16 +187,14 @@ async function createReplica(
 		coding_agent: env.REPLICAS_AGENT_OVERRIDE || "claude",
 		model: roomModel || env.REPLICAS_MODEL_OVERRIDE || "claude-sonnet-4-6",
 		thinking_level: env.REPLICAS_THINKING_OVERRIDE || "medium",
-		// Bumped from 60→1440 (24h) on 2026-05-29 after observing that
-		// `Replica gone (404)` was the dominant Failed-turn class: 5 of 7
-		// terminal failures in a 2h sample window. Replicas were getting
-		// auto-deleted between user messages — typical pattern was a
-		// user sending a follow-up an hour after the prior Done, finding
-		// the replica already gone. Subscription-plan cost is fixed so
-		// holding replicas longer doesn't change the bill, just reduces
-		// the respawn-on-next-message friction.
-		lifecycle_policy: "delete_after_inactivity",
-		auto_stop_minutes: 1440,
+		// Per directive: replicas should NEVER auto-delete on inactivity.
+		// A new replica is only created when the existing one is broken
+		// (the auto-cut path on unrecoverable claude-result errors, or
+		// the 404/410 auto-respawn when Replicas already gave up on it).
+		// Healthy idle replicas survive indefinitely so the user can
+		// resume any conversation without losing context.
+		lifecycle_policy: "manual",
+		auto_stop_minutes: 0,
 		metadata: { matrix_room_id: roomId, matrix_event_id: eventId },
 	};
 	const r = await fetch(`${env.REPLICAS_API_BASE}/replica`, {

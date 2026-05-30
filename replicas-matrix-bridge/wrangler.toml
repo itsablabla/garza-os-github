@@ -50,7 +50,11 @@ REPLICAS_ORG_ID = "778b1aa3-4327-45a4-9874-c8a3a72df610"
 REPLICAS_ENV_ID = "5f06f598-2712-456a-aab1-bb8cbe64ab01"
 REPLICAS_API_BASE = "https://api.replicas.dev/v1"
 MATRIX_HOMESERVER = "https://matrix-client.matrix.org"
-REPLICA_TTL_SECONDS = "604800"
+# "0" = no TTL on the room→replicaId mapping; the entry survives as
+# long as the replica does. Only explicit cleanup (auto-cut on
+# unrecoverable errors, or 404/410 auto-respawn) deletes it. Any
+# positive value is honored as a cap.
+REPLICA_TTL_SECONDS = "0"
 # Default Telegram-spawned replicas to Sonnet medium-thinking; same as
 # the Telegram bridge defaults.
 REPLICAS_AGENT_OVERRIDE = "claude"

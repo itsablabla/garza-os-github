@@ -1,9 +1,11 @@
 import { handleMatrixMessage } from "./dispatch";
 import type { Env } from "./index";
+import { fetchVoiceAudio, type EncryptedFile } from "./media-fetch";
 import { joinRoom, sendMessage, sync, type SyncResponse } from "./matrix";
 import { decryptMegolm, findSessionKey } from "./megolm";
 import { parseKeyExport, type MegolmSessionKey } from "./megolm-keys";
 import { escapeHtml } from "./render";
+import { formatVoiceDuration, transcribeAudio } from "./transcribe";
 
 // Aliases to make the chat command friendlier than typing the full id.
 function resolveModelAlias(input: string): string {
@@ -393,6 +395,10 @@ export class MatrixListener {
 
 				let msgtype: string | undefined;
 				let body: string | undefined;
+				// Phase 1 voice: capture the audio content block so the m.audio
+				// branch below can fetch + decrypt + transcribe. Same shape
+				// for plain and decrypted-megolm events.
+				let audioContent: Record<string, unknown> | undefined;
 
 				if (ev.type === "m.room.message") {
 					const content = ev.content ?? {};
@@ -408,15 +414,33 @@ export class MatrixListener {
 					if (rel?.rel_type === "m.replace") continue;
 					msgtype = content.msgtype as string | undefined;
 					body = content.body as string | undefined;
+					if (msgtype === "m.audio") audioContent = content;
 				} else if (ev.type === "m.room.encrypted") {
 					// E2EE event — try to decrypt using imported Megolm keys.
 					const decrypted = await this.tryDecrypt(roomId, ev, megolmKeys);
 					if (!decrypted) continue;
 					msgtype = decrypted.msgtype;
 					body = decrypted.body;
+					if (decrypted.msgtype === "m.audio") audioContent = decrypted.content;
 				} else {
 					continue;
 				}
+
+				// Voice-message branch — Phase 1 inbound. Detect MSC3245
+				// voice marker, download + decrypt the audio, transcribe
+				// via Whisper, swap body in place so the rest of the
+				// dispatch flow proceeds with the transcript as if the
+				// user had typed it.
+				if (msgtype === "m.audio" && audioContent && this.isVoiceMessage(audioContent)) {
+					const transcribed = await this.transcribeVoiceContent(roomId, audioContent);
+					if (!transcribed) {
+						console.log(`[listener] voice transcribe skipped/failed for room=${roomId} ev=${ev.event_id}`);
+						continue;
+					}
+					body = transcribed;
+					msgtype = "m.text";
+				}
+
 				if (msgtype !== "m.text" || !body) continue;
 
 				// Commands always run regardless of room size or mention.
@@ -482,7 +506,7 @@ export class MatrixListener {
 		roomId: string,
 		ev: { content?: Record<string, unknown>; event_id?: string; sender?: string; origin_server_ts?: number },
 		keys: MegolmSessionKey[],
-	): Promise<{ msgtype: string; body: string } | undefined> {
+	): Promise<{ msgtype: string; body: string; content: Record<string, unknown> } | undefined> {
 		const content = ev.content ?? {};
 		if (content.algorithm !== "m.megolm.v1.aes-sha2") return undefined;
 		const sessionId = content.session_id as string | undefined;
@@ -511,15 +535,18 @@ export class MatrixListener {
 			const { plaintext } = await decryptMegolm(sessionKey, ciphertext);
 			const inner = JSON.parse(plaintext) as {
 				type?: string;
-				content?: { msgtype?: string; body?: string; "m.relates_to"?: { rel_type?: string } };
+				content?: Record<string, unknown>;
 			};
 			if (inner.type !== "m.room.message") return undefined;
+			const innerContent = (inner.content ?? {}) as Record<string, unknown>;
 			// Skip m.replace edits in the encrypted path too — see the
 			// matching check in the unencrypted branch above.
-			if (inner.content?.["m.relates_to"]?.rel_type === "m.replace") return undefined;
+			const innerRel = innerContent["m.relates_to"] as { rel_type?: string } | undefined;
+			if (innerRel?.rel_type === "m.replace") return undefined;
 			return {
-				msgtype: inner.content?.msgtype ?? "",
-				body: inner.content?.body ?? "",
+				msgtype: (innerContent.msgtype as string | undefined) ?? "",
+				body: (innerContent.body as string | undefined) ?? "",
+				content: innerContent,
 			};
 		} catch (e) {
 			console.log(`[listener] decrypt fail ev=${ev.event_id}: ${e instanceof Error ? e.message : e}`);
@@ -770,6 +797,67 @@ export class MatrixListener {
 		await this.env.MAP.put(cacheKey, resolved, { expirationTtl: 60 * 60 * 24 * 365 });
 		const html = `<b>Model for this room set to</b> <code>${escapeHtml(resolved)}</code><br><i>Next turn will use it.</i>`;
 		await sendMessage(matrixEnv(this.env), roomId, html, { replyTo: eventId });
+	}
+
+	// Phase 1 voice — MSC3245 voice marker detection. A regular shared
+	// audio file (song / non-voice attachment) lacks `org.matrix.msc3245.voice`
+	// and is intentionally skipped here so the bot doesn't transcribe every
+	// random m.audio someone shares.
+	private isVoiceMessage(content: Record<string, unknown>): boolean {
+		return content["org.matrix.msc3245.voice"] !== undefined;
+	}
+
+	// Phase 1 voice — download + decrypt + transcribe a voice attachment,
+	// returning the dispatch-ready text (`🎤 (voice 4s) <transcript>`).
+	// Returns undefined to signal "skip dispatch for this event" — when
+	// audio fetch fails, Whisper key is missing, or transcript is empty.
+	private async transcribeVoiceContent(
+		roomId: string,
+		content: Record<string, unknown>,
+	): Promise<string | undefined> {
+		if (!this.env.OPENAI_API_KEY) {
+			console.log(`[listener] voice msg in room=${roomId} but OPENAI_API_KEY not set — skipping`);
+			return undefined;
+		}
+		const info = content.info as { duration?: number; mimetype?: string } | undefined;
+		const durationMs = info?.duration ?? 0;
+		const declaredMime = info?.mimetype ?? "audio/ogg";
+
+		const audio = await fetchVoiceAudio(matrixEnv(this.env), {
+			url: content.url as string | undefined,
+			file: content.file as EncryptedFile | undefined,
+		});
+		if (!audio) {
+			console.log(`[listener] voice fetch failed room=${roomId}`);
+			return undefined;
+		}
+
+		// Whisper supports OGG/Opus, MP3, WAV, M4A, WebM, FLAC. Beeper voice
+		// is OGG/Opus; pass the declared mimetype through (decrypted path
+		// uses the outer content.info.mimetype since the EncryptedFile
+		// block doesn't carry one).
+		const filename = `voice-${Date.now()}.ogg`;
+		const mimetype = audio.mimetype && audio.mimetype !== "application/octet-stream"
+			? audio.mimetype
+			: declaredMime;
+
+		const result = await transcribeAudio(
+			{ OPENAI_API_KEY: this.env.OPENAI_API_KEY },
+			audio.body,
+			filename,
+			mimetype,
+		);
+		if (!result.ok) {
+			console.log(`[listener] whisper failed room=${roomId}: ${result.error}`);
+			return undefined;
+		}
+
+		const durLabel = formatVoiceDuration(durationMs);
+		const transcript = result.text.trim();
+		console.log(
+			`[listener] voice transcribed room=${roomId} duration=${durLabel} text=${JSON.stringify(transcript.slice(0, 80))}`,
+		);
+		return `🎤 (voice ${durLabel}) ${transcript}`;
 	}
 
 	private async dispatchMessage(roomId: string, eventId: string, body: string): Promise<void> {

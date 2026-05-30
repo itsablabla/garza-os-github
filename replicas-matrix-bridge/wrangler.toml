@@ -17,6 +17,16 @@ rules = [
 binding = "MAP"
 id = "036b2f9231de4d21bf0cdf120b5b4869"
 
+# R2 bucket for archiving large tool outputs that exceed the rolling-log
+# preview cap. Each archive lands as `<sha256>/<basename>`; the public
+# r2.dev URL is composed in poller.ts's archiveLargeOutput helper and
+# surfaced in the Done frame footer as a `📎 View full output` link.
+# Bucket created via `wrangler r2 bucket create replicas-output-archive`
+# and made public via `wrangler r2 bucket dev-url enable`.
+[[r2_buckets]]
+binding = "OUTPUT_ARCHIVE"
+bucket_name = "replicas-output-archive"
+
 # Durable Objects: one global MatrixListener for /sync, one ReplicaPoller per replica.
 [[durable_objects.bindings]]
 name = "WATCHER"

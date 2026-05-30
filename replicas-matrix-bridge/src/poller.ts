@@ -2,6 +2,8 @@ import type { Env } from "./index";
 import { markdownToTelegramHtml as markdownToHtml } from "./markdown";
 import { editMessage, isRoomEncrypted, MatrixError, react, redact, sendMessage, sendVoiceMessage, typing, unpin, pin } from "./matrix";
 import { uploadEncryptedAttachment, uploadMxc } from "./media-upload";
+import { extractBgJobs } from "./bg-jobs";
+import { archiveBasename, archiveLargeOutput, ARCHIVE_THRESHOLD_BYTES } from "./output-archive";
 import { splitMarkdownReply } from "./split-reply";
 import { stripMarkdownForTts, stubWaveform, synthesizeSpeech } from "./tts";
 import {
@@ -301,7 +303,9 @@ export class ReplicaPoller {
 			"toolStartedAt",
 			"toolNameById",
 			"toolDiffById",
+			"toolInputById",
 			"filesTouched",
+			"backgroundJobs",
 			"lastEventAt",
 			"phaseBeforeRateLimit",
 			"activeToolStartedAt",
@@ -566,10 +570,23 @@ export class ReplicaPoller {
 		const toolDiffById =
 			(await this.state.storage.get<Record<string, string>>("toolDiffById")) ?? {};
 
+		// Per-tool input snapshot — kept so the result handler can pick a
+		// good basename when archiving large outputs to R2 (e.g. the
+		// `file_path` of a Read, the first word of a Bash command).
+		const toolInputById =
+			(await this.state.storage.get<Record<string, Record<string, unknown>>>("toolInputById")) ?? {};
+
 		// Deduped basenames of files the agent has touched, for #9 footer.
 		const filesTouched =
 			(await this.state.storage.get<string[]>("filesTouched")) ?? [];
 		const filesTouchedSet = new Set(filesTouched);
+
+		// Background-process indicator footer. Each entry is a short
+		// label like `bun build (pid 1234)`. Surfaced from Bash
+		// tool_result content via `extractBgJobs`.
+		const backgroundJobs =
+			(await this.state.storage.get<string[]>("backgroundJobs")) ?? [];
+		const backgroundJobsSet = new Set(backgroundJobs);
 
 		// #11 idle indicator — bumped to Date.now() whenever we project ANY
 		// new event from /history. The render layer reads this and shows
@@ -713,6 +730,16 @@ export class ReplicaPoller {
 							// #3 stash name so result handler knows whether
 							// to compute diff stats
 							toolNameById[block.id] = toolName;
+							// Snapshot a slim input (just the keys we need for
+							// archive basenames) so we can compose a meaningful
+							// filename when the matching result is large enough
+							// to spill to R2.
+							if (block.input) {
+								toolInputById[block.id] = {
+									file_path: block.input.file_path,
+									command: block.input.command,
+								};
+							}
 							// #3 pre-compute diff stats from input (cheap;
 							// the data we need is right here at emit time)
 							const diff = computeDiffStats(toolName, block.input);
@@ -927,19 +954,64 @@ export class ReplicaPoller {
 						}
 
 						const raw = block.content;
+						let fullContent = "";
 						let preview = "";
-						if (typeof raw === "string") preview = raw;
+						if (typeof raw === "string") fullContent = raw;
 						else if (Array.isArray(raw)) {
 							for (const sub of raw) {
-								if (sub && sub.type === "text" && typeof sub.text === "string") preview += sub.text;
+								if (sub && sub.type === "text" && typeof sub.text === "string") fullContent += sub.text;
 							}
 						}
-						preview = preview.replace(/\s+/g, " ").trim();
+						preview = fullContent.replace(/\s+/g, " ").trim();
 						if (preview.length > 0) {
 							const trimmed = preview.length > 100 ? preview.slice(0, 99) + "…" : preview;
 							const icon = isErr ? "✗" : "↳";
 							lines.push(`<i>${icon} ${escapeHtml(trimmed)}</i>`);
 							appended = true;
+						}
+						// Large-output archival to R2 + link line. Fires when
+						// the raw (untruncated) content exceeds the threshold
+						// so the user can click through to the full output
+						// instead of being limited to the 99-char preview.
+						const tuIdForArchive = block.tool_use_id;
+						if (
+							!isErr &&
+							fullContent.length >= ARCHIVE_THRESHOLD_BYTES &&
+							this.env.OUTPUT_ARCHIVE
+						) {
+							const name = tuIdForArchive
+								? toolNameById[tuIdForArchive] ?? "tool"
+								: "tool";
+							const input = tuIdForArchive ? toolInputById[tuIdForArchive] : undefined;
+							const basename = archiveBasename(name, input);
+							const url = await archiveLargeOutput(
+								{ OUTPUT_ARCHIVE: this.env.OUTPUT_ARCHIVE },
+								fullContent,
+								basename,
+							);
+							if (url) {
+								const kb = (fullContent.length / 1024).toFixed(1);
+								lines.push(
+									`<i>📎 <a href="${escapeHtml(url)}">View full output (${kb} KB)</a></i>`,
+								);
+								appended = true;
+							}
+						}
+
+						// Background-process detection — scan Bash tool_results for
+						// `[N] pid` markers or "started ... <pid>" patterns. Each
+						// matched job lands in the backgroundJobs footer so the user
+						// sees what's still running after the turn ends.
+						if (tuIdForArchive && toolNameById[tuIdForArchive] === "Bash") {
+							const cmd = (toolInputById[tuIdForArchive]?.command as string | undefined) ?? undefined;
+							const jobs = extractBgJobs(fullContent, cmd);
+							for (const label of jobs) {
+								if (!backgroundJobsSet.has(label)) {
+									backgroundJobsSet.add(label);
+									backgroundJobs.push(label);
+									appended = true;
+								}
+							}
 						}
 					}
 				}
@@ -1011,7 +1083,9 @@ export class ReplicaPoller {
 			toolStartedAt,
 			toolNameById,
 			toolDiffById,
+			toolInputById,
 			filesTouched,
+			backgroundJobs,
 			lastEventAt,
 			segmentStartLine,
 		};
@@ -1209,6 +1283,7 @@ export class ReplicaPoller {
 			"contextUsage",
 			"resultMeta",
 			"filesTouched",
+			"backgroundJobs",
 			"lastEventAt",
 			"sessionTotals",
 			"activeToolStartedAt",
@@ -1281,6 +1356,7 @@ export class ReplicaPoller {
 			contextUsage: (snap.get("contextUsage") as ContextUsage | undefined) ?? undefined,
 			resultMeta: (snap.get("resultMeta") as ResultMeta | undefined) ?? undefined,
 			filesTouched: (snap.get("filesTouched") as string[] | undefined) ?? undefined,
+			backgroundJobs: (snap.get("backgroundJobs") as string[] | undefined) ?? undefined,
 			lastEventAt: (snap.get("lastEventAt") as number | undefined) ?? undefined,
 			sessionTotals: (snap.get("sessionTotals") as import("./render").SessionTotals | undefined) ?? undefined,
 			activeToolStartedAt: (snap.get("activeToolStartedAt") as number | undefined) ?? undefined,

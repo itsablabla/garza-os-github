@@ -158,6 +158,12 @@ export interface StatusState {
 	// Deduped basenames of files the agent has touched via Read /
 	// Edit / Write / NotebookEdit. Rendered as a footer.
 	filesTouched?: string[];
+	// Background-process indicator. Set when a Bash tool_result mentions
+	// a backgrounded process (`[N] pid` shell output, `nohup ... &`,
+	// `run_in_background=true`). Each entry is a short label like
+	// `bun build (pid 1234)` so the subtitle can render
+	// `bg: 2 jobs · bun build (pid 1234), dev-server (pid 5678)`.
+	backgroundJobs?: string[];
 	// Per-room session totals (accumulated across steered turns). Only
 	// surfaced once turnCount > 1, so a single-turn conversation looks
 	// the same as before.
@@ -334,6 +340,18 @@ export function renderContextUsage(usage: ContextUsage | undefined): string {
 	const bar = "▰".repeat(filled) + "▱".repeat(segments - filled);
 	const icon = pct >= 85 ? "⚠️" : "📊";
 	return `${icon} ctx ${bar} ${pct}%`;
+}
+
+// "⚙️ bg: bun build (pid 1234), dev-server (pid 5678)" — render the
+// background-process indicator surfaced from Bash tool results that
+// mention backgrounded jobs. Returns "" when nothing to show.
+export function renderBackgroundJobs(jobs: string[] | undefined): string {
+	if (!jobs || jobs.length === 0) return "";
+	const VISIBLE = 3;
+	const head = jobs.slice(0, VISIBLE).map(escapeHtml).join(", ");
+	const more = jobs.length > VISIBLE ? ` <i>(+${jobs.length - VISIBLE} more)</i>` : "";
+	const label = jobs.length === 1 ? "bg job" : `bg jobs (${jobs.length})`;
+	return `⚙️ <b>${label}:</b> ${head}${more}`;
 }
 
 // "📂 Files: foo.ts, bar.ts, baz.ts (+3 more)" footer. Basename-only;
@@ -547,6 +565,9 @@ function renderActive(state: StatusState): string {
 	const filesFooter = renderFilesTouched(state.filesTouched);
 	if (filesFooter) blocks.push(filesFooter);
 
+	const bgFooter = renderBackgroundJobs(state.backgroundJobs);
+	if (bgFooter) blocks.push(bgFooter);
+
 	// Seal tail: when this is the FINAL render of a segment before the
 	// poller starts a new message, append a "▶️ continues" marker so the
 	// reader knows this isn't the live edit anymore. Followed by a fresh
@@ -675,6 +696,8 @@ function renderTerminal(state: StatusState): string {
 		// Files-touched footer in the Done frame — same as renderActive.
 		const filesFooter = renderFilesTouched(state.filesTouched);
 		if (filesFooter) blocks.push(filesFooter);
+		const bgFooter = renderBackgroundJobs(state.backgroundJobs);
+		if (bgFooter) blocks.push(bgFooter);
 	}
 
 	// Per Jaden's review: the agent's final reply is now its own message

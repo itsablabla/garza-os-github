@@ -151,10 +151,55 @@ function blockify(s: string): string {
 			out.push(`<ol>${items.map((x) => `<li>${x}</li>`).join("")}</ol>`);
 			continue;
 		}
+		// GFM table run: header row + separator row + N body rows. Pipes
+		// must be on the outside (`|a|b|` or `|a|b`). The separator row is
+		// `|---|---|` with optional `:` for alignment (ignored for now —
+		// Matrix HTML tables render fine without per-column alignment).
+		if (
+			/^\s*\|.+\|?\s*$/.test(line) &&
+			i + 1 < lines.length &&
+			/^\s*\|?\s*:?-{2,}/.test(lines[i + 1]!) &&
+			/^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1]!)
+		) {
+			const header = parseTableRow(line);
+			i += 2; // skip header + separator
+			const bodyRows: string[][] = [];
+			while (i < lines.length && /^\s*\|.+\|?\s*$/.test(lines[i]!)) {
+				bodyRows.push(parseTableRow(lines[i]!));
+				i++;
+			}
+			// Cell content is left raw — escapeOutsideBlocks runs after
+			// blockify and will escape these texts (they live between the
+			// tokenized table tags). Pre-escaping here would double-encode.
+			const thead = `<thead><tr>${header
+				.map((c) => `<th>${c}</th>`)
+				.join("")}</tr></thead>`;
+			const tbody = bodyRows.length
+				? `<tbody>${bodyRows
+						.map(
+							(row) =>
+								`<tr>${row
+									.map((c) => `<td>${c}</td>`)
+									.join("")}</tr>`,
+						)
+						.join("")}</tbody>`
+				: "";
+			out.push(`<table>${thead}${tbody}</table>`);
+			continue;
+		}
 		out.push(line);
 		i++;
 	}
 	return out.join("\n");
+}
+
+// Split a `| a | b | c |` markdown row into cells. Leading/trailing
+// pipes are optional; internal pipes split. Cells are trimmed.
+function parseTableRow(line: string): string[] {
+	let s = line.trim();
+	if (s.startsWith("|")) s = s.slice(1);
+	if (s.endsWith("|")) s = s.slice(0, -1);
+	return s.split("|").map((c) => c.trim());
 }
 
 // Escape text that lives OUTSIDE the block tags we already emitted, and
@@ -163,7 +208,7 @@ function blockify(s: string): string {
 function escapeOutsideBlocks(s: string): string {
 	// Tokenize on the block tags blockify produced so we can leave their
 	// contents alone while escaping the prose between them.
-	const blockTag = /<(\/?(?:h[1-6]|ul|ol|li))>/g;
+	const blockTag = /<(\/?(?:h[1-6]|ul|ol|li|table|thead|tbody|tr|th|td))>/g;
 	const parts: string[] = [];
 	let last = 0;
 	let inBlock = 0;

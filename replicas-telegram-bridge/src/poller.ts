@@ -64,9 +64,10 @@ interface HistoryResponse {
 const FIRST_POLL_DELAY_MS = 80;
 const ACTIVE_POLL_INTERVAL_MS = 180;
 const BACKOFF_POLL_INTERVAL_MS = 3000;
-// 60 min hard cap (ported from matrix bridge — heavy ops chats
-// legitimately need >30 min for multi-step work).
-const MAX_WATCH_DURATION_MS = 60 * 60 * 1000;
+// Idle timeout — "stuck" measured by no /history events for
+// IDLE_TIMEOUT_MS, not by wall-clock runtime. Heavy ops can run as
+// long as the agent keeps emitting events. Wall-clock cap removed.
+const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 // Telegram permits ~1 editMessageText per chat per second; we leave a small
 // margin so a burst of polls coalesces into at most one edit per ~900ms.
 const EDIT_MIN_INTERVAL_MS = 500;
@@ -259,25 +260,28 @@ export class ReplicaPoller {
 		if (!watch) return;
 
 		const startedAt = (snap.get("startedAt") as number | undefined) ?? Date.now();
-		if (Date.now() - startedAt > MAX_WATCH_DURATION_MS) {
-			// Cancel the upstream replica so it stops processing — the
-			// watcher giving up doesn't auto-stop the Replicas workspace.
+		const lastFreshAt =
+			(await this.state.storage.get<number>("lastFreshAt")) ?? startedAt;
+		const idleMs = Date.now() - lastFreshAt;
+		if (idleMs > IDLE_TIMEOUT_MS) {
+			// Idle timeout. Wall-clock cap removed; treats "no new
+			// /history events for IDLE_TIMEOUT_MS" as stuck. Cancel the
+			// upstream replica + flush KV so the next message spawns
+			// fresh.
 			try {
 				await fetch(`${this.env.REPLICAS_API_BASE}/replica/${watch.replicaId}`, {
 					method: "DELETE",
 					headers: replicasHeaders(this.env),
 				});
-				console.log(`[poller] timeout: deleted upstream replica ${watch.replicaId}`);
+				console.log(`[poller] idle-timeout: deleted upstream replica ${watch.replicaId}`);
 			} catch (e) {
-				console.log(`[poller] timeout: replica delete failed: ${e instanceof Error ? e.message : e}`);
+				console.log(`[poller] idle-timeout: replica delete failed: ${e instanceof Error ? e.message : e}`);
 			}
-			// Flush the chat→replica mapping so the next message spawns
-			// fresh instead of following up on the deleted replica.
 			try {
 				const chatKey = `chat:${watch.chatId}:thread:${watch.threadId ?? "main"}`;
 				await this.env.MAP.delete(chatKey);
 			} catch (e) {
-				console.log(`[poller] timeout: KV cleanup failed: ${e instanceof Error ? e.message : e}`);
+				console.log(`[poller] idle-timeout: KV cleanup failed: ${e instanceof Error ? e.message : e}`);
 			}
 			await this.state.storage.deleteAll();
 			return;
@@ -312,6 +316,12 @@ export class ReplicaPoller {
 		const body = (await r.json()) as HistoryResponse;
 		const events = body.events ?? [];
 		const fresh = events.slice(lastSeenCount);
+		// Stamp lastFreshAt whenever new events arrive so the idle
+		// timeout above measures actual silence, not wall-clock since
+		// the turn began.
+		if (fresh.length > 0) {
+			await this.state.storage.put("lastFreshAt", Date.now());
+		}
 
 		const lines = (snap.get("lines") as string[] | undefined) ?? [];
 		let phase = (snap.get("phase") as Phase | undefined) ?? "STARTING";

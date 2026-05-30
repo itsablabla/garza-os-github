@@ -1,6 +1,7 @@
 import type { Env } from "./index";
 import { markdownToTelegramHtml } from "./markdown";
 import { splitMarkdownReply } from "./split-reply";
+import { stripMarkdownForTts, synthesizeSpeech } from "./tts";
 import {
 	escapeHtml,
 	formatToolUseLine,
@@ -28,6 +29,10 @@ interface WatchSpec {
 	// before the POST roundtrip lands; the DO adopts this id as its
 	// statusMessageId so subsequent renders edit instead of sending fresh.
 	initialStatusMessageId?: number;
+	// Phase 2 voice — mirror mode. When the user's prompt was itself a
+	// voice message (handleVoiceMessage transcribed it), the bot's reply
+	// ships as voice too via OpenAI TTS + Telegram sendVoice.
+	replyAsVoice?: boolean;
 }
 
 interface HistoryEvent {
@@ -647,6 +652,15 @@ export class ReplicaPoller {
 
 	private async sendReply(watch: WatchSpec, text: string): Promise<boolean> {
 		try {
+			// Phase 2 mirror mode: when the user prompt was a voice msg,
+			// synthesize the reply with TTS and ship via sendVoice
+			// instead of text. Falls back to text on TTS failure so the
+			// user always gets the answer.
+			if (watch.replyAsVoice) {
+				const ok = await this.sendVoiceReply(watch, text);
+				if (ok) return true;
+				console.log(`[poller] voice reply failed — falling back to text`);
+			}
 			// OpenACP-style: split the reply markdown on natural
 			// boundaries (paragraphs, headings, code blocks, lists)
 			// instead of slicing mid-sentence at REPLY_MAX_LEN. Each
@@ -667,6 +681,47 @@ export class ReplicaPoller {
 			return true;
 		} catch (e) {
 			console.log(`[poller] sendReply failed: ${e instanceof Error ? e.message : e}`);
+			return false;
+		}
+	}
+
+	/**
+	 * Phase 2 outbound TTS for Telegram. Synthesize the reply via OpenAI
+	 * TTS, ship to Telegram as a voice message via sendVoice. Returns
+	 * true on success; false (caller falls back to text) otherwise.
+	 *
+	 * Telegram's sendVoice accepts OGG/Opus directly — same format
+	 * OpenAI TTS emits. No transcoding needed.
+	 */
+	private async sendVoiceReply(watch: WatchSpec, replyMarkdown: string): Promise<boolean> {
+		try {
+			const spoken = stripMarkdownForTts(replyMarkdown);
+			if (!spoken) return false;
+			const tts = await synthesizeSpeech({ OPENAI_API_KEY: this.env.OPENAI_API_KEY }, spoken);
+			if (!tts.ok || !tts.audio) {
+				console.log(`[poller] TTS failed: ${tts.error}`);
+				return false;
+			}
+			const form = new FormData();
+			form.append("chat_id", String(watch.chatId));
+			if (watch.threadId !== undefined) form.append("message_thread_id", String(watch.threadId));
+			if (watch.startMessageId !== undefined) {
+				form.append("reply_parameters", JSON.stringify({ message_id: watch.startMessageId }));
+			}
+			form.append("voice", new Blob([tts.audio], { type: "audio/ogg" }), "voice.ogg");
+			const r = await fetch(`${this.env.TG_API_BASE}/bot${this.env.TG_TOKEN}/sendVoice`, {
+				method: "POST",
+				body: form,
+			});
+			if (!r.ok) {
+				const errBody = await r.text();
+				console.log(`[poller] sendVoice failed: ${r.status} ${errBody.slice(0, 200)}`);
+				return false;
+			}
+			console.log(`[poller] voice reply shipped chat=${watch.chatId}`);
+			return true;
+		} catch (e) {
+			console.log(`[poller] sendVoiceReply threw: ${e instanceof Error ? e.message : e}`);
 			return false;
 		}
 	}

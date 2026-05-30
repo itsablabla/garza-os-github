@@ -1,7 +1,9 @@
 import type { Env } from "./index";
 import { markdownToTelegramHtml as markdownToHtml } from "./markdown";
-import { editMessage, MatrixError, react, redact, sendMessage, typing, unpin, pin } from "./matrix";
+import { editMessage, isRoomEncrypted, MatrixError, react, redact, sendMessage, sendVoiceMessage, typing, unpin, pin } from "./matrix";
+import { uploadEncryptedAttachment, uploadMxc } from "./media-upload";
 import { splitMarkdownReply } from "./split-reply";
+import { stripMarkdownForTts, stubWaveform, synthesizeSpeech } from "./tts";
 import {
 	escapeHtml,
 	formatToolElapsed,
@@ -45,6 +47,10 @@ interface WatchSpec {
 	// parallel with the Replicas spawn. The poller adopts it as its
 	// statusEventId so subsequent renders edit instead of sending fresh.
 	initialStatusEventId?: string;
+	// Phase 2 voice — mirror mode. When the user's prompt was itself a
+	// voice message (handled by listener.ts), the bridge replies with
+	// voice too. Set by listener.dispatchMessage when transcribing.
+	replyAsVoice?: boolean;
 }
 
 interface HistoryEvent {
@@ -1114,13 +1120,23 @@ export class ReplicaPoller {
 				resultHtmlChunks: replyHtmlChunks,
 			});
 
+			// Phase 2 mirror mode: when the user's prompt was a voice
+			// message, the bot's reply ships as voice too. Falls back to
+			// the normal text chunks if TTS fails so the user always
+			// gets the answer.
+			let voiceShipped = false;
+			if (watch.replyAsVoice && resultText) {
+				voiceShipped = await this.sendVoiceReply(watch, resultText);
+			}
+
 			// Send the agent's final reply as one or more sequential
 			// messages right after the Done frame. OpenACP-style: long
 			// answers are split on natural boundaries (paragraphs,
 			// headings, code blocks, lists) so the user reads them as a
 			// chat conversation instead of one wall of text. Short
-			// replies still ship as a single message.
-			if (replyHtmlChunks.length > 0) {
+			// replies still ship as a single message. Skipped when the
+			// voice mirror path succeeded.
+			if (!voiceShipped && replyHtmlChunks.length > 0) {
 				await this.sendReplyChunks(watch, replyHtmlChunks);
 			}
 
@@ -1293,6 +1309,67 @@ export class ReplicaPoller {
 		}
 		console.log(`[poller] reply chunk ${chunkIndex} send exhausted retries`);
 		return undefined;
+	}
+
+	/**
+	 * Phase 2 outbound TTS — synthesize the reply as voice, upload via
+	 * Matrix media (encrypted block when the room is E2EE), send as an
+	 * MSC3245 m.audio voice message reply-to'd against the user's
+	 * prompt. Returns true on success; false on any failure (caller
+	 * falls back to the text path so the user always gets the answer).
+	 */
+	private async sendVoiceReply(watch: WatchSpec, resultMarkdown: string): Promise<boolean> {
+		try {
+			const spoken = stripMarkdownForTts(resultMarkdown);
+			if (!spoken) return false;
+			const tts = await synthesizeSpeech({ OPENAI_API_KEY: this.env.OPENAI_API_KEY }, spoken);
+			if (!tts.ok || !tts.audio) {
+				console.log(`[poller] TTS failed: ${tts.error}`);
+				return false;
+			}
+			const env = matrixEnv(this.env);
+			const isE2EE = await isRoomEncrypted(env, watch.roomId).catch(() => false);
+			let url: string | undefined;
+			let file: Record<string, unknown> | undefined;
+			if (isE2EE) {
+				const enc = await uploadEncryptedAttachment(env, tts.audio);
+				if (!enc) {
+					console.log(`[poller] E2EE upload failed`);
+					return false;
+				}
+				file = enc as unknown as Record<string, unknown>;
+			} else {
+				const mxc = await uploadMxc(env, tts.audio, tts.mimetype, "Voice message.ogg");
+				if (!mxc) {
+					console.log(`[poller] mxc upload failed`);
+					return false;
+				}
+				url = mxc;
+			}
+			// Stub waveform (32 samples, MSC1767 amplitudes 0..1024). Real
+			// extraction would need a WASM Opus decoder; the audio plays
+			// regardless. Duration is estimated from the input length —
+			// OpenAI TTS-1 averages ~14.5 char/sec at the default speed.
+			const durationMs = Math.max(1000, Math.round((spoken.length / 14.5) * 1000));
+			const stableTxn = watch.startEventId ? `reply-voice-${watch.startEventId}` : undefined;
+			const eventId = await sendVoiceMessage(env, watch.roomId, {
+				url,
+				file,
+				mimetype: "audio/ogg",
+				size: tts.audio.byteLength,
+				durationMs,
+				waveform: stubWaveform(),
+				replyTo: watch.startEventId,
+				txnId: stableTxn,
+				filename: "Voice message.ogg",
+			});
+			await this.state.storage.put("replyEventIds", [eventId]);
+			console.log(`[poller] voice reply shipped event=${eventId.slice(0, 16)}… duration=${durationMs}ms e2ee=${isE2EE}`);
+			return true;
+		} catch (e) {
+			console.log(`[poller] sendVoiceReply threw: ${e instanceof Error ? e.message : e}`);
+			return false;
+		}
 	}
 
 	/**

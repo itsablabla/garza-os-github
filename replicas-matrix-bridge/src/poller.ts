@@ -90,11 +90,19 @@ interface HistoryResponse {
 const FIRST_POLL_DELAY_MS = 80;
 const ACTIVE_POLL_INTERVAL_MS = 180;
 const BACKOFF_POLL_INTERVAL_MS = 3000;
-// Idle timeout — "stuck" measured by NO events from /history for
-// IDLE_TIMEOUT_MS, not by wall-clock runtime. Heavy ops can run as
-// long as the agent keeps emitting events. Wall-clock cap removed
-// after Jaden flagged that wall-clock is the wrong signal.
-const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+// After this much silence we switch to a slower poll cadence — saves
+// CF Worker / KV / Replicas API cost while a turn is waiting on the
+// agent to think. The watcher stays alive, just polls less aggressively.
+const SLOW_POLL_THRESHOLD_MS = 10 * 60 * 1000;
+const SLOW_POLL_INTERVAL_MS = 30_000;
+// Hard idle timeout — final orphan detector. Original 30 min was too
+// aggressive: real claude-result text can be silent for >30 min during
+// long thinking phases (observed in a chat where the agent did 4 tools
+// then went into a 30-min planning silence and got cut off mid-thought).
+// 6 hours is the right tradeoff: long thinking + waiting-on-user
+// scenarios fit comfortably, but truly abandoned watchers still get
+// reaped instead of polling forever.
+const IDLE_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 // matrix.org's per-room send rate is roughly 30/min (one every 2s).
 // 1000ms edits were tripping M_LIMIT_EXCEEDED on long turns, fragmenting
 // the status frame. 2000ms / 4000ms ticker keeps us safely under the
@@ -1279,7 +1287,13 @@ export class ReplicaPoller {
 		if (appended || currentAction || tickerStale) {
 			await this.renderAndSend();
 		}
-		await this.state.storage.setAlarm(Date.now() + ACTIVE_POLL_INTERVAL_MS);
+		// Slow-poll once we cross SLOW_POLL_THRESHOLD_MS of silence —
+		// when the agent's just thinking and not emitting /history
+		// events, no point hammering CF/Replicas at 180ms.
+		const idleSoFar = Date.now() - lastEventAt;
+		const nextDelay =
+			idleSoFar > SLOW_POLL_THRESHOLD_MS ? SLOW_POLL_INTERVAL_MS : ACTIVE_POLL_INTERVAL_MS;
+		await this.state.storage.setAlarm(Date.now() + nextDelay);
 	}
 
 	private async snapshotEventCount(replicaId: string): Promise<number> {

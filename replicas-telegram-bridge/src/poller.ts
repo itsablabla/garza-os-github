@@ -64,10 +64,15 @@ interface HistoryResponse {
 const FIRST_POLL_DELAY_MS = 80;
 const ACTIVE_POLL_INTERVAL_MS = 180;
 const BACKOFF_POLL_INTERVAL_MS = 3000;
-// Idle timeout — "stuck" measured by no /history events for
-// IDLE_TIMEOUT_MS, not by wall-clock runtime. Heavy ops run as long
-// as the agent keeps emitting events. Wall-clock cap removed.
-const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+// After this much silence, slow-poll cadence kicks in to save cost
+// while the agent thinks.
+const SLOW_POLL_THRESHOLD_MS = 10 * 60 * 1000;
+const SLOW_POLL_INTERVAL_MS = 30_000;
+// Hard idle timeout — final orphan detector. Original 30 min cut off
+// real claude-result silence during long thinking phases. 6 hours is
+// generous enough for long thinking + waiting-on-user, still reaps
+// truly abandoned watchers.
+const IDLE_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 // Telegram permits ~1 editMessageText per chat per second; we leave a small
 // margin so a burst of polls coalesces into at most one edit per ~900ms.
 const EDIT_MIN_INTERVAL_MS = 500;
@@ -591,7 +596,14 @@ export class ReplicaPoller {
 		if (appended || currentAction || tickerStale) {
 			await this.renderAndSend();
 		}
-		await this.state.storage.setAlarm(Date.now() + ACTIVE_POLL_INTERVAL_MS);
+		// Slow-poll after SLOW_POLL_THRESHOLD_MS of silence — saves
+		// cost during agent thinking phases without giving up the watch.
+		const lastFreshSeen =
+			(await this.state.storage.get<number>("lastFreshAt")) ?? startedAt;
+		const idleSoFar = Date.now() - lastFreshSeen;
+		const nextDelay =
+			idleSoFar > SLOW_POLL_THRESHOLD_MS ? SLOW_POLL_INTERVAL_MS : ACTIVE_POLL_INTERVAL_MS;
+		await this.state.storage.setAlarm(Date.now() + nextDelay);
 	}
 
 	private async snapshotEventCount(replicaId: string): Promise<number> {

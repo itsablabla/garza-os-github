@@ -129,6 +129,46 @@ export default {
 			const stub = env.LISTENER.get(env.LISTENER.idFromName("global"));
 			return stub.fetch("https://listener/reload-keys", { method: "POST" });
 		}
+		if (req.method === "POST" && url.pathname === "/admin/kv-cleanup-conflicts") {
+			// Scan all `room:*` keys, group by replicaId, and for any
+			// replicaId mapped to multiple rooms, keep the room that
+			// matches the `replica:<id>` reverse mapping (if present) or
+			// the one that matches the replica's metadata.matrix_room_id
+			// (queried via the Replicas API), else the lexicographically
+			// first room. Delete the others. Idempotent — re-running on
+			// a clean KV is a no-op. Used when the cross-room contamination
+			// guard didn't exist or got bypassed.
+			const list = await env.MAP.list({ prefix: "room:" });
+			const byReplica: Record<string, string[]> = {};
+			for (const k of list.keys) {
+				const val = await env.MAP.get(k.name);
+				if (!val) continue;
+				(byReplica[val] = byReplica[val] ?? []).push(k.name);
+			}
+			const actions: { replicaId: string; kept: string; deleted: string[] }[] = [];
+			for (const [replicaId, rooms] of Object.entries(byReplica)) {
+				if (rooms.length <= 1) continue;
+				let kept = rooms[0]!;
+				const reverse = await env.MAP.get(`replica:${replicaId}`);
+				if (reverse) {
+					const reverseKey = `room:${reverse}`;
+					if (rooms.includes(reverseKey)) kept = reverseKey;
+				}
+				const deleted: string[] = [];
+				for (const room of rooms) {
+					if (room === kept) continue;
+					await env.MAP.delete(room);
+					deleted.push(room);
+				}
+				actions.push({ replicaId, kept, deleted });
+			}
+			return Response.json({
+				ok: true,
+				totalRooms: list.keys.length,
+				conflictsResolved: actions.length,
+				actions,
+			});
+		}
 		if (req.method === "POST" && url.pathname === "/admin/vault/reset") {
 			const stub = env.OLM_VAULT.get(env.OLM_VAULT.idFromName("global"));
 			return stub.fetch("https://vault/reset", { method: "POST" });

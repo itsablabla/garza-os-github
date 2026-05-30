@@ -1,5 +1,6 @@
 import type { Env } from "./index";
 import { markdownToTelegramHtml } from "./markdown";
+import { splitMarkdownReply } from "./split-reply";
 import {
 	escapeHtml,
 	formatToolUseLine,
@@ -646,13 +647,21 @@ export class ReplicaPoller {
 
 	private async sendReply(watch: WatchSpec, text: string): Promise<boolean> {
 		try {
-			let body = text;
+			// OpenACP-style: split the reply markdown on natural
+			// boundaries (paragraphs, headings, code blocks, lists)
+			// instead of slicing mid-sentence at REPLY_MAX_LEN. Each
+			// chunk lands as its own chat message so the user reads
+			// the answer as a conversation. The REPLY_MAX_LEN safety
+			// net stays — if a single chunk is still too long for
+			// Telegram (rare oversize code block), we hard-cut to the
+			// limit and fire it solo.
+			const chunks = splitMarkdownReply(text, { maxChars: REPLY_MAX_LEN - 200 });
 			let first = true;
-			while (body.length > 0) {
-				if (!first) await sleep(1100);
+			for (const chunk of chunks) {
+				if (!first) await sleep(800);
 				first = false;
-				const piece = body.slice(0, REPLY_MAX_LEN);
-				body = body.slice(REPLY_MAX_LEN);
+				let piece = chunk;
+				if (piece.length > REPLY_MAX_LEN) piece = piece.slice(0, REPLY_MAX_LEN);
 				await this.sendFormattedReplyChunk(watch, piece);
 			}
 			return true;

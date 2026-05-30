@@ -1,6 +1,7 @@
 import type { Env } from "./index";
 import { markdownToTelegramHtml as markdownToHtml } from "./markdown";
 import { editMessage, MatrixError, react, redact, sendMessage, typing, unpin, pin } from "./matrix";
+import { splitMarkdownReply } from "./split-reply";
 import {
 	escapeHtml,
 	formatToolElapsed,
@@ -300,6 +301,8 @@ export class ReplicaPoller {
 			"activeToolStartedAt",
 			"segmentStartLine",
 			"replyEventId",
+			"replyEventIds",
+			"lastResultHtmlChunks",
 			// Per-turn throttle bookkeeping — wipe so a fresh turn starts
 			// fast even if the prior turn ratcheted the backoff bonus up.
 			"backoffBonusMs",
@@ -1040,16 +1043,21 @@ export class ReplicaPoller {
 				return;
 			}
 
-			// Embed the final reply HTML directly in the Done frame instead
-			// of sending it as a separate message. Single message per turn
-			// means Beeper (and other bridges) can't drop "the second
-			// message" — there is no second message. Also kills the whole
-			// pendingFinalReply / retry / drain machinery: the body either
-			// shows up in the Done frame's edit or it doesn't, and the edit
-			// uses a stable txn id anyway so the homeserver dedupes retries.
-			const resultHtml = resultText
-				? markdownToHtml(resultText.slice(0, REPLY_MAX_LEN))
-				: undefined;
+			// OpenACP-style multi-message reply splitter (Jaden's note: long
+			// replies should land as several chat-style messages, not one
+			// wall of text). Split markdown on natural boundaries
+			// (paragraphs, headings, code blocks, lists) BEFORE rendering,
+			// then render each chunk to HTML. Short single-paragraph
+			// replies stay as a single message (splitter is a no-op when
+			// input <= per-chunk cap).
+			const replyMarkdownChunks = resultText
+				? splitMarkdownReply(resultText.slice(0, REPLY_MAX_LEN))
+				: [];
+			const replyHtmlChunks = replyMarkdownChunks.map(markdownToHtml);
+			// First chunk doubles as the recovery snapshot the
+			// pre-cleanup verifier uses (lastResultHtml on watcher state).
+			// The remaining chunks are walked by sendReplyChunks below.
+			const resultHtml = replyHtmlChunks[0];
 
 			// #14 — accumulate session totals in KV. Each Done bumps
 			// `session:${roomId}` with this turn's cost/steps; surfaces
@@ -1103,17 +1111,17 @@ export class ReplicaPoller {
 				kind: "done",
 				durationSec: seconds,
 				resultHtml,
+				resultHtmlChunks: replyHtmlChunks,
 			});
 
-			// Send the agent's final reply as its OWN message right after the
-			// Done frame. Per UX review: status summary (Done frame with tools
-			// + totals) and the actual answer should be separate message
-			// blocks so it's easy to scroll back to the answer without the
-			// status clutter. Reply-to'd against the user's prompt so Beeper
-			// threads it visually with the original message. Retried on 429
-			// the same way terminal frames are.
-			if (resultHtml) {
-				await this.sendReplyAsOwnBlock(watch, resultHtml);
+			// Send the agent's final reply as one or more sequential
+			// messages right after the Done frame. OpenACP-style: long
+			// answers are split on natural boundaries (paragraphs,
+			// headings, code blocks, lists) so the user reads them as a
+			// chat conversation instead of one wall of text. Short
+			// replies still ship as a single message.
+			if (replyHtmlChunks.length > 0) {
+				await this.sendReplyChunks(watch, replyHtmlChunks);
 			}
 
 			await this.state.storage.put("pendingCleanup", true);
@@ -1246,25 +1254,24 @@ export class ReplicaPoller {
 	}
 
 	/**
-	 * Send the agent's final reply as its own Matrix message, separate
-	 * from the Done frame. Retried on 429 the same way terminal frames
-	 * are. Reply-to'd against the user's prompt so Beeper threads it.
-	 *
-	 * Saved as `replyEventId` in storage so the same id is reused if a
-	 * retry happens after a transient failure (no duplicate replies).
+	 * Send one chunk of the agent's reply as its own Matrix message.
+	 * Stable txn-id ensures retries dedupe at the homeserver. Returns
+	 * the event_id on success, undefined on hard failure / exhausted
+	 * retries. Each chunk is reply-to'd against the user's prompt so
+	 * Beeper threads them all visually with the original message.
 	 */
-	private async sendReplyAsOwnBlock(watch: WatchSpec, html: string): Promise<void> {
-		const existing = await this.state.storage.get<string>("replyEventId");
-		if (existing) return; // already sent successfully on a prior pass
+	private async sendOneReplyChunk(
+		watch: WatchSpec,
+		html: string,
+		chunkIndex: number,
+	): Promise<string | undefined> {
 		const trimmed = html.slice(0, REPLY_MAX_LEN);
-
-		// Stable txn id derived from the user's prompt id. Matrix dedupes
-		// per (access_token, txn_id) — if we crash between the homeserver
-		// accepting the send and us persisting `replyEventId`, the next
-		// retry hits the same txn and the server returns the SAME event_id
-		// instead of creating a duplicate. End-to-end idempotency for the
-		// "reply is its own block" send path.
-		const stableTxn = watch.startEventId ? `reply-${watch.startEventId}` : undefined;
+		// Stable txn id derived from prompt id + chunk index. Matrix dedupes
+		// per (access_token, txn_id) so a retry after a transient failure
+		// returns the SAME event_id instead of creating a duplicate.
+		const stableTxn = watch.startEventId
+			? `reply-${watch.startEventId}-${chunkIndex}`
+			: undefined;
 
 		for (let attempt = 0; attempt < 4; attempt++) {
 			try {
@@ -1272,20 +1279,56 @@ export class ReplicaPoller {
 					replyTo: watch.startEventId,
 					txnId: stableTxn,
 				});
-				await this.state.storage.put("replyEventId", id);
-				return;
+				return id;
 			} catch (e) {
 				if (e instanceof MatrixError && e.status === 429) {
 					const waitMs = Math.min(8_000, Math.max(500, e.retryAfterMs ?? 1_500));
-					console.log(`[poller] reply 429 attempt ${attempt + 1}, retry in ${waitMs}ms`);
+					console.log(`[poller] reply chunk ${chunkIndex} 429 attempt ${attempt + 1}, retry in ${waitMs}ms`);
 					await sleep(waitMs);
 					continue;
 				}
-				console.log(`[poller] reply send failed: ${e instanceof Error ? e.message : e}`);
-				return;
+				console.log(`[poller] reply chunk ${chunkIndex} send failed: ${e instanceof Error ? e.message : e}`);
+				return undefined;
 			}
 		}
-		console.log(`[poller] reply send exhausted retries`);
+		console.log(`[poller] reply chunk ${chunkIndex} send exhausted retries`);
+		return undefined;
+	}
+
+	/**
+	 * Send the agent's final reply as one or more sequential chat-style
+	 * messages (OpenACP pattern). Iterates through the pre-split HTML
+	 * chunks, persisting each landed event_id so a partial-failure retry
+	 * resumes where the prior pass stopped instead of duplicating earlier
+	 * chunks.
+	 *
+	 * Stored as `replyEventIds: string[]` on watcher state. A small delay
+	 * between chunks gives clients a visible cadence (the messages don't
+	 * all hit the timeline in the same millisecond) and keeps us under
+	 * matrix.org's per-room rate limit on long turns.
+	 */
+	private async sendReplyChunks(watch: WatchSpec, htmlChunks: string[]): Promise<void> {
+		if (htmlChunks.length === 0) return;
+		const existing = (await this.state.storage.get<string[]>("replyEventIds")) ?? [];
+		const sent: string[] = [...existing];
+		for (let i = sent.length; i < htmlChunks.length; i++) {
+			const id = await this.sendOneReplyChunk(watch, htmlChunks[i]!, i);
+			if (!id) {
+				// Hard failure — persist what we have and bail. The
+				// next setAlarm tick / verify pass can re-attempt.
+				if (sent.length > 0) {
+					await this.state.storage.put("replyEventIds", sent);
+				}
+				return;
+			}
+			sent.push(id);
+			// Small inter-message cadence — long replies pace at ~1
+			// message/sec so the client renders them as a sequence
+			// instead of a simultaneous burst. Skipped on the last
+			// chunk and on single-chunk replies.
+			if (i < htmlChunks.length - 1) await sleep(800);
+		}
+		await this.state.storage.put("replyEventIds", sent);
 	}
 
 	/**
@@ -1350,9 +1393,9 @@ export class ReplicaPoller {
 
 	private async verifyTurnDelivered(watch: WatchSpec): Promise<boolean> {
 		const statusEventId = await this.state.storage.get<string>("statusEventId");
-		const replyEventId = await this.state.storage.get<string>("replyEventId");
+		const replyEventIds = (await this.state.storage.get<string[]>("replyEventIds")) ?? [];
 		// Both undefined is the post-seal terminal case; nothing to verify.
-		if (!statusEventId && !replyEventId) return true;
+		if (!statusEventId && replyEventIds.length === 0) return true;
 		const present = async (eventId: string): Promise<boolean> => {
 			// Use /rooms/{id}/event/{eventId} for an exact-id existence
 			// check — works for messages that have been edited (the
@@ -1370,18 +1413,26 @@ export class ReplicaPoller {
 				console.log(`[poller] verify: statusEventId ${statusEventId.slice(0, 16)}… missing from room=${watch.roomId}`);
 				allOk = false;
 			}
-			if (replyEventId && !(await present(replyEventId))) {
-				console.log(`[poller] verify: replyEventId ${replyEventId.slice(0, 16)}… missing from room=${watch.roomId} — re-sending`);
+			let missingChunkIndex = -1;
+			for (let i = 0; i < replyEventIds.length; i++) {
+				if (!(await present(replyEventIds[i]!))) {
+					console.log(`[poller] verify: reply chunk ${i} ${replyEventIds[i]!.slice(0, 16)}… missing from room=${watch.roomId} — will re-send from chunk ${i}`);
+					missingChunkIndex = i;
+					break;
+				}
+			}
+			if (missingChunkIndex >= 0) {
 				allOk = false;
-				// Audit finding #4: don't just log — actually recover.
-				// sendReplyAsOwnBlock uses txnId=reply-${startEventId} so
-				// Matrix dedupes if the send did actually land but the
-				// /event/{id} lookup raced. The reply HTML is stashed in
-				// "lastResultHtml" during setTerminal for this exact case.
-				const html = await this.state.storage.get<string>("lastResultHtml");
-				if (html) {
-					await this.state.storage.delete("replyEventId");
-					await this.sendReplyAsOwnBlock(watch, html);
+				// Drop the missing tail from the persisted array so the
+				// re-send picks up from where verification failed. Stable
+				// txn ids (`reply-${startEventId}-${i}`) make this safe
+				// even if a sibling send did actually land but the
+				// /event/{id} lookup raced.
+				const survivors = replyEventIds.slice(0, missingChunkIndex);
+				await this.state.storage.put("replyEventIds", survivors);
+				const html = await this.state.storage.get<string[]>("lastResultHtmlChunks");
+				if (html && html.length > 0) {
+					await this.sendReplyChunks(watch, html);
 				}
 			}
 			return allOk;
@@ -1559,6 +1610,7 @@ export class ReplicaPoller {
 			durationSec: number;
 			errorMsg?: string;
 			resultHtml?: string;
+			resultHtmlChunks?: string[];
 		},
 	): Promise<void> {
 		const s = await this.loadState();
@@ -1581,6 +1633,9 @@ export class ReplicaPoller {
 		// this, the reply HTML lives only in the transient terminal
 		// object on this call's stack frame.
 		if (terminal.resultHtml) atomicWrites.lastResultHtml = terminal.resultHtml;
+		if (terminal.resultHtmlChunks && terminal.resultHtmlChunks.length > 0) {
+			atomicWrites.lastResultHtmlChunks = terminal.resultHtmlChunks;
+		}
 		await this.state.storage.put(atomicWrites);
 		await this.state.storage.setAlarm(Date.now() + 30_000);
 		// Audit finding #7: wrap each remaining step in its own try/catch

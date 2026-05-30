@@ -90,7 +90,12 @@ interface HistoryResponse {
 const FIRST_POLL_DELAY_MS = 80;
 const ACTIVE_POLL_INTERVAL_MS = 180;
 const BACKOFF_POLL_INTERVAL_MS = 3000;
-const MAX_WATCH_DURATION_MS = 30 * 60 * 1000;
+// 60 min hard cap. Was 30 min, bumped after Lark Admin power-user
+// ops chats legitimately needed >30 min for multi-step infra work
+// (observed: 30-min timeout on a turn that was actively making
+// progress through MCP config cleanups). At 60 min, runaway-loop
+// protection still kicks in but realistic heavy work fits.
+const MAX_WATCH_DURATION_MS = 60 * 60 * 1000;
 // matrix.org's per-room send rate is roughly 30/min (one every 2s).
 // 1000ms edits were tripping M_LIMIT_EXCEEDED on long turns, fragmenting
 // the status frame. 2000ms / 4000ms ticker keeps us safely under the
@@ -416,11 +421,35 @@ export class ReplicaPoller {
 			// status pane frozen at whatever mid-progress frame was last
 			// rendered. Now we land a terminal "timed out" frame first so
 			// the pane resolves cleanly and the room doesn't look stuck.
+			//
+			// Also: cancel the upstream replica so it stops processing.
+			// Without this, the watcher gave up at the cap but the
+			// Replicas workspace kept running and burning credits silently
+			// (observed in Lark Admin room: 30-min watch timeout left an
+			// active replica running for hours afterward).
 			const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+			try {
+				await fetch(`${this.env.REPLICAS_API_BASE}/replica/${watch.replicaId}`, {
+					method: "DELETE",
+					headers: replicasHeaders(this.env),
+				});
+				console.log(`[poller] timeout: deleted upstream replica ${watch.replicaId}`);
+			} catch (e) {
+				console.log(`[poller] timeout: replica delete failed: ${e instanceof Error ? e.message : e}`);
+			}
+			// Also flush the room→replica mapping so the next message
+			// in this room spawns a fresh workspace instead of trying to
+			// follow up on the deleted one.
+			try {
+				await this.env.MAP.delete(`room:${watch.roomId}`);
+				await this.env.MAP.delete(`replica:${watch.replicaId}`);
+			} catch (e) {
+				console.log(`[poller] timeout: KV cleanup failed: ${e instanceof Error ? e.message : e}`);
+			}
 			await this.setTerminal(watch, {
 				kind: "failed",
 				durationSec: seconds,
-				errorMsg: `Watch timed out — agent ran longer than ${Math.round(MAX_WATCH_DURATION_MS / 60_000)} min.`,
+				errorMsg: `Watch timed out — agent ran longer than ${Math.round(MAX_WATCH_DURATION_MS / 60_000)} min. Send a new message to start a fresh session.`,
 			});
 			await this.state.storage.deleteAll();
 			return;

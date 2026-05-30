@@ -64,7 +64,9 @@ interface HistoryResponse {
 const FIRST_POLL_DELAY_MS = 80;
 const ACTIVE_POLL_INTERVAL_MS = 180;
 const BACKOFF_POLL_INTERVAL_MS = 3000;
-const MAX_WATCH_DURATION_MS = 30 * 60 * 1000;
+// 60 min hard cap (ported from matrix bridge — heavy ops chats
+// legitimately need >30 min for multi-step work).
+const MAX_WATCH_DURATION_MS = 60 * 60 * 1000;
 // Telegram permits ~1 editMessageText per chat per second; we leave a small
 // margin so a burst of polls coalesces into at most one edit per ~900ms.
 const EDIT_MIN_INTERVAL_MS = 500;
@@ -258,6 +260,25 @@ export class ReplicaPoller {
 
 		const startedAt = (snap.get("startedAt") as number | undefined) ?? Date.now();
 		if (Date.now() - startedAt > MAX_WATCH_DURATION_MS) {
+			// Cancel the upstream replica so it stops processing — the
+			// watcher giving up doesn't auto-stop the Replicas workspace.
+			try {
+				await fetch(`${this.env.REPLICAS_API_BASE}/replica/${watch.replicaId}`, {
+					method: "DELETE",
+					headers: replicasHeaders(this.env),
+				});
+				console.log(`[poller] timeout: deleted upstream replica ${watch.replicaId}`);
+			} catch (e) {
+				console.log(`[poller] timeout: replica delete failed: ${e instanceof Error ? e.message : e}`);
+			}
+			// Flush the chat→replica mapping so the next message spawns
+			// fresh instead of following up on the deleted replica.
+			try {
+				const chatKey = `chat:${watch.chatId}:thread:${watch.threadId ?? "main"}`;
+				await this.env.MAP.delete(chatKey);
+			} catch (e) {
+				console.log(`[poller] timeout: KV cleanup failed: ${e instanceof Error ? e.message : e}`);
+			}
 			await this.state.storage.deleteAll();
 			return;
 		}

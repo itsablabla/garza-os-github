@@ -95,14 +95,14 @@ const BACKOFF_POLL_INTERVAL_MS = 3000;
 // agent to think. The watcher stays alive, just polls less aggressively.
 const SLOW_POLL_THRESHOLD_MS = 10 * 60 * 1000;
 const SLOW_POLL_INTERVAL_MS = 30_000;
-// Hard idle timeout — final orphan detector. Original 30 min was too
-// aggressive: real claude-result text can be silent for >30 min during
-// long thinking phases (observed in a chat where the agent did 4 tools
-// then went into a 30-min planning silence and got cut off mid-thought).
-// 6 hours is the right tradeoff: long thinking + waiting-on-user
-// scenarios fit comfortably, but truly abandoned watchers still get
-// reaped instead of polling forever.
-const IDLE_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+// No idle / wall-clock timeout. Per Jaden: any cap is the wrong
+// signal — agents legitimately go silent during long thinking and the
+// bridge shouldn't terminate them. Cleanup paths still fire via:
+//   - claude-result 404/410 (replica gone upstream) — auto-respawn
+//   - claude-result is_error / unrecoverable — auto-cut
+//   - explicit `!cancel` command
+//   - terminal Done frames on real completion
+// Slow-poll backoff stays so cost during long idle stays bounded.
 // matrix.org's per-room send rate is roughly 30/min (one every 2s).
 // 1000ms edits were tripping M_LIMIT_EXCEEDED on long turns, fragmenting
 // the status frame. 2000ms / 4000ms ticker keeps us safely under the
@@ -423,39 +423,10 @@ export class ReplicaPoller {
 		if (!watch) return;
 
 		const startedAt = (snap.get("startedAt") as number | undefined) ?? Date.now();
-		const lastEventAtForTimeout =
-			(await this.state.storage.get<number>("lastEventAt")) ?? startedAt;
-		const idleMs = Date.now() - lastEventAtForTimeout;
-		if (idleMs > IDLE_TIMEOUT_MS) {
-			// Idle timeout — no /history events for IDLE_TIMEOUT_MS means
-			// the agent is actually stuck (not just thinking). Wall-clock
-			// cap removed entirely; heavy ops can run as long as they keep
-			// emitting events. Cleanup: DELETE upstream replica, flush
-			// room: + replica: KV, land a Failed terminal frame.
-			const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
-			try {
-				await fetch(`${this.env.REPLICAS_API_BASE}/replica/${watch.replicaId}`, {
-					method: "DELETE",
-					headers: replicasHeaders(this.env),
-				});
-				console.log(`[poller] idle-timeout: deleted upstream replica ${watch.replicaId}`);
-			} catch (e) {
-				console.log(`[poller] idle-timeout: replica delete failed: ${e instanceof Error ? e.message : e}`);
-			}
-			try {
-				await this.env.MAP.delete(`room:${watch.roomId}`);
-				await this.env.MAP.delete(`replica:${watch.replicaId}`);
-			} catch (e) {
-				console.log(`[poller] idle-timeout: KV cleanup failed: ${e instanceof Error ? e.message : e}`);
-			}
-			await this.setTerminal(watch, {
-				kind: "failed",
-				durationSec: seconds,
-				errorMsg: `Agent went silent for ${Math.round(idleMs / 60_000)} min — treating as stuck. Send a new message to start a fresh session.`,
-			});
-			await this.state.storage.deleteAll();
-			return;
-		}
+		// Idle timeout intentionally removed. The watcher keeps watching
+		// indefinitely; cleanup fires only on real terminal signals
+		// (claude-result, 404/410 from Replicas, explicit !cancel).
+		// Slow-poll backoff further down handles cost during long idle.
 
 		const pendingCleanup = snap.get("pendingCleanup") as boolean | undefined;
 		// Orphan detection: if phase is already terminal (DONE/FAILED)

@@ -68,11 +68,9 @@ const BACKOFF_POLL_INTERVAL_MS = 3000;
 // while the agent thinks.
 const SLOW_POLL_THRESHOLD_MS = 10 * 60 * 1000;
 const SLOW_POLL_INTERVAL_MS = 30_000;
-// Hard idle timeout — final orphan detector. Original 30 min cut off
-// real claude-result silence during long thinking phases. 6 hours is
-// generous enough for long thinking + waiting-on-user, still reaps
-// truly abandoned watchers.
-const IDLE_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+// No idle / wall-clock timeout. Cleanup fires only on real terminal
+// signals from Replicas (claude-result, 404/410) or explicit user
+// cancel. Slow-poll handles cost during long idle.
 // Telegram permits ~1 editMessageText per chat per second; we leave a small
 // margin so a burst of polls coalesces into at most one edit per ~900ms.
 const EDIT_MIN_INTERVAL_MS = 500;
@@ -265,31 +263,9 @@ export class ReplicaPoller {
 		if (!watch) return;
 
 		const startedAt = (snap.get("startedAt") as number | undefined) ?? Date.now();
-		const lastFreshAt =
-			(await this.state.storage.get<number>("lastFreshAt")) ?? startedAt;
-		const idleMs = Date.now() - lastFreshAt;
-		if (idleMs > IDLE_TIMEOUT_MS) {
-			// Idle timeout. Wall-clock cap removed; treats "no new
-			// /history events for IDLE_TIMEOUT_MS" as stuck. Cancel
-			// upstream replica + flush KV.
-			try {
-				await fetch(`${this.env.REPLICAS_API_BASE}/replica/${watch.replicaId}`, {
-					method: "DELETE",
-					headers: replicasHeaders(this.env),
-				});
-				console.log(`[poller] idle-timeout: deleted upstream replica ${watch.replicaId}`);
-			} catch (e) {
-				console.log(`[poller] idle-timeout: replica delete failed: ${e instanceof Error ? e.message : e}`);
-			}
-			try {
-				const chatKey = `chat:${watch.chatId}:thread:${watch.threadId ?? "main"}`;
-				await this.env.MAP.delete(chatKey);
-			} catch (e) {
-				console.log(`[poller] idle-timeout: KV cleanup failed: ${e instanceof Error ? e.message : e}`);
-			}
-			await this.state.storage.deleteAll();
-			return;
-		}
+		// Idle timeout intentionally removed. Watcher keeps watching;
+		// cleanup only on terminal signals (claude-result, 404/410)
+		// or explicit user cancel.
 
 		const pendingCleanup = snap.get("pendingCleanup") as boolean | undefined;
 		if (pendingCleanup) {

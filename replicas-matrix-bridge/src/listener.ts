@@ -265,6 +265,16 @@ export class MatrixListener {
 
 				if (ev.type === "m.room.message") {
 					const content = ev.content ?? {};
+					// Skip m.replace edits. When a user edits a prior message
+					// the homeserver emits a fresh m.room.message whose body
+					// is the fallback `* <new content>` string and whose
+					// m.relates_to.rel_type === "m.replace". Treating this
+					// like a new prompt would spawn a turn whose body starts
+					// with `* ` and waste credits. The user's intent was to
+					// amend, not re-ask. Future enhancement: cancel the
+					// in-flight turn + relaunch with the edited content.
+					const rel = (content as { "m.relates_to"?: { rel_type?: string } })["m.relates_to"];
+					if (rel?.rel_type === "m.replace") continue;
 					msgtype = content.msgtype as string | undefined;
 					body = content.body as string | undefined;
 				} else if (ev.type === "m.room.encrypted") {
@@ -370,9 +380,12 @@ export class MatrixListener {
 			const { plaintext } = await decryptMegolm(sessionKey, ciphertext);
 			const inner = JSON.parse(plaintext) as {
 				type?: string;
-				content?: { msgtype?: string; body?: string };
+				content?: { msgtype?: string; body?: string; "m.relates_to"?: { rel_type?: string } };
 			};
 			if (inner.type !== "m.room.message") return undefined;
+			// Skip m.replace edits in the encrypted path too — see the
+			// matching check in the unencrypted branch above.
+			if (inner.content?.["m.relates_to"]?.rel_type === "m.replace") return undefined;
 			return {
 				msgtype: inner.content?.msgtype ?? "",
 				body: inner.content?.body ?? "",
@@ -570,13 +583,25 @@ export class MatrixListener {
 			const r = await fetch(url, {
 				headers: { Authorization: `Bearer ${this.env.MATRIX_ACCESS_TOKEN}` },
 			});
-			if (!r.ok) return 2; // fail-open to "treat as DM" so we don't go silent
+			if (!r.ok) {
+				// Fail CLOSED on cold-cache lookup failure. Prior fail-open
+				// (return 2) treated unknown rooms as DMs, so a transient 401
+				// or rate-limit during the first message in a 50-person
+				// channel caused the bot to dispatch on every message until
+				// the next successful lookup — empirically observed as
+				// "bot exploded into a group chat" complaints. Returning a
+				// large sentinel keeps it quiet until mention rules pass or
+				// the count is genuinely known.
+				console.log(`[listener] joined_members ${r.status} for ${roomId} — fail-closed`);
+				return 100;
+			}
 			const j = (await r.json()) as { joined?: Record<string, unknown> };
 			const n = Object.keys(j.joined ?? {}).length;
 			await this.env.MAP.put(cacheKey, String(n), { expirationTtl: 3600 });
 			return n;
-		} catch {
-			return 2;
+		} catch (e) {
+			console.log(`[listener] joined_members threw for ${roomId}: ${e instanceof Error ? e.message : e} — fail-closed`);
+			return 100;
 		}
 	}
 

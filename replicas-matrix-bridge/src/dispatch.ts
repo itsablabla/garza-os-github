@@ -126,6 +126,42 @@ export async function handleMatrixMessage(
 			replicaId = await createReplica(env, roomId, eventId, text);
 			spawnedFresh = true;
 		}
+	} else if (env.DEFAULT_REPLICA_ID) {
+		// Single-workspace mode: forward to the configured default replica
+		// instead of POST /v1/replica. Pin the mapping on success so this
+		// path only fires once per room. On any send failure (gone, 5xx,
+		// network blip) fall through to fresh-spawn — same safety stance
+		// as the existing-replica error path above.
+		const defaultId = env.DEFAULT_REPLICA_ID;
+		console.log(`[dispatch] using DEFAULT_REPLICA_ID=${defaultId} for fresh room=${roomId}`);
+		const followUpP = sendFollowUp(defaultId, text, env, roomId, eventId);
+		const watcherP = startWatcher(env, defaultId, roomId, eventId, text, undefined, undefined);
+		const followUp = await followUpP;
+		await watcherP;
+		if (followUp.ok) {
+			replicaId = defaultId;
+			// Pin the mapping so subsequent messages route via the normal
+			// `existing` branch without re-checking DEFAULT_REPLICA_ID.
+			// Honour REPLICA_TTL_SECONDS the same way the fresh-spawn
+			// path does below.
+			const ttlEnv = parseInt(env.REPLICA_TTL_SECONDS, 10);
+			const opts: KVNamespacePutOptions = ttlEnv > 0
+				? { expirationTtl: Math.max(60, ttlEnv) }
+				: {};
+			await env.MAP.put(key, defaultId, opts);
+			// spawnedFresh stays false — we already started the watcher
+			// above so we want the follow-up path below, not the
+			// fresh-spawn startWatcher call.
+		} else {
+			console.log(
+				`[dispatch] DEFAULT_REPLICA_ID=${defaultId} sendFollowUp failed gone=${followUp.gone} — falling back to fresh spawn`,
+			);
+			env.WATCHER.get(env.WATCHER.idFromName(defaultId))
+				.fetch("https://watcher/cancel", { method: "POST" })
+				.catch(() => {});
+			replicaId = await createReplica(env, roomId, eventId, text);
+			spawnedFresh = true;
+		}
 	} else {
 		replicaId = await createReplica(env, roomId, eventId, text);
 		spawnedFresh = true;

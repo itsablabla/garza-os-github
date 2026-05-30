@@ -420,6 +420,13 @@ export class MatrixListener {
 				// branch below can fetch + decrypt + transcribe. Same shape
 				// for plain and decrypted-megolm events.
 				let audioContent: Record<string, unknown> | undefined;
+				// Content that drives the mention gate / wake-word check.
+				// For plain m.room.message: ev.content (has body + m.mentions).
+				// For E2EE: the DECRYPTED inner content (outer wrapper has
+				// only the megolm ciphertext). For voice: synthetic with the
+				// transcript as body. Centralizing here so the dispatch gate
+				// downstream doesn't have to branch on encryption / voice.
+				let mentionContent: Record<string, unknown> = ev.content ?? {};
 
 				if (ev.type === "m.room.message") {
 					const content = ev.content ?? {};
@@ -436,6 +443,7 @@ export class MatrixListener {
 					msgtype = content.msgtype as string | undefined;
 					body = content.body as string | undefined;
 					if (msgtype === "m.audio") audioContent = content;
+					mentionContent = content;
 				} else if (ev.type === "m.room.encrypted") {
 					// E2EE event — try to decrypt using imported Megolm keys.
 					const decrypted = await this.tryDecrypt(roomId, ev, megolmKeys);
@@ -443,6 +451,9 @@ export class MatrixListener {
 					msgtype = decrypted.msgtype;
 					body = decrypted.body;
 					if (decrypted.msgtype === "m.audio") audioContent = decrypted.content;
+					// Mention / wake-word gate must see the DECRYPTED content —
+					// the outer ev.content carries only megolm ciphertext.
+					mentionContent = decrypted.content;
 				} else {
 					continue;
 				}
@@ -462,6 +473,12 @@ export class MatrixListener {
 					body = transcribed;
 					msgtype = "m.text";
 					cameFromVoice = true;
+					// Mention/wake-word gate runs against the TRANSCRIPT so a
+					// voice "Jada do X" in a group hits the wake-word path
+					// just like a typed "Jada do X". Without this, voice
+					// messages in groups were always being dropped because
+					// the encrypted audio content has no body/m.mentions.
+					mentionContent = { msgtype: "m.text", body };
 				}
 
 				if (msgtype !== "m.text" || !body) continue;
@@ -480,7 +497,7 @@ export class MatrixListener {
 				// Gate auto-dispatch on room size + mention. In a 2-person
 				// room (you + me), every message is for me. In a larger room
 				// the bot should stay quiet unless it's been mentioned.
-				const shouldDispatch = await this.shouldHandleMessage(roomId, ev);
+				const shouldDispatch = await this.shouldHandleMessage(roomId, { content: mentionContent });
 				if (!shouldDispatch) continue;
 
 				// Mirror mode: if the user's prompt was a voice message, the

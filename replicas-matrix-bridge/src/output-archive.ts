@@ -90,12 +90,28 @@ export function archiveBasename(
 	if (filePath) {
 		const parts = filePath.split("/");
 		const base = parts[parts.length - 1] || "output.txt";
-		return `${base}.out.txt`;
+		return `${base.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80) || "output.txt"}.out.txt`;
 	}
 	if (toolName === "Bash") {
 		const cmd = typeof input?.command === "string" ? (input.command as string).trim() : "";
-		const firstWord = cmd.split(/\s+/)[0] ?? "bash";
-		return `${firstWord.replace(/[^a-zA-Z0-9._-]/g, "_") || "bash"}.out.txt`;
+		// SECURITY: walk tokens skipping env-var assignments (`KEY=value`)
+		// and known no-op prefixes so the basename reflects the actual
+		// command, not the secret values an inline env assignment might
+		// carry. Otherwise `OPENAI_API_KEY=sk-xxx node srv.js` would
+		// produce a public R2 URL containing the key.
+		const tokens = cmd.split(/\s+/);
+		let firstReal = "bash";
+		for (const tok of tokens) {
+			if (/^[A-Z_][A-Z0-9_]*=/.test(tok)) continue; // env var assignment
+			if (/^(?:nohup|time|sudo|exec|env)$/.test(tok)) continue;
+			firstReal = tok;
+			break;
+		}
+		// Strip any trailing `=…` just in case the regex above missed
+		// something (defensive belt-and-suspenders).
+		if (firstReal.includes("=")) firstReal = firstReal.split("=")[0]!;
+		const base = firstReal.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40) || "bash";
+		return `${base}.out.txt`;
 	}
-	return `${toolName.replace(/[^a-zA-Z0-9._-]/g, "_") || "tool"}-output.txt`;
+	return `${toolName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40) || "tool"}-output.txt`;
 }

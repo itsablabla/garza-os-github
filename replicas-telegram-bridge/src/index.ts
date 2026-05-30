@@ -1,3 +1,5 @@
+import { formatVoiceDuration, transcribeAudio } from "./transcribe";
+
 export interface Env {
 	MAP: KVNamespace;
 	WATCHER: DurableObjectNamespace;
@@ -12,6 +14,10 @@ export interface Env {
 	REPLICAS_AGENT_OVERRIDE?: string;
 	REPLICAS_MODEL_OVERRIDE?: string;
 	REPLICAS_THINKING_OVERRIDE?: string;
+	// OpenAI Whisper API key for voice-message transcription. When unset,
+	// `message.voice` events are skipped silently. Set via
+	// `wrangler secret put OPENAI_API_KEY`.
+	OPENAI_API_KEY?: string;
 }
 
 export { ReplicaPoller } from "./poller";
@@ -29,6 +35,14 @@ interface TgUser {
 	first_name?: string;
 }
 
+interface TgVoice {
+	file_id: string;
+	file_unique_id: string;
+	duration: number; // seconds
+	mime_type?: string;
+	file_size?: number;
+}
+
 interface TgMessage {
 	message_id: number;
 	from?: TgUser;
@@ -37,6 +51,7 @@ interface TgMessage {
 	text?: string;
 	caption?: string;
 	message_thread_id?: number;
+	voice?: TgVoice;
 }
 
 interface TgCallbackQuery {
@@ -101,13 +116,73 @@ export default {
 		const msg = update.message ?? update.edited_message;
 		if (!msg) return new Response("ok");
 
-		const text = (msg.text ?? msg.caption ?? "").trim();
+		let text = (msg.text ?? msg.caption ?? "").trim();
+
+		// Voice-message branch: when the user sends a voice (not text /
+		// caption), transcribe via Whisper and use the result as the
+		// dispatch body. We let the transcription happen in the
+		// background-resolved handleMessage path so the webhook returns
+		// 200 quickly (TG retries on non-2xx). If transcription fails
+		// the bridge silently skips — same behavior as the matrix side.
+		if (!text && msg.voice) {
+			ctx.waitUntil(handleVoiceMessage(msg, env));
+			return new Response("ok");
+		}
+
 		if (!text) return new Response("ok");
 
 		ctx.waitUntil(handleMessage(msg, text, env));
 		return new Response("ok");
 	},
 };
+
+async function handleVoiceMessage(msg: TgMessage, env: Env): Promise<void> {
+	if (!msg.voice) return;
+	if (!env.OPENAI_API_KEY) {
+		console.log(`[tg] voice msg chat=${msg.chat.id} but OPENAI_API_KEY not set — skipping`);
+		return;
+	}
+	try {
+		const fileId = msg.voice.file_id;
+		const getFileResp = await fetch(`${env.TG_API_BASE}/bot${env.TG_TOKEN}/getFile?file_id=${encodeURIComponent(fileId)}`);
+		if (!getFileResp.ok) {
+			console.log(`[tg] getFile failed: ${getFileResp.status}`);
+			return;
+		}
+		const getFileJson = (await getFileResp.json()) as { result?: { file_path?: string } };
+		const filePath = getFileJson.result?.file_path;
+		if (!filePath) {
+			console.log(`[tg] getFile returned no file_path`);
+			return;
+		}
+		const dlResp = await fetch(`${env.TG_API_BASE}/file/bot${env.TG_TOKEN}/${filePath}`);
+		if (!dlResp.ok) {
+			console.log(`[tg] file download failed: ${dlResp.status}`);
+			return;
+		}
+		const audio = await dlResp.arrayBuffer();
+		const mimetype = msg.voice.mime_type ?? "audio/ogg";
+		const filename = `voice-${msg.chat.id}-${msg.message_id}.ogg`;
+
+		const result = await transcribeAudio(
+			{ OPENAI_API_KEY: env.OPENAI_API_KEY },
+			audio,
+			filename,
+			mimetype,
+		);
+		if (!result.ok) {
+			console.log(`[tg] whisper failed: ${result.error}`);
+			return;
+		}
+		const durLabel = formatVoiceDuration(msg.voice.duration);
+		const transcript = result.text.trim();
+		const body = `🎤 (voice ${durLabel}) ${transcript}`;
+		console.log(`[tg] voice transcribed chat=${msg.chat.id} duration=${durLabel} text=${JSON.stringify(transcript.slice(0, 80))}`);
+		await handleMessage(msg, body, env);
+	} catch (e) {
+		console.log(`[tg] voice handle threw: ${e instanceof Error ? e.message : e}`);
+	}
+}
 
 async function handleCallback(
 	cb: { id: string; data?: string; from?: { id: number } },

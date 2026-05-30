@@ -37,6 +37,10 @@ export interface Env {
 	// requires `Authorization: Bearer ${ADMIN_TOKEN}`. Set via
 	// `wrangler secret put ADMIN_TOKEN`.
 	ADMIN_TOKEN?: string;
+	// OpenAI API key for Whisper voice-message transcription (Phase 1).
+	// When unset, voice messages are skipped silently (logged). Set via
+	// `wrangler secret put OPENAI_API_KEY`.
+	OPENAI_API_KEY?: string;
 }
 
 // Constant-time string compare to avoid leaking ADMIN_TOKEN length / prefix

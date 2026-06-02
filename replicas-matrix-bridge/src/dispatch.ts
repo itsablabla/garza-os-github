@@ -114,6 +114,7 @@ export async function handleMatrixMessage(
 		`🤔 <b>Starting</b> · 0s`,
 		{ replyTo: eventId },
 	).catch(() => "");
+	let initialFrameId: string | null = null;
 
 	if (existing) {
 		// Follow-up must land before the watcher snapshots history. Starting
@@ -126,7 +127,12 @@ export async function handleMatrixMessage(
 		const followUp = await sendFollowUp(existing, text, env, roomId, eventId);
 		if (followUp.ok) {
 			replicaId = existing;
-			await startWatcher(env, existing, roomId, eventId, text, undefined, undefined, opts.replyAsVoice);
+			// We still wait for the follow-up before watcher baselining, but
+			// also hand the watcher the pre-sent Starting frame so it edits
+			// that fast visible bubble in place instead of creating a second
+			// status card a few seconds later.
+			initialFrameId = await initialFrameP;
+			await startWatcher(env, existing, roomId, eventId, text, undefined, initialFrameId || undefined, opts.replyAsVoice);
 			// Opportunistic backfill of the reverse mapping for pre-PR-29
 			// replicas that don't have one yet. The cross-room guard only
 			// fires when the reverse exists; writing it on the first
@@ -170,7 +176,9 @@ export async function handleMatrixMessage(
 		spawnedFresh = true;
 	}
 
-	const initialFrameId = await initialFrameP;
+	if (initialFrameId === null) {
+		initialFrameId = await initialFrameP;
+	}
 
 	if (replicaId) {
 		const settledReplicaId = replicaId;

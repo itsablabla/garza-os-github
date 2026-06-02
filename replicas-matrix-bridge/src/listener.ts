@@ -509,7 +509,20 @@ export class MatrixListener {
 			}
 		}
 		if (dispatches.length > 0) {
-			await Promise.allSettled(dispatches);
+			// Keep the Matrix /sync loop hot. Dispatch setup can include
+			// Replicas create/follow-up calls and watcher handoff, so awaiting
+			// it here makes unrelated rooms wait before the listener polls
+			// Matrix again. DurableObjectState.waitUntil lets those dispatches
+			// finish reliably while this alarm returns and schedules the next
+			// /sync immediately.
+			this.state.waitUntil(
+				Promise.allSettled(dispatches).then((results) => {
+					const failed = results.filter((r) => r.status === "rejected");
+					if (failed.length > 0) {
+						console.log(`[listener] ${failed.length}/${results.length} dispatches rejected`);
+					}
+				}),
+			);
 		}
 	}
 

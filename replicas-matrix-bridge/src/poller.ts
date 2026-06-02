@@ -1684,12 +1684,18 @@ export class ReplicaPoller {
 		const isTerminal = s.terminal !== undefined;
 
 		if (!isTerminal && statusEventId !== undefined) {
+			const lastEditedPhase = await this.state.storage.get<Phase>("lastEditedPhase");
+			const phaseChanged = lastEditedPhase !== undefined && lastEditedPhase !== s.phase;
+
 			// (1) Edit floor with self-tuning per-turn backoff bonus. The
 			//     bonus ratchets up by BACKOFF_PER_429_MS each time the
 			//     server says 429, capped at MAX_BACKOFF_BONUS_MS. Resets
 			//     on /watch fresh-spawn.
+			//     Phase transitions punch through the floor so the first
+			//     "Starting" → "Planning/Tool/Running" update lands as soon
+			//     as Droid emits real activity instead of waiting up to 2s.
 			const backoffBonus = (await this.state.storage.get<number>("backoffBonusMs")) ?? 0;
-			if (since < EDIT_MIN_INTERVAL_MS + backoffBonus) return;
+			if (!phaseChanged && since < EDIT_MIN_INTERVAL_MS + backoffBonus) return;
 
 			// (2) Honor matrix.org's per-room rate limit. When we hit 429
 			//     the server hands us a retry_after_ms; respect it instead
@@ -1710,8 +1716,6 @@ export class ReplicaPoller {
 			//     from the heartbeat work, since a heartbeat-only diff is
 			//     0 chars by code-point length).
 			const lastRenderedLen = (await this.state.storage.get<number>("lastRenderedLen")) ?? 0;
-			const lastEditedPhase = await this.state.storage.get<Phase>("lastEditedPhase");
-			const phaseChanged = lastEditedPhase !== undefined && lastEditedPhase !== s.phase;
 			const heartbeatStale = since >= 2 * TICKER_REFRESH_MS;
 			if (!phaseChanged && !heartbeatStale && Math.abs(text.length - lastRenderedLen) < CHAR_DELTA_CUTOFF) return;
 		}

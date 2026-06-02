@@ -37,6 +37,10 @@ export function isPlainTextWakeWord(body: string, displayName: string): boolean 
 	return pattern.test(body);
 }
 
+export function isDedicatedBotRoomName(roomName: string): boolean {
+	return /\b(manager|bot|jada|langbot|bridge|replicas|agent|maker|project)\b/i.test(roomName);
+}
+
 /**
  * MatrixListener — single global Durable Object that holds the bot's
  * /sync long-poll. Re-runs on a ~1s alarm so we keep catching up
@@ -823,7 +827,7 @@ export class MatrixListener {
 		if (allowed.includes(sender)) return true;
 		if (memberCount > 4 || !this.isOwnerSender(sender)) return false;
 		const roomName = await this.cachedRoomName(roomId);
-		return /\b(manager|bot|jada|langbot|bridge|replicas)\b/i.test(roomName);
+		return isDedicatedBotRoomName(roomName);
 	}
 
 	private isOwnerSender(sender: string): boolean {

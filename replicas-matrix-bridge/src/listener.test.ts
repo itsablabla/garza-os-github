@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPlainTextWakeWord } from "./listener";
+import { isDedicatedBotRoomName, isPlainTextWakeWord } from "./listener";
 
 describe("isPlainTextWakeWord", () => {
 	it("matches the bot name at the start of the body", () => {
@@ -69,5 +69,23 @@ describe("isPlainTextWakeWord", () => {
 	it("matches a single-character display name with a word boundary", () => {
 		expect(isPlainTextWakeWord("J handle this", "J")).toBe(true);
 		expect(isPlainTextWakeWord("Jada handle this", "J")).toBe(false); // word boundary after "J"
+	});
+});
+
+describe("isDedicatedBotRoomName", () => {
+	it("matches Agent Maker's Beeper and Matrix room names", () => {
+		expect(isDedicatedBotRoomName("Agent Maker")).toBe(true);
+		expect(isDedicatedBotRoomName("Project Maker")).toBe(true);
+	});
+
+	it("keeps existing dedicated bot room names working", () => {
+		expect(isDedicatedBotRoomName("Security Manager")).toBe(true);
+		expect(isDedicatedBotRoomName("Langbot Garza Bots")).toBe(true);
+		expect(isDedicatedBotRoomName("Replicas Bridge")).toBe(true);
+	});
+
+	it("does not match ordinary small group names", () => {
+		expect(isDedicatedBotRoomName("Jaden and Jessica")).toBe(false);
+		expect(isDedicatedBotRoomName("Nomad Office")).toBe(false);
 	});
 });

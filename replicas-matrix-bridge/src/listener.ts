@@ -189,7 +189,7 @@ export class MatrixListener {
 					// content so multi-user encrypted rooms apply mention
 					// gates correctly.
 					const synthetic = { content: inner.content ?? {} };
-					const shouldDispatch = await this.shouldHandleMessage(body.roomId, synthetic);
+					const shouldDispatch = await this.shouldHandleMessage(body.roomId, synthetic, ev.sender);
 					if (!shouldDispatch) {
 						skipped += 1;
 						continue;
@@ -498,7 +498,7 @@ export class MatrixListener {
 				// Gate auto-dispatch on room size + mention. In a 2-person
 				// room (you + me), every message is for me. In a larger room
 				// the bot should stay quiet unless it's been mentioned.
-				const shouldDispatch = await this.shouldHandleMessage(roomId, { content: mentionContent });
+				const shouldDispatch = await this.shouldHandleMessage(roomId, { content: mentionContent }, ev.sender);
 				if (!shouldDispatch) continue;
 
 				// Mirror mode: if the user's prompt was a voice message, the
@@ -766,7 +766,7 @@ export class MatrixListener {
 				continue;
 			}
 			if (decrypted.msgtype !== "m.text" || !decrypted.body) continue;
-			const shouldDispatch = await this.shouldHandleMessage(roomId, synthetic);
+			const shouldDispatch = await this.shouldHandleMessage(roomId, { content: decrypted.content }, queued.sender);
 			if (!shouldDispatch) continue;
 			await this.dispatchMessage(roomId, queued.event_id, decrypted.body);
 		}
@@ -781,6 +781,7 @@ export class MatrixListener {
 	private async shouldHandleMessage(
 		roomId: string,
 		ev: { content?: Record<string, unknown> },
+		sender?: string,
 	): Promise<boolean> {
 		const memberCount = await this.cachedRoomMemberCount(roomId);
 		if (memberCount <= 2) return true;
@@ -796,7 +797,70 @@ export class MatrixListener {
 		const body = (content.body as string | undefined) ?? "";
 		const displayName = this.env.MATRIX_DISPLAY_NAME ?? "Jada";
 		if (isPlainTextWakeWord(body, displayName)) return true;
+		if (sender && await this.isAllowedBotRoomSender(roomId, sender, memberCount)) return true;
 		return false;
+	}
+
+	private async isAllowedBotRoomSender(
+		roomId: string,
+		sender: string,
+		memberCount: number,
+	): Promise<boolean> {
+		const allowed = await this.cachedAllowedSenders(roomId);
+		if (allowed.includes(sender)) return true;
+		if (memberCount > 4 || !this.isOwnerSender(sender)) return false;
+		const roomName = await this.cachedRoomName(roomId);
+		return /\b(manager|bot|jada|langbot|bridge|replicas)\b/i.test(roomName);
+	}
+
+	private isOwnerSender(sender: string): boolean {
+		return sender === "@jadengarza:beeper.com" || sender === "@jadengarza:matrix.org";
+	}
+
+	private async cachedAllowedSenders(roomId: string): Promise<string[]> {
+		const cacheKey = `allowed-senders:${roomId}`;
+		const cached = await this.env.MAP.get(cacheKey);
+		if (cached) {
+			try {
+				const parsed = JSON.parse(cached);
+				if (Array.isArray(parsed)) return parsed.filter((v) => typeof v === "string");
+			} catch {}
+		}
+		try {
+			const url = `${this.env.MATRIX_HOMESERVER}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/state/dev.garza.agent.config/`;
+			const r = await fetch(url, {
+				headers: { Authorization: `Bearer ${this.env.MATRIX_ACCESS_TOKEN}` },
+			});
+			if (!r.ok) {
+				await this.env.MAP.put(cacheKey, "[]", { expirationTtl: 3600 });
+				return [];
+			}
+			const j = (await r.json()) as { allowed_senders?: unknown[] };
+			const allowed = (j.allowed_senders ?? []).filter((v): v is string => typeof v === "string");
+			await this.env.MAP.put(cacheKey, JSON.stringify(allowed), { expirationTtl: 3600 });
+			return allowed;
+		} catch {
+			return [];
+		}
+	}
+
+	private async cachedRoomName(roomId: string): Promise<string> {
+		const cacheKey = `room-name:${roomId}`;
+		const cached = await this.env.MAP.get(cacheKey);
+		if (cached) return cached;
+		try {
+			const url = `${this.env.MATRIX_HOMESERVER}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/state/m.room.name/`;
+			const r = await fetch(url, {
+				headers: { Authorization: `Bearer ${this.env.MATRIX_ACCESS_TOKEN}` },
+			});
+			if (!r.ok) return "";
+			const j = (await r.json()) as { name?: string };
+			const name = typeof j.name === "string" ? j.name : "";
+			if (name) await this.env.MAP.put(cacheKey, name, { expirationTtl: 3600 });
+			return name;
+		} catch {
+			return "";
+		}
 	}
 
 	private async cachedRoomMemberCount(roomId: string): Promise<number> {

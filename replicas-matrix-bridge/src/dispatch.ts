@@ -116,14 +116,17 @@ export async function handleMatrixMessage(
 	).catch(() => "");
 
 	if (existing) {
-		// Watcher fires in parallel with sendFollowUp. If the follow-up turns
-		// out to be `gone` (replica expired), we'll cancel and respawn.
-		const followUpP = sendFollowUp(existing, text, env, roomId, eventId);
-		const watcherP = startWatcher(env, existing, roomId, eventId, text, undefined, undefined, opts.replyAsVoice);
-		const followUp = await followUpP;
-		await watcherP;
+		// Follow-up must land before the watcher snapshots history. Starting
+		// both in parallel is faster, but old cleaned-up sessions can race:
+		// the watcher baselines before /messages appends the new turn, then
+		// polls stale tail events from the previous turn and renders an old
+		// answer against the new prompt. The initial status frame is already
+		// sent above, so this preserves fast visible ack while keeping the
+		// history cursor correct.
+		const followUp = await sendFollowUp(existing, text, env, roomId, eventId);
 		if (followUp.ok) {
 			replicaId = existing;
+			await startWatcher(env, existing, roomId, eventId, text, undefined, undefined, opts.replyAsVoice);
 			// Opportunistic backfill of the reverse mapping for pre-PR-29
 			// replicas that don't have one yet. The cross-room guard only
 			// fires when the reverse exists; writing it on the first

@@ -1026,7 +1026,22 @@ export class MatrixListener {
 	): Promise<void> {
 		// In-process call so we don't pay an extra Worker round-trip.
 		try {
-			await handleMatrixMessage(this.env, roomId, eventId, body, opts);
+			const seenKey = `seen:${roomId}:${eventId}`;
+			let claimed = false;
+			await this.state.blockConcurrencyWhile(async () => {
+				const existing = await this.state.storage.get<number>(seenKey);
+				if (existing) return;
+				await this.state.storage.put(seenKey, Date.now());
+				claimed = true;
+			});
+			if (!claimed) {
+				console.log(`[listener] DEDUPE skip room=${roomId} ev=${eventId}`);
+				return;
+			}
+			await handleMatrixMessage(this.env, roomId, eventId, body, {
+				...opts,
+				dedupClaimed: true,
+			});
 		} catch (e) {
 			console.log(`[listener] dispatch failed: ${e instanceof Error ? e.message : e}`);
 		}

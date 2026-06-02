@@ -35,12 +35,27 @@ interface ReplicaCreateResponse {
 	id?: string;
 }
 
+async function snapshotReplicaEventCount(env: Env, replicaId: string): Promise<number> {
+	try {
+		const r = await fetch(
+			`${env.REPLICAS_API_BASE}/replica/${replicaId}/history?limit=1`,
+			{ headers: replicasHeaders(env) },
+		);
+		if (!r.ok) return 0;
+		const body = (await r.json()) as { total?: number; events?: unknown[] };
+		if (typeof body.total === "number") return body.total;
+		return body.events?.length ?? 0;
+	} catch {
+		return 0;
+	}
+}
+
 export async function handleMatrixMessage(
 	env: Env,
 	roomId: string,
 	eventId: string,
 	text: string,
-	opts: { replyAsVoice?: boolean } = {},
+	opts: { replyAsVoice?: boolean; dedupClaimed?: boolean } = {},
 ): Promise<void> {
 	const key = `room:${roomId}`;
 	const seenKey = `seen:${roomId}:${eventId}`;
@@ -53,7 +68,7 @@ export async function handleMatrixMessage(
 	// admin call racing the listener), but the cost of fixing it
 	// properly is one cross-DO RPC per dispatch and a periodic prune of
 	// the seen:* prefix (handled by the listener's existing prune cron).
-	try {
+	if (!opts.dedupClaimed) try {
 		const listenerStub = env.LISTENER.get(env.LISTENER.idFromName("global"));
 		const claim = await listenerStub.fetch("https://listener/dedup-claim", {
 			method: "POST",
@@ -76,6 +91,18 @@ export async function handleMatrixMessage(
 		}
 		await env.MAP.put(seenKey, "1", { expirationTtl: 600 });
 	}
+
+	// Start the visible status frame immediately after dedupe, before KV
+	// room mapping and reverse-map checks. Those reads are correctness
+	// work for routing, but the user should already see that the bot heard
+	// the message while they happen.
+	const initialFrameP = sendMessage(
+		matrixEnvShape(env),
+		roomId,
+		`🤔 <b>Starting</b> · 0s`,
+		{ replyTo: eventId },
+	).catch(() => "");
+	let initialFrameId: string | null = null;
 
 	// Capture the 👀 ack reaction id so the watcher can redact it later when
 	// it swaps in the terminal emoji — otherwise both stack on the prompt.
@@ -104,35 +131,25 @@ export async function handleMatrixMessage(
 	let replicaId: string | null = null;
 	let spawnedFresh = false;
 
-	// Optimistic path: kick off the initial "Starting · 0s" status frame and
-	// the Replicas spawn/follow-up in parallel — and for follow-ups, start
-	// the watcher in parallel with sendFollowUp. The user sees activity in
-	// ~150ms instead of waiting on the 1.5s POST /replica roundtrip.
-	const initialFrameP = sendMessage(
-		matrixEnvShape(env),
-		roomId,
-		`🤔 <b>Starting</b> · 0s`,
-		{ replyTo: eventId },
-	).catch(() => "");
-	let initialFrameId: string | null = null;
-
 	if (existing) {
-		// Follow-up must land before the watcher snapshots history. Starting
-		// both in parallel is faster, but old cleaned-up sessions can race:
-		// the watcher baselines before /messages appends the new turn, then
-		// polls stale tail events from the previous turn and renders an old
-		// answer against the new prompt. The initial status frame is already
-		// sent above, so this preserves fast visible ack while keeping the
-		// history cursor correct.
-		const followUp = await sendFollowUp(existing, text, env, roomId, eventId);
+		// Capture the current history cursor BEFORE sending the follow-up,
+		// then start the watcher with that explicit cursor while the
+		// /messages request is in flight. This keeps same-session context
+		// and avoids the stale-tail race that happens when the watcher
+		// snapshots an old cleaned-up session by itself, but it no longer
+		// makes Matrix status/tool polling wait for the Replicas POST to
+		// return.
+		const initialLastSeenCount = await snapshotReplicaEventCount(env, existing);
+		const followUpP = sendFollowUp(existing, text, env, roomId, eventId);
+		replicaId = existing;
+		// Hand the watcher the pre-sent Starting frame so it edits that fast
+		// visible bubble in place. Starting the watcher before awaiting
+		// followUpP lets tool/thinking events surface as soon as Replicas
+		// emits them, even if the POST itself is slow to return.
+		initialFrameId = await initialFrameP;
+		await startWatcher(env, existing, roomId, eventId, text, undefined, initialFrameId || undefined, opts.replyAsVoice, initialLastSeenCount);
+		const followUp = await followUpP;
 		if (followUp.ok) {
-			replicaId = existing;
-			// We still wait for the follow-up before watcher baselining, but
-			// also hand the watcher the pre-sent Starting frame so it edits
-			// that fast visible bubble in place instead of creating a second
-			// status card a few seconds later.
-			initialFrameId = await initialFrameP;
-			await startWatcher(env, existing, roomId, eventId, text, undefined, initialFrameId || undefined, opts.replyAsVoice);
 			// Opportunistic backfill of the reverse mapping for pre-PR-29
 			// replicas that don't have one yet. The cross-room guard only
 			// fires when the reverse exists; writing it on the first
@@ -295,6 +312,7 @@ async function startWatcher(
 	ackReactionId?: string,
 	initialStatusEventId?: string,
 	replyAsVoice?: boolean,
+	initialLastSeenCount?: number,
 ): Promise<void> {
 	const stub = env.WATCHER.get(env.WATCHER.idFromName(replicaId));
 	await stub
@@ -309,6 +327,7 @@ async function startWatcher(
 				ackReactionId: ackReactionId || undefined,
 				initialStatusEventId: initialStatusEventId || undefined,
 				replyAsVoice: replyAsVoice ? true : undefined,
+				initialLastSeenCount,
 			}),
 		})
 		.catch(() => {});

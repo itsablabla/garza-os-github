@@ -49,6 +49,11 @@ interface WatchSpec {
 	// parallel with the Replicas spawn. The poller adopts it as its
 	// statusEventId so subsequent renders edit instead of sending fresh.
 	initialStatusEventId?: string;
+	// Optional dispatch-side history cursor captured immediately before
+	// sending a follow-up to an existing replica. Lets the watcher start
+	// polling while the Replicas /messages request is still in flight,
+	// without replaying the previous turn.
+	initialLastSeenCount?: number;
 	// Phase 2 voice — mirror mode. When the user's prompt was itself a
 	// voice message (handled by listener.ts), the bridge replies with
 	// voice too. Set by listener.dispatchMessage when transcribing.
@@ -298,7 +303,9 @@ export class ReplicaPoller {
 			return new Response("ok");
 		}
 
-		const baselineP = this.snapshotEventCount(body.replicaId);
+		const baselineP = typeof body.initialLastSeenCount === "number"
+			? Promise.resolve(body.initialLastSeenCount)
+			: this.snapshotEventCount(body.replicaId);
 		await this.state.storage.delete([
 			"statusEventId",
 			"reactionEventId",

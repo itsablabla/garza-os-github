@@ -422,7 +422,68 @@ export function renderToolsHeader(lines: string[]): string {
 	}
 	if (total === 0) return "";
 	const allComplete = done === total && total > 0 ? " ✅" : "";
-	return `📋 <b>Tools (${done}/${total})</b>${allComplete}`;
+	return `📋 <b>Tools</b> · ${done}/${total}${allComplete}`;
+}
+
+type ToolGlyph = "🔧" | "📖" | "✍️" | "✏️" | "🔍" | "🌐" | "🧰";
+
+const TOOL_LABEL_BY_GLYPH: Record<ToolGlyph, string> = {
+	"🔧": "Bash",
+	"📖": "Read",
+	"✍️": "Write",
+	"✏️": "Edit",
+	"🔍": "Search",
+	"🌐": "Web",
+	"🧰": "MCP",
+};
+
+const TOOL_GLYPH_RE = /^(🔧|📖|✍️|✏️|🔍|🌐|🧰)\s+/u;
+const TOOL_LIFECYCLE_RE = /^(🔄|✅|❌)\s+/u;
+
+function renderLogLines(lines: string[]): string {
+	return lines.map(renderLogLine).join("<br>");
+}
+
+function renderLogLine(line: string): string {
+	const lifecycle = line.match(TOOL_LIFECYCLE_RE);
+	if (lifecycle) return renderToolLifecycleLine(lifecycle[1]!, line.slice(lifecycle[0].length));
+
+	if (line.startsWith("<i>↳ ") || line.startsWith("<i>✗ ")) {
+		const icon = line.startsWith("<i>✗ ") ? "✗" : "↳";
+		const body = line.slice("<i>x ".length, line.endsWith("</i>") ? -"</i>".length : undefined);
+		const label = icon === "✗" ? "error" : "output";
+		return `${icon} <i>${label}:</i> ${body}`;
+	}
+
+	if (line.startsWith("💬 <i>You: ")) return line.replace(/^💬 /, "💬 ");
+	if (line.startsWith("💬 <i>")) return line.replace(/^💬 /, "💬 <i>agent:</i> ");
+
+	const glyph = line.match(TOOL_GLYPH_RE);
+	if (glyph) return renderToolBody("", line);
+	return line;
+}
+
+function renderToolLifecycleLine(status: string, body: string): string {
+	return renderToolBody(status, body);
+}
+
+function renderToolBody(status: string, body: string): string {
+	const glyph = body.match(TOOL_GLYPH_RE);
+	if (!glyph) return status ? `${status} ${body}` : body;
+
+	const label = TOOL_LABEL_BY_GLYPH[glyph[1] as ToolGlyph] ?? "Tool";
+	const rest = body.slice(glyph[0].length);
+	const codeMatch = rest.match(/^<code>(.*?)<\/code>(.*)$/s);
+	const head = status ? `${status} ` : "";
+	if (!codeMatch) return `${head}${glyph[1]} <b>${label}</b> · ${rest}`;
+
+	const target = codeMatch[1] ?? "";
+	const suffix = (codeMatch[2] ?? "").trim();
+	const suffixPart = suffix ? ` ${suffix}` : "";
+	if (label === "Bash") {
+		return `${head}${glyph[1]} <b>${label}</b>${suffixPart}<br><code>${target}</code>`;
+	}
+	return `${head}${glyph[1]} <b>${label}</b> · <code>${target}</code>${suffixPart}`;
 }
 
 // Per OpenACP: a long thinking phase that never makes a tool call
@@ -554,9 +615,9 @@ function renderActive(state: StatusState): string {
 
 		if (trimmedOlder.length > 0) {
 			const dropNote = dropped > 0 ? `<br><i>… ${dropped} earlier</i>` : "";
-			blocks.push(`<blockquote expandable>${trimmedOlder.join("<br>")}${dropNote}</blockquote>`);
+			blocks.push(`<blockquote expandable>${renderLogLines(trimmedOlder)}${dropNote}</blockquote>`);
 		}
-		blocks.push(recent.join("<br>"));
+		blocks.push(renderLogLines(recent));
 	}
 
 	// Files-touched footer: deduped basenames of Read/Edit/Write/
@@ -688,9 +749,9 @@ function renderTerminal(state: StatusState): string {
 			const dropped = older.length - trimmedOlder.length;
 			if (trimmedOlder.length > 0) {
 				const dropNote = dropped > 0 ? `<br><i>… ${dropped} earlier</i>` : "";
-				blocks.push(`<blockquote expandable>${trimmedOlder.join("<br>")}${dropNote}</blockquote>`);
+				blocks.push(`<blockquote expandable>${renderLogLines(trimmedOlder)}${dropNote}</blockquote>`);
 			}
-			blocks.push(recent.join("<br>"));
+			blocks.push(renderLogLines(recent));
 		}
 
 		// Files-touched footer in the Done frame — same as renderActive.

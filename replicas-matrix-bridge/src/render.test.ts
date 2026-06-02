@@ -138,6 +138,8 @@ describe("render — active state", () => {
 		expect(out).toContain("🔧 <b>Running</b> · step 3 · 14s");
 		expect(out).toContain("ls -la src/");
 		expect(out).toContain("src/server.ts");
+		expect(out).toContain("<blockquote>");
+		expect(out).toContain("</blockquote>");
 	});
 
 	it("collapses older steps into expandable blockquote when many lines exist", () => {
@@ -284,6 +286,20 @@ describe("render — terminal state", () => {
 		expect(out).toContain("🎉 <b>Done</b> · 14s");
 		expect(out).toContain("🔧 <b>Bash</b><br><code>ls</code>");
 		expect(out).toContain("src/index.ts");
+	});
+
+	it("renders tool output previews as labeled detail rows inside the tool block", () => {
+		const out = render({
+			startedAt: Date.now() - 4000,
+			stepCount: 1,
+			phase: "DONE",
+			lines: ["✅ 📖 <code>/etc/hostname</code> <i>(0.0s)</i>", "<i>↳ e2b.local</i>"],
+			terminal: { kind: "done", durationSec: 4 },
+		});
+		expect(out).toContain("📋 <b>Tools</b> <code>1/1</code> ✅");
+		expect(out).toContain("<blockquote>");
+		expect(out).toContain("✅ 📖 <b>Read</b> · <code>/etc/hostname</code> <i>(0.0s)</i>");
+		expect(out).toContain("↳ <b>output</b> · <code>e2b.local</code>");
 	});
 
 	it("done with no rolling content is just the header", () => {
@@ -685,7 +701,7 @@ describe("renderToolsHeader", () => {
 
 	it("counts running tools toward the total but not the done count", () => {
 		const lines = [run(tool("ls")), run(tool("pwd"))];
-		expect(renderToolsHeader(lines)).toBe("📋 <b>Tools</b> · 0/2");
+		expect(renderToolsHeader(lines)).toBe("📋 <b>Tools</b> <code>0/2</code>");
 	});
 
 	it("counts both ✅ and ❌ as done", () => {
@@ -694,13 +710,13 @@ describe("renderToolsHeader", () => {
 			err(tool("rm -rf /")),
 			run(tool("git status")),
 		];
-		expect(renderToolsHeader(lines)).toBe("📋 <b>Tools</b> · 2/3");
+		expect(renderToolsHeader(lines)).toBe("📋 <b>Tools</b> <code>2/3</code>");
 	});
 
 	it("appends ✅ to the header when all tools are done", () => {
 		const lines = [ok(tool("ls")), ok(tool("pwd")), err(tool("nope"))];
 		// 3 done, 3 total → all complete
-		expect(renderToolsHeader(lines)).toBe("📋 <b>Tools</b> · 3/3 ✅");
+		expect(renderToolsHeader(lines)).toBe("📋 <b>Tools</b> <code>3/3</code> ✅");
 	});
 
 	it("ignores non-tool lines mixed in (narration, outputs, user steers)", () => {
@@ -711,6 +727,6 @@ describe("renderToolsHeader", () => {
 			"💬 <i>You: now what</i>",
 			run(tool("grep foo")),
 		];
-		expect(renderToolsHeader(lines)).toBe("📋 <b>Tools</b> · 1/2");
+		expect(renderToolsHeader(lines)).toBe("📋 <b>Tools</b> <code>1/2</code>");
 	});
 });

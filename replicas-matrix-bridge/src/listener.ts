@@ -401,6 +401,7 @@ export class MatrixListener {
 		}
 
 		const joined = resp.rooms?.join ?? {};
+		const dispatches: Promise<void>[] = [];
 		for (const [roomId, room] of Object.entries(joined)) {
 			const events = room.timeline?.events ?? [];
 			const megolmKeys = this.megolmKeys();
@@ -502,8 +503,13 @@ export class MatrixListener {
 
 				// Mirror mode: if the user's prompt was a voice message, the
 				// bot's reply ships as voice too. Phase 2 outbound TTS.
-				await this.dispatchMessage(roomId, ev.event_id, body, { replyAsVoice: cameFromVoice });
+				dispatches.push(
+					this.dispatchMessage(roomId, ev.event_id, body, { replyAsVoice: cameFromVoice }),
+				);
 			}
+		}
+		if (dispatches.length > 0) {
+			await Promise.allSettled(dispatches);
 		}
 	}
 

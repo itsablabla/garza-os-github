@@ -422,7 +422,7 @@ export function renderToolsHeader(lines: string[]): string {
 	}
 	if (total === 0) return "";
 	const allComplete = done === total && total > 0 ? " ✅" : "";
-	return `📋 <b>Tools</b> · ${done}/${total}${allComplete}`;
+	return `📋 <b>Tools</b> <code>${done}/${total}</code>${allComplete}`;
 }
 
 type ToolGlyph = "🔧" | "📖" | "✍️" | "✏️" | "🔍" | "🌐" | "🧰";
@@ -444,6 +444,11 @@ function renderLogLines(lines: string[]): string {
 	return lines.map(renderLogLine).join("<br>");
 }
 
+function renderLogBlock(lines: string[], opts: { expandable?: boolean } = {}): string {
+	const attr = opts.expandable ? " expandable" : "";
+	return `<blockquote${attr}>${renderLogLines(lines)}</blockquote>`;
+}
+
 function renderLogLine(line: string): string {
 	const lifecycle = line.match(TOOL_LIFECYCLE_RE);
 	if (lifecycle) return renderToolLifecycleLine(lifecycle[1]!, line.slice(lifecycle[0].length));
@@ -452,7 +457,8 @@ function renderLogLine(line: string): string {
 		const icon = line.startsWith("<i>✗ ") ? "✗" : "↳";
 		const body = line.slice("<i>x ".length, line.endsWith("</i>") ? -"</i>".length : undefined);
 		const label = icon === "✗" ? "error" : "output";
-		return `${icon} <i>${label}:</i> ${body}`;
+		const detail = body.length <= 120 ? `<code>${body}</code>` : body;
+		return `${icon} <b>${label}</b> · ${detail}`;
 	}
 
 	if (line.startsWith("💬 <i>You: ")) return line.replace(/^💬 /, "💬 ");
@@ -615,9 +621,9 @@ function renderActive(state: StatusState): string {
 
 		if (trimmedOlder.length > 0) {
 			const dropNote = dropped > 0 ? `<br><i>… ${dropped} earlier</i>` : "";
-			blocks.push(`<blockquote expandable>${renderLogLines(trimmedOlder)}${dropNote}</blockquote>`);
+			blocks.push(renderLogBlock(trimmedOlder, { expandable: true }).replace("</blockquote>", `${dropNote}</blockquote>`));
 		}
-		blocks.push(renderLogLines(recent));
+		blocks.push(renderLogBlock(recent));
 	}
 
 	// Files-touched footer: deduped basenames of Read/Edit/Write/
@@ -749,9 +755,9 @@ function renderTerminal(state: StatusState): string {
 			const dropped = older.length - trimmedOlder.length;
 			if (trimmedOlder.length > 0) {
 				const dropNote = dropped > 0 ? `<br><i>… ${dropped} earlier</i>` : "";
-				blocks.push(`<blockquote expandable>${renderLogLines(trimmedOlder)}${dropNote}</blockquote>`);
+				blocks.push(renderLogBlock(trimmedOlder, { expandable: true }).replace("</blockquote>", `${dropNote}</blockquote>`));
 			}
-			blocks.push(renderLogLines(recent));
+			blocks.push(renderLogBlock(recent));
 		}
 
 		// Files-touched footer in the Done frame — same as renderActive.

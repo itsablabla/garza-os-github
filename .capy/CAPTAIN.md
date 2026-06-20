@@ -1,0 +1,6 @@
+- GARZA OS is a monorepo for Jaden Garza's personal AI operating system: a unified intelligence layer spanning services, automations, and operational context.
+- Major planning areas are `mcp-servers/`, `services/`, `workers/`, `infra/`, `operations/`, plus supporting `docs/`, `prompts/`, `templates/`, and workflow/config directories.
+- Craft is the conceptual source of truth for system knowledge; repo docs and prompts provide the operational context agents should follow when planning implementation work.
+- Prefer extending an existing service, worker, template, or workflow before proposing a new component.
+- New work should generally target Fly.io, Cloudflare Workers, n8n, Supabase, or GitHub Actions. Treat DigitalOcean as legacy/phasing out.
+- For infra or operations changes, account for `infra/` state-management conventions, lock files, deployment manifests, and existing runbooks/docs before planning mutations.

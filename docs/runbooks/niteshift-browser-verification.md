@@ -26,10 +26,15 @@ agent-browser install --with-deps
 
 ## Verify a Preview
 
-Prefer the preview URL Niteshift already provisioned:
+Prefer the preview URL Niteshift already provisioned. If the preview file is
+absent, use an existing `APP_URL` value or fall back to `http://localhost:3000`:
 
 ```bash
-APP_URL="$(node -e "console.log(require('/tmp/browser-preview.json').baseUrl)")"
+if [ -f /tmp/browser-preview.json ]; then
+  APP_URL="$(node -e "console.log(require('/tmp/browser-preview.json').baseUrl)")"
+else
+  APP_URL="${APP_URL:-http://localhost:3000}"
+fi
 agent-browser open "$APP_URL"
 agent-browser wait --text "GARZA OS"
 agent-browser snapshot -i

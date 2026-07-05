@@ -35,13 +35,13 @@ These are the closest match to "wolfdog breeders" in the common US hybrid sense.
 | 6 | Winter Mountain Timber Dogs | Bybee / East Tennessee, USA | Western Timber Dogs / wolf hybrids | https://wintermountaintimberdogs.com/ | Official site describes wolf hybrid pups, WTDA pedigrees, genetic health testing, and nationwide delivery. |
 | 7 | JG Wolfdogs | Canton, Texas, USA | Wolfdogs | https://www.facebook.com/JGWolfdogs/ | Facebook page/search result references Canton, TX, OFA/Embark/Optimal Selection claims; verify through direct contact. |
 | 8 | Northwest Wolfdogs | Granite Falls, Washington, USA | Wolfdogs | https://www.facebook.com/northwestwolfdogs1/ | Facebook page lead for Washington wolfdogs; verify breeder status, health testing, and local legality. |
-| 9 | BlackEagleWolfdogs | Rocksprings, Texas, USA | Wolf hybrids | https://puppyfinder.com/breeders/wolf-hybrid | Directory listing says breeder since 1997 with Embark DNA/health testing. Directory-only lead: verify independently. |
-| 10 | Mystical Autumn Woods Wolfdogs | Jefferson, Texas, USA | Wolfdogs / Western Timber Dogs | https://puppyfinder.com/breeders/wolf-hybrid | Directory listing describes American wolfdog and Western Timber Dog breeding. Directory-only lead. |
-| 11 | TexasTimber Dogs | Jefferson, Texas, USA | Wolfdogs / timber dogs | https://puppyfinder.com/breeders/wolf-hybrid | Directory listing references Caddo Lake area, wolfdogs, space/exercise, and stud service. Directory-only lead. |
-| 12 | Sac City Wolfdogs | Sac City, Iowa, USA | Wolf hybrids | https://puppyfinder.com/breeders/wolf-hybrid | Directory listing references wolf hybrid pups in Iowa. Treat as low-confidence until verified. |
-| 13 | Howling Hickory Hollow | Fort Payne, Alabama, USA | Wolf hybrids | https://puppyfinder.com/breeders/wolf-hybrid | Directory listing references mid/high-content puppies and Embark-tested parents. Directory-only lead. |
-| 14 | Southern Sky Lobos | Clarksville, Tennessee, USA | Wolf hybrids | https://puppyfinder.com/breeders/wolf-hybrid | Directory listing provides Tennessee wolf hybrid lead and email-style contact. Low-confidence until verified. |
-| 15 | My Wolfpack | Dalton, Ohio, USA | Wolf hybrids | https://puppyfinder.com/breeders/wolf-hybrid | Directory listing says breeder has raised wolf hybrids for 30 years. Low-confidence until verified. |
+| 9 | BlackEagleWolfdogs | Rocksprings, Texas, USA | Wolf hybrids | https://puppyfinder.com/subs-244550 | Directory listing says breeder since 1997 with Embark DNA/health testing. Directory-only lead: verify independently. |
+| 10 | Mystical Autumn Woods Wolfdogs | Jefferson, Texas, USA | Wolfdogs / Western Timber Dogs | https://puppyfinder.com/subs-783886 | Directory listing describes American wolfdog and Western Timber Dog breeding. Directory-only lead. |
+| 11 | TexasTimber Dogs | Jefferson, Texas, USA | Wolfdogs / timber dogs | https://puppyfinder.com/subs-375048 | Directory listing references Caddo Lake area, wolfdogs, space/exercise, and stud service. Directory-only lead. |
+| 12 | Sac City Wolfdogs | Sac City, Iowa, USA | Wolf hybrids | https://puppyfinder.com/subs-664689 | Directory listing references wolf hybrid pups in Iowa. Treat as low-confidence until verified. |
+| 13 | Howling Hickory Hollow | Fort Payne, Alabama, USA | Wolf hybrids | https://puppyfinder.com/subs-377326 | Directory listing references mid/high-content puppies and Embark-tested parents. Directory-only lead. |
+| 14 | Southern Sky Lobos | Clarksville, Tennessee, USA | Wolf hybrids | https://puppyfinder.com/subs-116710 | Directory listing provides Tennessee wolf hybrid lead and email-style contact. Low-confidence until verified. |
+| 15 | My Wolfpack | Dalton, Ohio, USA | Wolf hybrids | https://puppyfinder.com/subs-114864 | Directory listing says breeder has raised wolf hybrids for 30 years. Low-confidence until verified. |
 
 ## Recognized Wolfdog Breed / International Breeder Leads
 
@@ -52,38 +52,38 @@ These are primarily Czechoslovakian Vlciak / Czechoslovakian Wolfdog or Saarloos
 | 16 | DireWolf Pack | Lakeland, Florida, USA | Czechoslovakian Vlciak | https://www.czechoslovakianvlciak.com/finding-a-csv | CSVCA breeder referral lists DireWolf Pack in Lakeland, FL. |
 | 17 | Guardian of the Carpathian | Plattsmouth, Nebraska, USA | Czechoslovakian Vlciak | https://www.czechoslovakianvlciak.com/finding-a-csv | CSVCA breeder referral lists Guardian of the Carpathian in Plattsmouth, NE. |
 | 18 | Greyfarer | United States | Czechoslovakian Vlciak | https://greyfarer.com/ | Official kennel site and wolfdog.org US listing. |
-| 19 | Bleu Hills Kennel | United States | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/US | Listed in wolfdog.org United States breeder database. |
-| 20 | Casa del Mango | United States | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/US | Listed in wolfdog.org United States breeder database. |
-| 21 | Strazca Vegvisiru | United States | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/US | Listed in wolfdog.org United States breeder database. |
-| 22 | Vormir | United States | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/US | Listed in wolfdog.org United States breeder database. |
+| 19 | Bleu Hills Kennel | United States | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/12842 | Listed in wolfdog.org United States breeder database. |
+| 20 | Casa del Mango | United States | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/15344 | Listed in wolfdog.org United States breeder database. |
+| 21 | Strazca Vegvisiru | United States | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/13886 | Listed in wolfdog.org United States breeder database. |
+| 22 | Vormir | United States | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/15538 | Listed in wolfdog.org United States breeder database. |
 | 23 | Watermill Wolves | United Kingdom | Wolfdog breeding program | https://www.watermillwolves.co.uk/wolfdog-breeding-programme/wolfdog-puppies-for-sale/ | Official site has wolfdog puppy registration/contact information. |
-| 24 | wolfzone Dogs | Honiton, Devon, United Kingdom | Saarloos Wolfdog | https://www.pets4homes.co.uk/breeders/dogs/saarloos-wolfdog/united-kingdom/england/ | Pets4Homes lists council-licensed Saarloos Wolfdog breeder. Verify directly. |
-| 25 | Nesslands of Burwell Ltd | Cambridge, Cambridgeshire, United Kingdom | Saarloos Wolfdog / wolf-alike lines | https://www.pets4homes.co.uk/breeders/dogs/saarloos-wolfdog/united-kingdom/england/ | Pets4Homes lists council-licensed breeder. Verify current Saarloos activity. |
+| 24 | wolfzone Dogs | Honiton, Devon, United Kingdom | Saarloos Wolfdog | https://www.pets4homes.co.uk/breeders/dogs/saarloos-wolfdog/united-kingdom/england/ | Pets4Homes lists council-licensed Saarloos Wolfdog breeder; breeder ID 883b1733-5a7f-4334-94a4-cf73f376b14b. Verify directly. |
+| 25 | Nesslands of Burwell Ltd | Cambridge, Cambridgeshire, United Kingdom | Saarloos Wolfdog / wolf-alike lines | https://www.pets4homes.co.uk/breeders/dogs/saarloos-wolfdog/united-kingdom/england/ | Pets4Homes lists council-licensed breeder; breeder ID ad8a5ec3-2e73-4147-9dbb-d9f2662f0fb0. Verify current Saarloos activity. |
 | 26 | Aux Grosses Oreilles | France / Germany-linked | Saarloos Wolfdog | https://www.saarlooswolfdogs.com/index-en | Official site describes VDH/FCI Saarloos breeding, health tests, and contact path. |
-| 27 | Natheda | Czech Republic | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/CZ | Wolfdog.org lists planned litter information for this kennel. |
-| 28 | z Batova udoli | Czech Republic | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/CZ | Wolfdog.org lists this as a Czech planned-litter breeder. |
-| 29 | s Divokou krvi | Czech Republic | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/CZ | Wolfdog.org lists this as a Czech planned-litter breeder. |
-| 30 | Born of Diamond Dust | Czech Republic | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/CZ | Listed in wolfdog.org Czech breeder database. |
-| 31 | Dakmat | Czech Republic | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/CZ | Listed in wolfdog.org Czech breeder database. |
-| 32 | Dancing Warrior | Czech Republic | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/CZ | Listed in wolfdog.org Czech breeder database. |
+| 27 | Natheda | Czech Republic | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/13226 | Wolfdog.org lists planned litter information for this kennel. |
+| 28 | z Batova udoli | Czech Republic | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/27220 | Wolfdog.org lists this as a Czech planned-litter breeder. |
+| 29 | s Divokou krvi | Czech Republic | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/5937 | Wolfdog.org lists this as a Czech planned-litter breeder. |
+| 30 | Born of Diamond Dust | Czech Republic | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/11998 | Listed in wolfdog.org Czech breeder database. |
+| 31 | Dakmat | Czech Republic | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/30 | Listed in wolfdog.org Czech breeder database. |
+| 32 | Dancing Warrior | Czech Republic | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/10035 | Listed in wolfdog.org Czech breeder database. |
 | 33 | z Peronowki FCI | Pozna / Gubin area, Poland | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/237 | Wolfdog.org profile includes FCI status, address, website, phone, and planned litter details. |
-| 34 | Wataha z Kalinowic | Poland | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/PL | Wolfdog.org lists this as a Polish planned-litter breeder. |
-| 35 | Unter Wolfen FCI | Poland | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/PL | Wolfdog.org lists this as a Polish planned-litter breeder. |
-| 36 | Atropa Bella Donna FCI | Poland | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/PL | Wolfdog.org lists this as a Polish planned-litter breeder. |
-| 37 | Raspberry Wolf FCI | Poland | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/PL | Listed in wolfdog.org Polish breeder database. |
-| 38 | Zelazny wilk FCI | Poland | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/PL | Listed in wolfdog.org Polish breeder database. |
-| 39 | Mala Bosorka | Germany | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/DE | Wolfdog.org lists this as a German planned-litter breeder. |
-| 40 | von den Graupelzen | Germany | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/DE | Listed in wolfdog.org Germany breeder database. |
+| 34 | Wataha z Kalinowic | Poland | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/23512 | Wolfdog.org lists this as a Polish planned-litter breeder. |
+| 35 | Unter Wolfen FCI | Poland | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/10886 | Wolfdog.org lists this as a Polish planned-litter breeder. |
+| 36 | Atropa Bella Donna FCI | Poland | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/4715 | Wolfdog.org lists this as a Polish planned-litter breeder. |
+| 37 | Raspberry Wolf FCI | Poland | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/15514 | Listed in wolfdog.org Polish breeder database. |
+| 38 | Zelazny wilk FCI | Poland | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/12526 | Listed in wolfdog.org Polish breeder database. |
+| 39 | Mala Bosorka | Germany | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/2101 | Wolfdog.org lists this as a German planned-litter breeder. |
+| 40 | von den Graupelzen | Germany | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/831 | Listed in wolfdog.org Germany breeder database. |
 | 41 | Salto del Lupo | Rome, Italy | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/9825 | Wolfdog.org profile includes FCI status, Rome address, and website. |
-| 42 | Old Greygun | Italy | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/IT | Wolfdog.org lists this as an Italian planned-litter breeder. |
-| 43 | Asgard kennel | Italy | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/IT | Listed in wolfdog.org Italy breeder database. |
-| 44 | Lupi del Montefeltro | Italy | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/IT | Listed in wolfdog.org Italy breeder database. |
+| 42 | Old Greygun | Italy | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/8785 | Wolfdog.org lists this as an Italian planned-litter breeder. |
+| 43 | Asgard kennel | Italy | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/11896 | Listed in wolfdog.org Italy breeder database. |
+| 44 | Lupi del Montefeltro | Italy | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/16171 | Listed in wolfdog.org Italy breeder database. |
 | 45 | Alpha Soul | Puentedeume, Spain | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/12289 | Wolfdog.org profile includes FCI status, city, website, phone, and planned litter details. |
-| 46 | Bluemoon Wolf | Spain | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/ES | Listed in wolfdog.org Spain breeder database. |
-| 47 | Campos y Lobos / Be Wolf | Spain | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/ES | Listed in wolfdog.org Spain breeder database. |
-| 48 | Crazy Soul | Slovakia | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/SK | Listed in wolfdog.org Slovakia breeder database. |
-| 49 | Dunajsky vlk | Slovakia | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/SK | Listed in wolfdog.org Slovakia breeder database. |
-| 50 | z Tienov lesa | Slovakia | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/kennels/SK | Listed in wolfdog.org Slovakia breeder database. |
+| 46 | Bluemoon Wolf | Spain | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/12511 | Listed in wolfdog.org Spain breeder database. |
+| 47 | Campos y Lobos / Be Wolf | Spain | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/12679 | Listed in wolfdog.org Spain breeder database. |
+| 48 | Crazy Soul | Slovakia | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/6789 | Listed in wolfdog.org Slovakia breeder database. |
+| 49 | Dunajsky vlk | Slovakia | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/13453 | Listed in wolfdog.org Slovakia breeder database. |
+| 50 | z Tienov lesa | Slovakia | Czechoslovakian Wolfdog | https://www.wolfdog.org/dbase/o/15162 | Listed in wolfdog.org Slovakia breeder database. |
 
 ## Shortlist Recommendation
 
@@ -109,6 +109,6 @@ For each, ask for:
 ## Research Limitations
 
 - Availability is seasonal and can change weekly.
-- Some public breeder directories include inactive, private, or low-quality listings. Directory-only leads are marked as lower-confidence until direct contact confirms they are active and responsible.
+- Some public breeder directories include inactive, private, or low-quality listings. Directory-only leads are marked as lower-confidence until direct contact confirms they are active and responsible; exact directory profile links or listing IDs are included where the directory exposes them.
 - Wolfdog.org is valuable for Czechoslovakian Wolfdog breeder discovery, but it is a database/directory, not a guarantee of ethical practice.
-- I could not use Fabric/Craft/Graphiti memory from this runtime because the matching MCP tools and Fabric credentials were not attached to the session.
+- Private/internal datasets were not used for this public lead list.

@@ -1,6 +1,6 @@
 # Infrastructure Status
 
-Last Updated: 2026-07-09 19:05 UTC
+Last Updated: 2026-07-09 20:08 UTC
 
 ## 🖥️ MCP Servers
 | Server | Status | Latency |
@@ -29,7 +29,7 @@ Last Updated: 2026-07-09 19:05 UTC
 ## 🌐 External Services
 | Service | Status |
 |---------|--------|
-| n8n Cloud | 🟢 Healthy |
+| n8n Cloud | 🔴 Down (000000) |
 | Octelium | 🔴 Down (000000) |
 
 ---

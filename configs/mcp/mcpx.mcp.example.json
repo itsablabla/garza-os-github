@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "mcpx": {
+      "url": "https://garza-mcp.exe.xyz/mcp",
+      "headers": {
+        "x-lunar-api-key": "${MCPX_LUNAR_API_KEY}"
+      }
+    }
+  }
+}

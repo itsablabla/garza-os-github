@@ -1,0 +1,16 @@
+name: Temp mcp.garzahive.com DNS
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "scripts/upsert-mcp-garzahive-dns.sh"
+      - ".github/workflows/temp-mcp-garzahive-dns.yml"
+jobs:
+  dns:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upsert DNS
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: bash scripts/upsert-mcp-garzahive-dns.sh

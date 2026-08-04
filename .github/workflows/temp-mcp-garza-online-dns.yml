@@ -1,0 +1,16 @@
+name: Temp mcp.garza.online DNS
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "scripts/upsert-mcp-garza-online-dns.sh"
+      - ".github/workflows/temp-mcp-garza-online-dns.yml"
+jobs:
+  dns:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upsert DNS
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: bash scripts/upsert-mcp-garza-online-dns.sh

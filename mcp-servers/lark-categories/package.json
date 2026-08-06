@@ -1,0 +1,10 @@
+{
+  "name": "lark-mcp-categories",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lark/Feishu full OpenAPI MCP — one streamable instance per category behind a path router",
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@larksuiteoapi/lark-mcp": "0.5.1"
+  }
+}

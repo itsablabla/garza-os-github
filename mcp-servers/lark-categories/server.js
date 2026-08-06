@@ -3,7 +3,12 @@
    and proxies /<category>/mcp -> 127.0.0.1:<port>/mcp */
 const { spawn } = require('child_process');
 const http = require('http');
-const { categories } = require('./categories.json');
+const CATEGORIES_FILE = process.env.CATEGORIES_FILE || './categories.json';
+const CATEGORIES_FILTER = (process.env.LARK_CATEGORIES || '').split(',').map(s => s.trim()).filter(Boolean);
+const { categories: ALL_CATEGORIES } = require(CATEGORIES_FILE);
+const categories = CATEGORIES_FILTER.length
+  ? ALL_CATEGORIES.filter(c => CATEGORIES_FILTER.includes(c.name))
+  : ALL_CATEGORIES;
 
 const APP_ID = process.env.APP_ID;
 const APP_SECRET = process.env.APP_SECRET;
@@ -64,7 +69,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(LISTEN_PORT, '0.0.0.0', () => {
-  console.log(`lark-mcp category gateway listening on :${LISTEN_PORT}`);
+  console.log(`lark-mcp category gateway listening on :${LISTEN_PORT} (file=${CATEGORIES_FILE}, ${categories.length}/${ALL_CATEGORIES.length} categories)`);
   for (const cat of categories) startCategory(cat);
 });
 

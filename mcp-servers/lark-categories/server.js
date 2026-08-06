@@ -3,7 +3,8 @@
    and proxies /<category>/mcp -> 127.0.0.1:<port>/mcp */
 const { spawn } = require('child_process');
 const http = require('http');
-const CATEGORIES_FILE = process.env.CATEGORIES_FILE || './categories.json';
+let CATEGORIES_FILE = process.env.CATEGORIES_FILE || './categories.json';
+if (!CATEGORIES_FILE.startsWith('/') && !CATEGORIES_FILE.startsWith('.')) CATEGORIES_FILE = './' + CATEGORIES_FILE;
 const CATEGORIES_FILTER = (process.env.LARK_CATEGORIES || '').split(',').map(s => s.trim()).filter(Boolean);
 const { categories: ALL_CATEGORIES } = require(CATEGORIES_FILE);
 const categories = CATEGORIES_FILTER.length

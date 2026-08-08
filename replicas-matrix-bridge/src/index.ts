@@ -26,6 +26,14 @@ export interface Env {
 	REPLICAS_AGENT_OVERRIDE?: string;
 	REPLICAS_MODEL_OVERRIDE?: string;
 	REPLICAS_THINKING_OVERRIDE?: string;
+	// Single-workspace mode. When set, dispatch reuses this replica id for
+	// any room whose KV mapping is missing instead of POST /v1/replica.
+	// On first message in a new room we pin the mapping (room:<id> ->
+	// DEFAULT_REPLICA_ID) so subsequent traffic flows the normal
+	// `existing` path and never falls back. Unset to keep per-room
+	// auto-spawn behavior. Set via `wrangler secret put DEFAULT_REPLICA_ID`
+	// or under [vars] in wrangler.toml.
+	DEFAULT_REPLICA_ID?: string;
 	// JSON array of Megolm session keys (Element key-export format, decrypted
 	// out of band and stashed here). Used by the listener to decrypt
 	// m.room.encrypted events whose session_id we hold.

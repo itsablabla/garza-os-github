@@ -1,9 +1,13 @@
 'use strict';
-/* Consolidated Lark gateway — ONE container, 2 instances (intl-all + cn-all).
-   Per-category overrides: domain/appId/appSecret may use ${ENV_NAME} references. */
+/* Consolidated Lark gateway — ONE container, 2 instances, ALL category paths.
+   intl categories -> intl instance (8081); cn categories -> cn instance (8082).
+   Also serves /intl/mcp and /cn/mcp. */
 const { spawn } = require('child_process');
 const http = require('http');
 const { categories } = require('./categories-merged.json');
+
+const INTL_CATS = ['admin','approval','docs','bitable','calendar','contact','drive','im','mail','task','vc','misc'];
+const CN_CATS = ['acs','apaas','attendance','hr','hire'];
 
 function resolveEnv(v) {
   if (typeof v !== 'string') return v;
@@ -36,14 +40,21 @@ function startCategory(cat) {
 }
 
 const byName = new Map(categories.map(c => [c.name, c]));
+function resolveInstance(pathName) {
+  if (byName.has(pathName)) return byName.get(pathName);
+  if (INTL_CATS.includes(pathName)) return byName.get('intl');
+  if (CN_CATS.includes(pathName)) return byName.get('cn');
+  return null;
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const m = url.pathname.match(/^\/([a-z0-9]+)\/mcp$/);
   if (req.method === 'GET' && (url.pathname === '/healthz' || url.pathname === '/health')) {
     res.writeHead(200, {'Content-Type':'text/plain'}); return res.end('ok');
   }
-  if (!m || !byName.has(m[1])) { res.writeHead(404, {'Content-Type':'text/plain'}); return res.end('not found'); }
-  const cat = byName.get(m[1]);
+  const cat = m ? resolveInstance(m[1]) : null;
+  if (!cat) { res.writeHead(404, {'Content-Type':'text/plain'}); return res.end('not found'); }
   const upstream = http.request({ host:'127.0.0.1', port: cat.port, path:'/mcp' + url.search,
     method: req.method, headers: { ...req.headers, host: `127.0.0.1:${cat.port}` } }, up => {
     res.writeHead(up.statusCode || 502, up.headers); up.pipe(res);
@@ -52,7 +63,7 @@ const server = http.createServer((req, res) => {
   req.pipe(upstream);
 });
 server.listen(LISTEN_PORT, '0.0.0.0', () => {
-  console.log(`consolidated lark gateway on :${LISTEN_PORT}`);
+  console.log(`consolidated lark gateway on :${LISTEN_PORT} — intl cats: ${INTL_CATS.join(',')}; cn cats: ${CN_CATS.join(',')}`);
   for (const cat of categories) startCategory(cat);
 });
 for (const sig of ['SIGTERM','SIGINT']) process.on(sig, () => {

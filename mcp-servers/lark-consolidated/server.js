@@ -25,13 +25,8 @@ function startCategory(cat) {
     LARK_DOMAIN: cat.domain || process.env.LARK_DOMAIN,
     LARK_TOOLS: cat.tools.join(','),
   };
-  const args = ['--no-install', '-y', '@larksuiteoapi/lark-mcp', 'mcp',
-    '-m', 'streamable', '--host', '127.0.0.1', '-p', String(cat.port)];
-  if (process.env.LARK_USER_ACCESS_TOKEN) {
-    args.push('-u', process.env.LARK_USER_ACCESS_TOKEN);
-    console.log(`${cat.name}: user access token injected (me/useUAT works)`);
-  }
-  const child = spawn('npx', args, { env, stdio: ['ignore','pipe','pipe'] });
+  const child = spawn('npx', ['--no-install', '-y', '@larksuiteoapi/lark-mcp', 'mcp',
+    '-m', 'streamable', '--host', '127.0.0.1', '-p', String(cat.port)], { env, stdio: ['ignore','pipe','pipe'] });
   children.set(cat.name, child);
   const tag = `[${cat.name}]`;
   child.stdout.on('data', d => process.stdout.write(tag + ' ' + d));
@@ -60,8 +55,16 @@ const server = http.createServer((req, res) => {
   }
   const cat = m ? resolveInstance(m[1]) : null;
   if (!cat) { res.writeHead(404, {'Content-Type':'text/plain'}); return res.end('not found'); }
+  const proxyHeaders = { ...req.headers, host: `127.0.0.1:${cat.port}` };
+  // lark-mcp v0.5.1 drops the CLI -u flag in streamable mode; it DOES honor the
+  // Authorization header. Inject the user access token for the intl instance.
+  const isIntl = cat.name === 'intl' || INTL_CATS.includes(cat.name);
+  if (process.env.LARK_USER_ACCESS_TOKEN && isIntl) {
+    proxyHeaders['authorization'] = 'Bearer ' + process.env.LARK_USER_ACCESS_TOKEN;
+    console.log(`${cat.name}: Authorization header (UAT) injected`);
+  }
   const upstream = http.request({ host:'127.0.0.1', port: cat.port, path:'/mcp' + url.search,
-    method: req.method, headers: { ...req.headers, host: `127.0.0.1:${cat.port}` } }, up => {
+    method: req.method, headers: proxyHeaders }, up => {
     res.writeHead(up.statusCode || 502, up.headers); up.pipe(res);
   });
   upstream.on('error', e => { if (!res.headersSent) res.writeHead(502, {'Content-Type':'text/plain'}); res.end('upstream unavailable'); });

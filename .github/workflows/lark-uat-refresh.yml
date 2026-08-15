@@ -1,8 +1,8 @@
 name: lark-uat-refresh
 on:
   schedule:
-    # every hour at :35 — keeps the container's Lark user token fresh (2h lifetime)
-    - cron: '35 * * * *'
+    # every 10 min — keeps the container's Lark user token fresh (2h lifetime, rotation-safe)
+    - cron: '*/10 * * * *'
   workflow_dispatch: {}
 
 jobs:

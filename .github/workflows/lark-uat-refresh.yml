@@ -1,0 +1,16 @@
+name: lark-uat-refresh
+on:
+  schedule:
+    # every hour at :35 — keeps the container's Lark user token fresh (2h lifetime)
+    - cron: '35 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger gateway lark_uat_sync webhook
+        run: |
+          curl -s -o /dev/null -w 'webhook_status=%{http_code}\n' --max-time 90 \
+            -X POST 'https://mcp.garza.online/webhook/hooks/lark-uat-sync' \
+            -H 'Content-Type: application/json' -d '{}'

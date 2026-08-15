@@ -25,8 +25,12 @@ function startCategory(cat) {
     LARK_DOMAIN: cat.domain || process.env.LARK_DOMAIN,
     LARK_TOOLS: cat.tools.join(','),
   };
-  const child = spawn('npx', ['--no-install', '-y', '@larksuiteoapi/lark-mcp', 'mcp',
-    '-m', 'streamable', '--host', '127.0.0.1', '-p', String(cat.port)], { env, stdio: ['ignore','pipe','pipe'] });
+  const args = ['--no-install', '-y', '@larksuiteoapi/lark-mcp', 'mcp',
+    '-m', 'streamable', '--host', '127.0.0.1', '-p', String(cat.port)];
+  // -u at startup keeps this.auth unset (token used as-is); the per-request
+  // Authorization header (added below) carries the token past v0.5.1's streamable bug.
+  if (process.env.LARK_USER_ACCESS_TOKEN) args.push('-u', process.env.LARK_USER_ACCESS_TOKEN);
+  const child = spawn('npx', args, { env, stdio: ['ignore','pipe','pipe'] });
   children.set(cat.name, child);
   const tag = `[${cat.name}]`;
   child.stdout.on('data', d => process.stdout.write(tag + ' ' + d));

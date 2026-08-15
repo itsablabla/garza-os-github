@@ -1,0 +1,8 @@
+{
+  "name": "lark-mcp-consolidated",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@larksuiteoapi/lark-mcp": "^0.5.1"
+  }
+}

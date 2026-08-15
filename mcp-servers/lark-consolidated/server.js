@@ -59,6 +59,11 @@ const server = http.createServer((req, res) => {
   }
   const cat = m ? resolveInstance(m[1]) : null;
   if (!cat) { res.writeHead(404, {'Content-Type':'text/plain'}); return res.end('not found'); }
+  // per-category tool filtering: category paths expose ONLY their category's tools
+  const catName = m ? m[1] : null;
+  const filterTools = catName && catName !== 'intl' && catName !== 'cn' && byName.has(catName)
+    ? byName.get(catName).tools
+    : null;
   const proxyHeaders = { ...req.headers, host: `127.0.0.1:${cat.port}` };
   // lark-mcp v0.5.1 drops the CLI -u flag in streamable mode; it DOES honor the
   // Authorization header. Inject the user access token for the intl instance.
@@ -69,7 +74,28 @@ const server = http.createServer((req, res) => {
   }
   const upstream = http.request({ host:'127.0.0.1', port: cat.port, path:'/mcp' + url.search,
     method: req.method, headers: proxyHeaders }, up => {
-    res.writeHead(up.statusCode || 502, up.headers); up.pipe(res);
+    if (!filterTools || req.method !== 'POST') {
+      res.writeHead(up.statusCode || 502, up.headers); up.pipe(res); return;
+    }
+    // buffer the (single-message) response to filter tools/list
+    const chunks = [];
+    up.on('data', c => chunks.push(c));
+    up.on('end', () => {
+      let raw = Buffer.concat(chunks).toString('utf8');
+      try {
+        const m2 = raw.match(/data: (\{.*\})/);
+        if (m2) {
+          const msg = JSON.parse(m2[1]);
+          if (msg.result && Array.isArray(msg.result.tools)) {
+            msg.result.tools = msg.result.tools.filter(t => filterTools.includes(t.name));
+            raw = raw.replace(m2[1], JSON.stringify(msg));
+            console.log(`${catName}: tools/list filtered to ${msg.result.tools.length}`);
+          }
+        }
+      } catch (e) { console.error(`${catName}: filter error`, e.message); }
+      res.writeHead(up.statusCode || 502, { ...up.headers, 'content-length': Buffer.byteLength(raw) });
+      res.end(raw);
+    });
   });
   upstream.on('error', e => { if (!res.headersSent) res.writeHead(502, {'Content-Type':'text/plain'}); res.end('upstream unavailable'); });
   req.pipe(upstream);

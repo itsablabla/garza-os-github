@@ -56,13 +56,7 @@ fetch_tat() {
     "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal" \
     -H "Content-Type: application/json" \
     -d "{\"app_id\":\"${LARKSUITE_CLI_APP_ID}\",\"app_secret\":\"${LARKSUITE_CLI_APP_SECRET}\"}" 2>/dev/null) || true
-  TAT=$(echo "$RESP" | python3 -c "
-import json,sys
-try:
-  d=json.loads(sys.stdin.read())
-  print(d.get('tenant_access_token',''))
-except: pass
-" 2>/dev/null) || true
+  TAT=$(echo "$RESP" | grep -o '"tenant_access_token":"[^"]*"' | cut -d'"' -f4) || true
   if [ -n "$TAT" ]; then
     export LARKSUITE_CLI_TENANT_ACCESS_TOKEN="$TAT"
     export LARKSUITE_CLI_DEFAULT_AS="bot"

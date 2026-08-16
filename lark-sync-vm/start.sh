@@ -45,8 +45,33 @@ EOF
   echo "[start] Sync-in config written → $SYNCIN_URL"
 fi
 
+# ── Fetch fresh tenant access token ──────────────────────────────────────────
+fetch_tat() {
+  RESP=$(curl -s -X POST "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal" \
+    -H "Content-Type: application/json" \
+    -d "{\"app_id\":\"$LARKSUITE_CLI_APP_ID\",\"app_secret\":\"$LARKSUITE_CLI_APP_SECRET\"}")
+  TAT=$(echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('tenant_access_token',''))" 2>/dev/null)
+  if [ -n "$TAT" ]; then
+    export LARKSUITE_CLI_TENANT_ACCESS_TOKEN="$TAT"
+    export LARKSUITE_CLI_DEFAULT_AS="bot"
+    echo "[start] Tenant access token refreshed (expires in $(echo "$RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('expire',0))" 2>/dev/null)s)."
+  else
+    echo "[start] WARNING: Failed to fetch tenant access token: $RESP"
+  fi
+}
+
+fetch_tat
+TAT_FETCHED_AT=$(date +%s)
+
 # ── Main sync loop ────────────────────────────────────────────────────────────
 run_sync() {
+  # Refresh TAT if older than 90 minutes
+  NOW=$(date +%s)
+  if [ $((NOW - TAT_FETCHED_AT)) -gt 5400 ]; then
+    fetch_tat
+    TAT_FETCHED_AT=$NOW
+  fi
+
   echo "[sync] $(date -u +%FT%TZ) Starting Lark Drive sync..."
 
   # lark-cli requires --local-dir to be relative to cwd

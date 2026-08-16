@@ -1,105 +1,94 @@
 'use strict';
-/* Syncs Lark Wiki + Bases/Bitable to LOCAL_DIR via the internal lark-mcp gateway.
-   Drive is handled separately by lark-cli. This script only needs wiki + bases. */
-
+/*
+ * Syncs Lark Wiki + Bases (Bitables) to LOCAL_DIR via the user access token.
+ *  - Wiki  : wiki spaces -> nodes (recursive) -> docx raw_content as .md
+ *  - Bases : drive files of type bitable (from LARK_BASES_FOLDER_TOKEN or My Space root)
+ *            -> tables -> records as .json
+ * Drive docs are handled separately by lark-cli (+sync).
+ */
 const http  = require('http');
 const https = require('https');
 const fs    = require('fs');
 const path  = require('path');
 
-const MCP_URL  = process.env.LARK_MCP_URL || 'https://lark.garzalabs.com/intl/mcp';
 const OUT_DIR  = process.env.LOCAL_DIR || '/data/lark';
-
-let reqId = 0;
-let mcpSessionId = null;
-
-async function initSession() {
-  const body = JSON.stringify({
-    jsonrpc: '2.0', id: ++reqId, method: 'initialize',
-    params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'lark-sync', version: '1.0' } }
-  });
-  const res = await rawPost(body);
-  mcpSessionId = res.sessionId;
-}
-
-function rawPost(body) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(MCP_URL);
-    const transport = url.protocol === 'https:' ? https : http;
-    const headers = {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json, text/event-stream',
-      'Content-Length': Buffer.byteLength(body),
-    };
-    if (mcpSessionId) headers['mcp-session-id'] = mcpSessionId;
-    const req = transport.request({
-      hostname: url.hostname, port: url.port || (url.protocol === 'https:' ? 443 : 80),
-      path: url.pathname, method: 'POST', headers
-    }, res => {
-      if (!mcpSessionId && res.headers['mcp-session-id']) {
-        mcpSessionId = res.headers['mcp-session-id'];
-      }
-      let raw = '';
-      res.on('data', d => raw += d);
-      res.on('end', () => {
-        for (const line of raw.split('\n')) {
-          if (line.startsWith('data: ')) {
-            try { resolve(JSON.parse(line.slice(6))); } catch { resolve({}); }
-            return;
-          }
-        }
-        try { resolve(JSON.parse(raw)); } catch { resolve({}); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error('timeout')); });
-    req.write(body);
-    req.end();
-  });
-}
-
-async function mcpCall(tool, args) {
-  const body = JSON.stringify({
-    jsonrpc: '2.0', id: ++reqId, method: 'tools/call',
-    params: { name: tool, arguments: args }
-  });
-  const res = await rawPost(body).catch(e => { console.error('[mcp]', tool, e.message); return {}; });
-  const text = res?.result?.content?.find(c => c.type === 'text')?.text;
-  if (!text) return {};
-  try { return JSON.parse(text); } catch { return { raw: text }; }
-}
+const DOMAIN   = (process.env.LARK_DOMAIN || 'https://open.larksuite.com').replace(/\/+$/, '');
+const USER_TOK = process.env.LARKSUITE_CLI_USER_ACCESS_TOKEN || '';
+const BASES_FOLDER = process.env.LARK_BASES_FOLDER_TOKEN || ''; // '' = My Space root
 
 function safe(name) {
   return (name || '').replace(/[/\\:*?"<>|]/g, '_').trim() || '_unnamed';
 }
-
 function writeFile(p, content) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, typeof content === 'string' ? content : JSON.stringify(content, null, 2), 'utf8');
 }
 
-// ── Docs ─────────────────────────────────────────────────────────────────────
-
-async function syncDoc(token, filePath) {
-  const res = await mcpCall('docx_v1_document_rawContent', { path: { document_id: token } });
-  const content = res.content || JSON.stringify(res);
-  writeFile(filePath, content);
+// ---------- direct REST (user token) ----------
+function restGet(apiPath, qs) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(DOMAIN + apiPath + (qs ? '?' + qs : ''));
+    const transport = url.protocol === 'https:' ? https : http;
+    const headers = { Accept: 'application/json' };
+    if (USER_TOK) headers.Authorization = 'Bearer ' + USER_TOK;
+    const req = transport.get({
+      hostname: url.hostname,
+      port: url.port || (url.protocol === 'https:' ? 443 : 80),
+      path: url.pathname + url.search,
+      headers,
+    }, (res) => {
+      let raw = '';
+      res.on('data', (d) => (raw += d));
+      res.on('end', () => {
+        try { resolve(JSON.parse(raw)); }
+        catch (e) { reject(new Error('bad json: ' + raw.slice(0, 200))); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('timeout')); });
+  });
 }
 
-// ── Wiki ─────────────────────────────────────────────────────────────────────
+async function restPage(apiPath, qs, itemsKey) {
+  const all = [];
+  let pageToken = '';
+  for (let i = 0; i < 200; i++) {
+    const q = qs + (pageToken ? '&page_token=' + encodeURIComponent(pageToken) : '');
+    const j = await restGet(apiPath, q);
+    if (!j || j.code !== 0) throw new Error(JSON.stringify(j || {}).slice(0, 300));
+    const data = j.data || {};
+    const items = data[itemsKey] || [];
+    for (const it of items) all.push(it);
+    pageToken = data.page_token || data.next_page_token || '';
+    if (!pageToken || !data.has_more) break;
+  }
+  return all;
+}
 
-async function syncWikiNodes(spaceId, parentNodeToken, localDir, depth) {
+// ---------- Wiki ----------
+async function walkWikiNodes(spaceId, parentToken, localDir, depth) {
   if (depth > 8) return;
-  const args = { path: { space_id: spaceId }, params: {} };
-  if (parentNodeToken) args.params.parent_node_token = parentNodeToken;
-  const res = await mcpCall('wiki_v2_spaceNode_list', args);
-  for (const node of (res.items || [])) {
-    const name = safe(node.title || node.node_token);
+  let nodes;
+  try {
+    const qs = 'page_size=50' + (parentToken ? '&parent_node_token=' + encodeURIComponent(parentToken) : '');
+    nodes = await restPage('/open-apis/wiki/v2/spaces/' + spaceId + '/nodes', qs, 'items');
+  } catch (e) {
+    console.log('[wiki] node list error:', e.message);
+    return;
+  }
+  for (const node of nodes) {
+    const n = safe(node.title || node.node_token);
     if (node.obj_type === 'doc' || node.obj_type === 'docx') {
-      await syncDoc(node.obj_token, path.join(localDir, name + '.md'));
+      try {
+        const rc = await restGet('/open-apis/docx/v1/documents/' + node.obj_token + '/raw_content', '');
+        const content = (rc.data && rc.data.content) || JSON.stringify(rc);
+        writeFile(path.join(localDir, n + '.md'), content);
+      } catch (e) {
+        console.log('[wiki] doc error:', n, e.message);
+      }
     }
     if (node.has_child) {
-      await syncWikiNodes(spaceId, node.node_token, path.join(localDir, name), depth + 1);
+      await walkWikiNodes(spaceId, node.node_token, path.join(localDir, n), depth + 1);
     }
   }
 }
@@ -107,8 +96,17 @@ async function syncWikiNodes(spaceId, parentNodeToken, localDir, depth) {
 async function syncWiki() {
   const wikiDir = path.join(OUT_DIR, 'Wiki');
   fs.mkdirSync(wikiDir, { recursive: true });
-  const res = await mcpCall('wiki_v2_space_list', {});
-  const spaces = res.items || [];
+  if (!USER_TOK) {
+    console.log('[wiki] No user token — wiki sync skipped (set LARKSUITE_CLI_USER_ACCESS_TOKEN)');
+    return;
+  }
+  let spaces;
+  try {
+    spaces = await restPage('/open-apis/wiki/v2/spaces', 'page_size=50', 'items');
+  } catch (e) {
+    console.log('[wiki] space list error:', e.message);
+    return;
+  }
   if (!spaces.length) {
     console.log('[wiki] No wiki spaces found (check token permissions)');
     return;
@@ -116,67 +114,69 @@ async function syncWiki() {
   for (const space of spaces) {
     const name = safe(space.name || space.space_id);
     console.log('[wiki] Syncing space:', name);
-    await syncWikiNodes(space.space_id, '', path.join(wikiDir, name), 0);
+    await walkWikiNodes(space.space_id, '', path.join(wikiDir, name), 0);
   }
   console.log('[wiki] Done — spaces:', spaces.length);
 }
 
-// ── Bases (Bitable) ──────────────────────────────────────────────────────────
-
+// ---------- Bases (Bitables) ----------
 async function syncBase(appToken, baseDir) {
   fs.mkdirSync(baseDir, { recursive: true });
-  const tablesRes = await mcpCall('bitable_v1_appTable_list', { path: { app_token: appToken } });
-  for (const table of (tablesRes.items || [])) {
-    const tableName = safe(table.name || table.table_id);
+  let tables;
+  try {
+    tables = await restPage('/open-apis/bitable/v1/apps/' + appToken + '/tables', 'page_size=100', 'items');
+  } catch (e) {
+    console.log('[base] tables error:', e.message);
+    return;
+  }
+  for (const table of tables) {
+    const tname = safe(table.name || table.table_id);
     const rows = [];
-    let pageToken = '';
-    do {
-      const args = {
-        path: { app_token: appToken, table_id: table.table_id },
-        params: { page_size: 100 },
-      };
-      if (pageToken) args.params.page_token = pageToken;
-      const r = await mcpCall('bitable_v1_appTableRecord_list', args);
-      pageToken = r.page_token || r.next_page_token || '';
-      for (const rec of (r.items || [])) rows.push(rec.fields);
-    } while (pageToken);
-    writeFile(path.join(baseDir, tableName + '.json'), rows);
-    console.log('[base] table', tableName, rows.length, 'rows');
+    try {
+      const recs = await restPage(
+        '/open-apis/bitable/v1/apps/' + appToken + '/tables/' + table.table_id + '/records',
+        'page_size=100',
+        'items'
+      );
+      for (const rec of recs) rows.push(rec.fields);
+    } catch (e) {
+      console.log('[base] records error:', table.name || table.table_id, e.message);
+    }
+    writeFile(path.join(baseDir, tname + '.json'), rows);
+    console.log('[base] table', tname, rows.length, 'rows');
   }
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
-
-async function main() {
-  console.log('[wiki-bases] Starting sync →', OUT_DIR);
-  await initSession().catch(e => console.warn('[init]', e.message));
-
-  // Wiki
-  await syncWiki().catch(e => console.error('[wiki] error:', e.message));
-
-  // Bases: list Drive files of type bitable and sync each
+async function syncBases() {
   const basesDir = path.join(OUT_DIR, 'Bases');
   fs.mkdirSync(basesDir, { recursive: true });
-  let pageToken = '';
-  let baseCount = 0;
-  do {
-    const args = { params: { folder_token: process.env.LARK_FOLDER_TOKEN || '', type: 'bitable' } };
-    if (pageToken) args.params.page_token = pageToken;
-    const res = await mcpCall('drive_v1_file_list', args);
-    pageToken = res.next_page_token || '';
-    for (const f of (res.files || [])) {
-      if (f.type === 'bitable') {
-        const name = safe(f.name || f.token);
-        console.log('[base] Syncing base:', name);
-        await syncBase(f.token, path.join(basesDir, name));
-        baseCount++;
-      }
-    }
-  } while (pageToken);
-  console.log('[wiki-bases] Done — bases:', baseCount);
+  if (!USER_TOK) {
+    console.log('[base] No user token — bases sync skipped');
+    return;
+  }
+  let files;
+  try {
+    const qs = 'page_size=200' + (BASES_FOLDER ? '&folder_token=' + encodeURIComponent(BASES_FOLDER) : '');
+    files = await restPage('/open-apis/drive/v1/files', qs, 'files');
+  } catch (e) {
+    console.log('[base] discovery error:', e.message);
+    return;
+  }
+  const bitables = files.filter((f) => f.type === 'bitable');
+  let count = 0;
+  for (const f of bitables) {
+    const name = safe(f.name || f.token);
+    console.log('[base] Syncing base:', name);
+    await syncBase(f.token, path.join(basesDir, name));
+    count++;
+  }
+  console.log('[wiki-bases] Done — bases:', count);
 }
 
-main().catch(e => {
-  console.error('[wiki-bases] Fatal:', e.message);
-  process.exit(1);
-});
+// ---------- main ----------
+async function main() {
+  console.log('[wiki-bases] Starting sync →', OUT_DIR);
+  await syncWiki().catch((e) => console.error('[wiki] error:', e.message));
+  await syncBases().catch((e) => console.error('[bases] error:', e.message));
+}
+main().catch((e) => { console.error('[wiki-bases] Fatal:', e.message); process.exit(1); });

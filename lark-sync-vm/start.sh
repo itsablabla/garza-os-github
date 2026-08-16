@@ -96,8 +96,9 @@ run_sync() {
   # Resolve folder token: user auth → fetch personal My Drive root; bot → fixed shared folder
   if [ -n "$LARKSUITE_CLI_USER_ACCESS_TOKEN" ]; then
     ROOT_RESP=$(curl -s --max-time 10 \
-      "https://open.larksuite.com/open-apis/drive/explorer/v2/folder/root" \
-      -H "Authorization: Bearer ${LARKSUITE_CLI_USER_ACCESS_TOKEN}" 2>/dev/null) || true
+      "https://open.larksuite.com/open-apis/drive/explorer/v1/folder/root" \
+      -H "Authorization: Bearer ${LARKSUITE_CLI_USER_ACCESS_TOKEN}" \
+      -H "Accept: application/json" 2>/dev/null) || true
     DRIVE_TOKEN=$(echo "$ROOT_RESP" | grep -o '"token":"[^"]*"' | head -1 | cut -d'"' -f4) || true
     if [ -z "$DRIVE_TOKEN" ]; then
       echo "[sync] WARNING: Could not fetch My Drive root token, using configured folder token"

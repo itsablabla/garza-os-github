@@ -56,8 +56,10 @@ const server = http.createServer((req, res) => {
   const instName = (pathName === 'intl' || pathName === 'cn') ? pathName : catInstance(pathName);
   const inst = instName ? byName.get(instName) : null;
   if (!inst) { res.writeHead(404, {'Content-Type':'text/plain'}); return res.end('not found'); }
-  // per-category tool filtering
-  const filterTools = (categoryTools[pathName] && pathName !== 'intl' && pathName !== 'cn') ? categoryTools[pathName] : null;
+  // per-category tool filtering (normalize dot names -> snake as returned by the server)
+  const filterTools = (categoryTools[pathName] && pathName !== 'intl' && pathName !== 'cn')
+    ? categoryTools[pathName].map(n => n.replace(/\./g, '_'))
+    : null;
   const proxyHeaders = { ...req.headers, host: `127.0.0.1:${inst.port}` };
   if (process.env.LARK_USER_ACCESS_TOKEN && !inst.domain) {
     proxyHeaders['authorization'] = 'Bearer ' + process.env.LARK_USER_ACCESS_TOKEN;

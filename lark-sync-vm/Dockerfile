@@ -12,8 +12,8 @@ RUN curl -fsSL "https://github.com/Sync-in/desktop/releases/download/v2.2.1/sync
     | tar -xz && \
     mv sync-in-cli-2.2.1.js sync-in-cli.js
 
-COPY fetch-lark.js start.sh ./
-RUN chmod +x start.sh
+COPY fetch-lark.js start.sh healthcheck.sh ./
+RUN chmod +x start.sh healthcheck.sh
 
 VOLUME ["/data/lark-sync"]
 
@@ -23,5 +23,8 @@ ENV LARK_MCP_PORT=3001
 ENV LARK_DOMAIN=https://open.larksuite.com
 ENV OUTPUT_DIR=/data/lark-sync
 ENV SYNC_INTERVAL_MS=900000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
+  CMD ./healthcheck.sh
 
 CMD ["./start.sh"]

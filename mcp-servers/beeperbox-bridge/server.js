@@ -14,9 +14,11 @@ const server = http.createServer((req, res) => {
   if (req.method !== 'POST' || !(req.url === '/mcp' || req.url === '/mcp/')) {
     res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('not found');
   }
+  console.log('REQ', req.method, req.url, JSON.stringify(req.headers));
   const chunks = [];
   req.on('data', c => chunks.push(c));
   req.on('end', () => {
+    console.log('BODY', Buffer.concat(chunks).toString('utf8').slice(0,200));
     const payload = Buffer.concat(chunks);
     const transport = UPSTREAM.protocol === 'https:' ? https : http;
     const upReq = transport.request({
@@ -40,7 +42,7 @@ const server = http.createServer((req, res) => {
         res.end(framed);
       });
     });
-    upReq.on('error', e => { if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('upstream unavailable'); });
+    upReq.on('error', e => { console.log('UPERR', String(e)); if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('upstream unavailable'); });
     upReq.write(payload);
     upReq.end();
   });

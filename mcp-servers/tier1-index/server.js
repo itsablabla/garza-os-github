@@ -22,7 +22,7 @@ const jreq = (url, { method = 'GET', headers = {}, body } = {}) => new Promise((
   }, res => {
     const chunks = [];
     res.on('data', c => chunks.push(c));
-    res.on('end', () => resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString('utf8') }));
+    res.on('end', () => resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString('utf8'), headers: res.headers }));
   });
   r.on('error', reject);
   if (data) r.write(data);
@@ -41,8 +41,7 @@ async function fetchGatewayTools() {
     jsonrpc: '2.0', id: 1, method: 'initialize',
     params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'tier1-index', version: '1.0.0' } },
   }, headers: { 'Authorization': 'Bearer ' + GATEWAY_TOKEN } });
-  const sid = (init.text.match(/"mcp-session-id":"([^"]+)"/i) || [])[1]
-    || (init.text.match(/Mcp-Session-Id:\s*([^\r\n]+)/i) || [])[1];
+  const sid = (init.headers && (init.headers['mcp-session-id'] || init.headers['Mcp-Session-Id'])) || '';
   const headers = { 'Authorization': 'Bearer ' + GATEWAY_TOKEN, 'Content-Type': 'application/json' };
   if (sid) headers['mcp-session-id'] = sid.trim();
   const tl = await jreq(GATEWAY + '/mcp', { method: 'POST', body: {

@@ -1,30 +1,43 @@
-FROM node:20-alpine
+FROM node:20-slim
 WORKDIR /app
 
-RUN apk add --no-cache curl netcat-openbsd
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates netcat-openbsd && \
+    rm -rf /var/lib/apt/lists/*
 
-# Pre-install lark-mcp globally — no npx download at runtime
-RUN npm install -g @larksuiteoapi/lark-mcp --no-audit --no-fund && \
+# Official Lark CLI (Go binary, MIT license) — handles Drive sync natively
+RUN npm install -g @larksuite/cli@latest --no-audit --no-fund && \
     npm cache clean --force
 
-# Download Sync-in Desktop CLI
+# Sync-in Desktop CLI — pushes synced content to cloud.garzalabs.com
 RUN curl -fsSL "https://github.com/Sync-in/desktop/releases/download/v2.2.1/sync-in-cli-2.2.1.js.tar.gz" \
     | tar -xz && \
     mv sync-in-cli-2.2.1.js sync-in-cli.js
 
-COPY fetch-lark.js start.sh healthcheck.sh ./
+COPY start.sh healthcheck.sh ./
 RUN chmod +x start.sh healthcheck.sh
 
-VOLUME ["/data/lark-sync"]
+VOLUME ["/data"]
 
-# Lark MCP runs on localhost — no external container dependency
-ENV LARK_MCP_URL=http://127.0.0.1:3001/mcp
-ENV LARK_MCP_PORT=3001
-ENV LARK_DOMAIN=https://open.larksuite.com
-ENV OUTPUT_DIR=/data/lark-sync
-ENV SYNC_INTERVAL_MS=900000
+# Lark credentials (loaded by lark-cli env credential provider)
+ENV LARKSUITE_CLI_APP_ID=""
+ENV LARKSUITE_CLI_APP_SECRET=""
+ENV LARKSUITE_CLI_USER_ACCESS_TOKEN=""
+ENV LARKSUITE_CLI_DEFAULT_AS="user"
+ENV LARKSUITE_CLI_BRAND="lark"
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
+# Root Drive folder token to sync from
+ENV LARK_FOLDER_TOKEN="nodutfN0UnUSihjoh25GdBL6BMh"
+
+# Sync-in target
+ENV SYNCIN_URL=""
+ENV SYNCIN_AUTH_ID=""
+ENV SYNCIN_TOKEN=""
+ENV SYNCIN_REMOTE_PATH="spaces/lark-docs/workspaces"
+
+ENV SYNC_INTERVAL_SECONDS=900
+
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
   CMD ./healthcheck.sh
 
 CMD ["./start.sh"]

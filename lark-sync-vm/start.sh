@@ -1,5 +1,4 @@
 #!/bin/sh
-set -e
 
 LOCAL_DIR=/data/lark
 CONFIG_DIR=/root/.sync-in
@@ -7,7 +6,7 @@ LARK_CLI_CONFIG=/root/.larksuite/cli
 
 mkdir -p "$LOCAL_DIR" "$CONFIG_DIR" "$LARK_CLI_CONFIG"
 
-# ── lark-cli app config (needed for tenant access token exchange) ─────────────
+# ── lark-cli app config ───────────────────────────────────────────────────────
 if [ -n "$LARKSUITE_CLI_APP_ID" ] && [ -n "$LARKSUITE_CLI_APP_SECRET" ]; then
   cat > "$LARK_CLI_CONFIG/config.json" <<EOF
 {
@@ -15,7 +14,7 @@ if [ -n "$LARKSUITE_CLI_APP_ID" ] && [ -n "$LARKSUITE_CLI_APP_SECRET" ]; then
     "app_id": "$LARKSUITE_CLI_APP_ID",
     "app_secret": "$LARKSUITE_CLI_APP_SECRET",
     "brand": "${LARKSUITE_CLI_BRAND:-lark}",
-    "default_as": "${LARKSUITE_CLI_DEFAULT_AS:-bot}"
+    "default_as": "bot"
   }]
 }
 EOF
@@ -45,18 +44,31 @@ EOF
   echo "[start] Sync-in config written → $SYNCIN_URL"
 fi
 
-# ── Fetch fresh tenant access token ──────────────────────────────────────────
+# ── Tiny HTTP health endpoint on port 3000 ────────────────────────────────────
+# Coolify needs something to curl during deploy health checks
+while true; do
+  echo -e 'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok' | nc -l -p 3000 -q 1 2>/dev/null || true
+done &
+
+# ── Fetch tenant access token from Lark API ───────────────────────────────────
 fetch_tat() {
-  RESP=$(curl -s -X POST "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal" \
+  RESP=$(curl -s --max-time 10 -X POST \
+    "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal" \
     -H "Content-Type: application/json" \
-    -d "{\"app_id\":\"$LARKSUITE_CLI_APP_ID\",\"app_secret\":\"$LARKSUITE_CLI_APP_SECRET\"}")
-  TAT=$(echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('tenant_access_token',''))" 2>/dev/null)
+    -d "{\"app_id\":\"${LARKSUITE_CLI_APP_ID}\",\"app_secret\":\"${LARKSUITE_CLI_APP_SECRET}\"}" 2>/dev/null) || true
+  TAT=$(echo "$RESP" | python3 -c "
+import json,sys
+try:
+  d=json.loads(sys.stdin.read())
+  print(d.get('tenant_access_token',''))
+except: pass
+" 2>/dev/null) || true
   if [ -n "$TAT" ]; then
     export LARKSUITE_CLI_TENANT_ACCESS_TOKEN="$TAT"
     export LARKSUITE_CLI_DEFAULT_AS="bot"
-    echo "[start] Tenant access token refreshed (expires in $(echo "$RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('expire',0))" 2>/dev/null)s)."
+    echo "[start] TAT refreshed (valid ~2h)."
   else
-    echo "[start] WARNING: Failed to fetch tenant access token: $RESP"
+    echo "[start] WARNING: Could not fetch TAT. Response: $RESP"
   fi
 }
 
@@ -65,7 +77,7 @@ TAT_FETCHED_AT=$(date +%s)
 
 # ── Main sync loop ────────────────────────────────────────────────────────────
 run_sync() {
-  # Refresh TAT if older than 90 minutes
+  # Refresh TAT every 90 min
   NOW=$(date +%s)
   if [ $((NOW - TAT_FETCHED_AT)) -gt 5400 ]; then
     fetch_tat
@@ -73,8 +85,8 @@ run_sync() {
   fi
 
   echo "[sync] $(date -u +%FT%TZ) Starting Lark Drive sync..."
+  touch /tmp/lark-sync-alive
 
-  # lark-cli requires --local-dir to be relative to cwd
   cd /data
   lark-cli drive +sync \
     --local-dir ./lark \
@@ -93,9 +105,7 @@ run_sync() {
   fi
 }
 
-# ── Healthcheck state ─────────────────────────────────────────────────────────
 touch /tmp/lark-sync-alive
-
 run_sync
 
 while true; do

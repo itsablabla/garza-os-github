@@ -7,18 +7,25 @@ LARK_CLI_CONFIG=/root/.larksuite/cli
 mkdir -p "$LOCAL_DIR" "$CONFIG_DIR" "$LARK_CLI_CONFIG"
 
 # ── lark-cli app config ───────────────────────────────────────────────────────
+# Prefer user auth (UAT) when available — sees full personal Drive + wiki.
+# Fall back to bot auth (TAT) for content shared with the Lark app.
 if [ -n "$LARKSUITE_CLI_APP_ID" ] && [ -n "$LARKSUITE_CLI_APP_SECRET" ]; then
+  if [ -n "$LARKSUITE_CLI_USER_ACCESS_TOKEN" ]; then
+    AUTH_MODE="user"
+  else
+    AUTH_MODE="bot"
+  fi
   cat > "$LARK_CLI_CONFIG/config.json" <<EOF
 {
   "apps": [{
     "app_id": "$LARKSUITE_CLI_APP_ID",
     "app_secret": "$LARKSUITE_CLI_APP_SECRET",
     "brand": "${LARKSUITE_CLI_BRAND:-lark}",
-    "default_as": "bot"
+    "default_as": "$AUTH_MODE"
   }]
 }
 EOF
-  echo "[start] lark-cli config written."
+  echo "[start] lark-cli config written (auth=$AUTH_MODE)."
 fi
 
 # ── Sync-in config ────────────────────────────────────────────────────────────
@@ -59,32 +66,42 @@ fetch_tat() {
   TAT=$(echo "$RESP" | grep -o '"tenant_access_token":"[^"]*"' | cut -d'"' -f4) || true
   if [ -n "$TAT" ]; then
     export LARKSUITE_CLI_TENANT_ACCESS_TOKEN="$TAT"
-    export LARKSUITE_CLI_DEFAULT_AS="bot"
     echo "[start] TAT refreshed (valid ~2h)."
   else
     echo "[start] WARNING: Could not fetch TAT. Response: $RESP"
   fi
 }
 
-fetch_tat
+# Only need bot TAT when not using user auth
+if [ -z "$LARKSUITE_CLI_USER_ACCESS_TOKEN" ]; then
+  fetch_tat
+fi
 TAT_FETCHED_AT=$(date +%s)
 
 # ── Main sync loop ────────────────────────────────────────────────────────────
 run_sync() {
-  # Refresh TAT every 90 min
-  NOW=$(date +%s)
-  if [ $((NOW - TAT_FETCHED_AT)) -gt 5400 ]; then
-    fetch_tat
-    TAT_FETCHED_AT=$NOW
+  # Refresh TAT every 90 min (only when using bot auth)
+  if [ -z "$LARKSUITE_CLI_USER_ACCESS_TOKEN" ]; then
+    NOW=$(date +%s)
+    if [ $((NOW - TAT_FETCHED_AT)) -gt 5400 ]; then
+      fetch_tat
+      TAT_FETCHED_AT=$NOW
+    fi
   fi
 
   echo "[sync] $(date -u +%FT%TZ) Starting Lark Drive sync..."
   touch /tmp/lark-sync-alive
 
   cd /data
+  # With user auth, sync from Drive root (empty token). With bot auth, use the configured folder.
+  if [ -n "$LARKSUITE_CLI_USER_ACCESS_TOKEN" ]; then
+    DRIVE_TOKEN=""
+  else
+    DRIVE_TOKEN="${LARK_FOLDER_TOKEN:-nodutfN0UnUSihjoh25GdBL6BMh}"
+  fi
   lark-cli drive +sync \
     --local-dir ./lark \
-    --folder-token "${LARK_FOLDER_TOKEN:-nodutfN0UnUSihjoh25GdBL6BMh}" \
+    ${DRIVE_TOKEN:+--folder-token "$DRIVE_TOKEN"} \
     --quick \
     --on-conflict remote-wins \
     --on-duplicate-remote newest \

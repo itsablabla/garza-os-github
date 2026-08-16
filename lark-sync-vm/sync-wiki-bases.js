@@ -7,7 +7,7 @@ const https = require('https');
 const fs    = require('fs');
 const path  = require('path');
 
-const MCP_URL  = process.env.LARK_MCP_URL || 'http://9o0rlv2llum5chtuyigaih5s:3000/intl/mcp';
+const MCP_URL  = process.env.LARK_MCP_URL || 'https://lark.garzalabs.com/intl/mcp';
 const OUT_DIR  = process.env.LOCAL_DIR || '/data/lark';
 
 let reqId = 0;

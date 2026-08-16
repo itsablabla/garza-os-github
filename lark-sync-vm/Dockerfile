@@ -35,8 +35,8 @@ ENV SYNCIN_AUTH_ID=""
 ENV SYNCIN_TOKEN=""
 ENV SYNCIN_REMOTE_PATH="spaces/lark-docs/workspaces"
 
-# Internal lark-mcp gateway (same Docker network) — used for wiki + bases sync
-ENV LARK_MCP_URL="http://9o0rlv2llum5chtuyigaih5s:3000/intl/mcp"
+# lark-mcp gateway — used for wiki + bases sync
+ENV LARK_MCP_URL="https://lark.garzalabs.com/intl/mcp"
 
 ENV SYNC_INTERVAL_SECONDS=900
 

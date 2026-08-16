@@ -93,15 +93,24 @@ run_sync() {
   touch /tmp/lark-sync-alive
 
   cd /data
-  # With user auth, sync from Drive root (empty token). With bot auth, use the configured folder.
+  # Resolve folder token: user auth → fetch personal My Drive root; bot → fixed shared folder
   if [ -n "$LARKSUITE_CLI_USER_ACCESS_TOKEN" ]; then
-    DRIVE_TOKEN=""
+    ROOT_RESP=$(curl -s --max-time 10 \
+      "https://open.larksuite.com/open-apis/drive/explorer/v2/folder/root" \
+      -H "Authorization: Bearer ${LARKSUITE_CLI_USER_ACCESS_TOKEN}" 2>/dev/null) || true
+    DRIVE_TOKEN=$(echo "$ROOT_RESP" | grep -o '"token":"[^"]*"' | head -1 | cut -d'"' -f4) || true
+    if [ -z "$DRIVE_TOKEN" ]; then
+      echo "[sync] WARNING: Could not fetch My Drive root token, using configured folder token"
+      DRIVE_TOKEN="${LARK_FOLDER_TOKEN:-nodutfN0UnUSihjoh25GdBL6BMh}"
+    else
+      echo "[sync] Using My Drive root token: ${DRIVE_TOKEN:0:12}..."
+    fi
   else
     DRIVE_TOKEN="${LARK_FOLDER_TOKEN:-nodutfN0UnUSihjoh25GdBL6BMh}"
   fi
   lark-cli drive +sync \
     --local-dir ./lark \
-    ${DRIVE_TOKEN:+--folder-token "$DRIVE_TOKEN"} \
+    --folder-token "$DRIVE_TOKEN" \
     --quick \
     --on-conflict remote-wins \
     --on-duplicate-remote newest \

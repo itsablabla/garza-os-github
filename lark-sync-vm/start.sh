@@ -92,6 +92,13 @@ run_sync() {
 
   echo "[sync] $(date -u +%FT%TZ) Drive sync done."
 
+  # Wiki + Bases via lark-mcp internal gateway (has auto-refreshing UAT)
+  if [ -n "$LARK_MCP_URL" ]; then
+    echo "[sync] Syncing Wiki and Bases via lark-mcp..."
+    node /app/sync-wiki-bases.js 2>&1 || echo "[sync] wiki-bases exited with error"
+    echo "[sync] Wiki/Bases sync done."
+  fi
+
   if [ -n "$SYNCIN_URL" ]; then
     echo "[sync] Running Sync-in..."
     node /app/sync-in-cli.js run 2>&1 | tail -10 || true

@@ -14,7 +14,7 @@ RUN curl -fsSL "https://github.com/Sync-in/desktop/releases/download/v2.2.1/sync
     | tar -xz && \
     mv sync-in-cli-2.2.1.js sync-in-cli.js
 
-COPY start.sh healthcheck.sh ./
+COPY start.sh healthcheck.sh sync-wiki-bases.js ./
 RUN chmod +x start.sh healthcheck.sh
 
 VOLUME ["/data"]
@@ -34,6 +34,9 @@ ENV SYNCIN_URL=""
 ENV SYNCIN_AUTH_ID=""
 ENV SYNCIN_TOKEN=""
 ENV SYNCIN_REMOTE_PATH="spaces/lark-docs/workspaces"
+
+# Internal lark-mcp gateway (same Docker network) — used for wiki + bases sync
+ENV LARK_MCP_URL="http://9o0rlv2llum5chtuyigaih5s:3000/intl/mcp"
 
 ENV SYNC_INTERVAL_SECONDS=900
 

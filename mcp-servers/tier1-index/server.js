@@ -46,9 +46,10 @@ async function fetchGatewayTools() {
   const headers = { 'Authorization': 'Bearer ' + GATEWAY_TOKEN, 'Content-Type': 'application/json' };
   if (sid) headers['mcp-session-id'] = sid.trim();
   const tl = await jreq(GATEWAY + '/mcp', { method: 'POST', body: {
-    jsonrpc: '2.0', id: 2, method: 'tools/list', params: {},
+    jsonrpc: '2.0', id: 2, method: 'tools/call',
+    params: { name: 'find', arguments: { action: 'list_tools' } },
   }, headers });
-  const names = [...tl.text.matchAll(/"name":"([a-z][a-z0-9_]*)"/g)].map(m => m[1]);
+  const names = [...tl.text.matchAll(/\[ACTIVE\]\s+([a-z][a-z0-9_]*)\s+\(v\d+\)/g)].map(m => m[1]);
   return [...new Set(names)];
 }
 

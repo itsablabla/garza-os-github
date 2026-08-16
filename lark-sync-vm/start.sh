@@ -3,8 +3,24 @@ set -e
 
 LOCAL_DIR=/data/lark
 CONFIG_DIR=/root/.sync-in
+LARK_CLI_CONFIG=/root/.larksuite/cli
 
-mkdir -p "$LOCAL_DIR" "$CONFIG_DIR"
+mkdir -p "$LOCAL_DIR" "$CONFIG_DIR" "$LARK_CLI_CONFIG"
+
+# ── lark-cli app config (needed for tenant access token exchange) ─────────────
+if [ -n "$LARKSUITE_CLI_APP_ID" ] && [ -n "$LARKSUITE_CLI_APP_SECRET" ]; then
+  cat > "$LARK_CLI_CONFIG/config.json" <<EOF
+{
+  "apps": [{
+    "app_id": "$LARKSUITE_CLI_APP_ID",
+    "app_secret": "$LARKSUITE_CLI_APP_SECRET",
+    "brand": "${LARKSUITE_CLI_BRAND:-lark}",
+    "default_as": "${LARKSUITE_CLI_DEFAULT_AS:-bot}"
+  }]
+}
+EOF
+  echo "[start] lark-cli config written."
+fi
 
 # ── Sync-in config ────────────────────────────────────────────────────────────
 if [ -n "$SYNCIN_URL" ] && [ -n "$SYNCIN_TOKEN" ] && [ -n "$SYNCIN_AUTH_ID" ]; then

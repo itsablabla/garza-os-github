@@ -1,0 +1,13 @@
+services:
+  telegram-bot-maker:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
+      TELEGRAM_SESSION_STRING: ${TELEGRAM_SESSION_STRING}
+      OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+      BOT_MAKER_GATE_TOKEN: ${BOT_MAKER_GATE_TOKEN}
+      OP_VAULT: ${OP_VAULT:-Main}
+    restart: unless-stopped

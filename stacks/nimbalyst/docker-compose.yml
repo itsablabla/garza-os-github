@@ -1,0 +1,24 @@
+services:
+  nimbalyst:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nimbalyst-local:latest
+    container_name: nimbalyst
+    restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: "America/New_York"
+      TITLE: "Nimbalyst (ChatGPT-backed)"
+      SUBFOLDER: "/"
+      OPENAI_BASE_URL: "https://llm.garzaos.cloud/v1"
+      OPENAI_API_BASE: "https://llm.garzaos.cloud/v1"
+      OPENAI_API_KEY: "${CUSTOM_LLM_API_KEY}"
+    ports:
+      - "127.0.0.1:13100:3000"
+    volumes:
+      - ./config:/config
+    shm_size: "2gb"

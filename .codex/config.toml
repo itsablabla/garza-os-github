@@ -1,0 +1,6 @@
+# Set MCPX_LUNAR_API_KEY in the local environment. Do not commit the key.
+[mcp_servers.mcpx]
+url = "https://garza-mcp.exe.xyz/mcp"
+
+[mcp_servers.mcpx.env_http_headers]
+x-lunar-api-key = "MCPX_LUNAR_API_KEY"

@@ -50,7 +50,7 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const m = url.pathname.match(/^\/([a-z0-9]+)\/mcp$/);
   if (req.method === 'GET' && (url.pathname === '/healthz' || url.pathname === '/health')) {
-    res.writeHead(200, {'Content-Type':'text/plain'}); return res.end('ok');
+    res.writeHead(200, {'Content-Type':'text/plain'}); return res.end('ok gate=' + (GATE_TOKEN ? 'on' : 'off'));
   }
   // Bearer gate: when GATE_TOKEN is set, every non-health request must carry it.
   if (GATE_TOKEN && req.headers['authorization'] !== 'Bearer ' + GATE_TOKEN) {

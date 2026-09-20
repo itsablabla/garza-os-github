@@ -44,11 +44,17 @@ function startInstance(inst) {
 const byName = new Map(categories.map(c => [c.name, c]));
 const catInstance = name => intlCats.includes(name) ? 'intl' : (cnCats.includes(name) ? 'cn' : null);
 
+const GATE_TOKEN = process.env.GATE_TOKEN || '';
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const m = url.pathname.match(/^\/([a-z0-9]+)\/mcp$/);
   if (req.method === 'GET' && (url.pathname === '/healthz' || url.pathname === '/health')) {
     res.writeHead(200, {'Content-Type':'text/plain'}); return res.end('ok');
+  }
+  // Bearer gate: when GATE_TOKEN is set, every non-health request must carry it.
+  if (GATE_TOKEN && req.headers['authorization'] !== 'Bearer ' + GATE_TOKEN) {
+    res.writeHead(401, {'Content-Type':'text/plain'}); return res.end('unauthorized');
   }
   if (!m) { res.writeHead(404, {'Content-Type':'text/plain'}); return res.end('not found'); }
   const pathName = m[1];
@@ -61,6 +67,8 @@ const server = http.createServer((req, res) => {
     ? categoryTools[pathName].map(n => n.replace(/\./g, '_'))
     : null;
   const proxyHeaders = { ...req.headers, host: `127.0.0.1:${inst.port}` };
+  // Never forward the client's gate token upstream; the UAT injection below owns auth.
+  delete proxyHeaders['authorization'];
   if (process.env.LARK_USER_ACCESS_TOKEN && !inst.domain) {
     proxyHeaders['authorization'] = 'Bearer ' + process.env.LARK_USER_ACCESS_TOKEN;
   }
